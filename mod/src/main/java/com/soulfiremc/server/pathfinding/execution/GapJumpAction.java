@@ -44,7 +44,7 @@ public final class GapJumpAction implements WorldAction {
     var level = connection.minecraft().level;
 
     var blockMeta = level.getBlockState(blockPosition.toBlockPos());
-    var targetMiddleBlock = VectorHelper.topMiddleOfBlock(blockPosition, blockMeta);
+    var targetMiddleBlock = VectorHelper.standingMiddleOfBlock(blockPosition, blockMeta);
     if (!MovementAction.hasReachedTargetHeight(
       botPosition.y,
       targetMiddleBlock.y,
@@ -116,7 +116,7 @@ public final class GapJumpAction implements WorldAction {
     var level = connection.minecraft().level;
 
     var blockMeta = level.getBlockState(blockPosition.toBlockPos());
-    var targetMiddleBlock = VectorHelper.topMiddleOfBlock(blockPosition, blockMeta);
+    var targetMiddleBlock = VectorHelper.standingMiddleOfBlock(blockPosition, blockMeta);
 
     connection.rotationControl().lookHorizontallyAt(targetMiddleBlock);
 
@@ -124,7 +124,7 @@ public final class GapJumpAction implements WorldAction {
     connection.controlState().up(true);
     if (!startedJumping && clientEntity.onGround()) {
       var startBlock = level.getBlockState(startPosition.toBlockPos());
-      var startMiddleBlock = VectorHelper.topMiddleOfBlock(
+      var startMiddleBlock = VectorHelper.standingMiddleOfBlock(
         startPosition,
         startBlock
       );

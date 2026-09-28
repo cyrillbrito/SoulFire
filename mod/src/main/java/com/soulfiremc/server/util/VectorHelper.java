@@ -32,7 +32,16 @@ public final class VectorHelper {
     return new Vector2d(vector.x, vector.z);
   }
 
-  public static Vec3 topMiddleOfBlock(SFVec3i vector, BlockState blockState) {
+  /// Where the feet of a player standing in `vector` rest: the middle of the
+  /// block, raised to the top of what it stands on inside it (a bottom slab,
+  /// a carpet, a snow layer). A block you walk through, like an open door,
+  /// raises nothing: a door's collision box is a full block tall along one
+  /// edge, and taking its top put the target a block too high, so a bot in
+  /// the doorway jumped until the step timed out.
+  public static Vec3 standingMiddleOfBlock(SFVec3i vector, BlockState blockState) {
+    if (SFBlockHelpers.isBodyPassableBlock(blockState)) {
+      return new Vec3(vector.x + 0.5, vector.y, vector.z + 0.5);
+    }
     return topMiddleOfBlock(vector, SFBlockHelpers.RAW_COLLISION_SHAPES.get(blockState));
   }
 

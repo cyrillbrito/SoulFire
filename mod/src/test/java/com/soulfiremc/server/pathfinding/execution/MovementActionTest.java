@@ -18,8 +18,12 @@
 package com.soulfiremc.server.pathfinding.execution;
 
 import com.soulfiremc.server.pathfinding.SFVec3i;
+import com.soulfiremc.server.util.VectorHelper;
 import com.soulfiremc.test.utils.TestBootstrap;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.DoorBlock;
+import net.minecraft.world.level.block.FenceGateBlock;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -100,6 +104,31 @@ final class MovementActionTest {
       66.0,
       true
     ));
+  }
+
+  @Test
+  void anOpenDoorIsWalkedThroughNotOnto() {
+    // A door's collision box is a full block tall along one edge: its top as
+    // the target height left the bot jumping in the doorway until the step
+    // timed out.
+    var cell = new SFVec3i(3, 64, -2);
+    var openDoor = Blocks.OAK_DOOR.defaultBlockState().setValue(DoorBlock.OPEN, true);
+    var openGate = Blocks.OAK_FENCE_GATE.defaultBlockState().setValue(FenceGateBlock.OPEN, true);
+
+    for (var state : new BlockState[] {openDoor, openGate, Blocks.AIR.defaultBlockState()}) {
+      var target = VectorHelper.standingMiddleOfBlock(cell, state);
+      assertEquals(new Vec3(3.5, 64, -1.5), target);
+      assertTrue(MovementAction.hasReachedTargetHeight(64.0, target.y, true));
+      assertFalse(MovementAction.needsUpwardInput(64.0, target.y, false));
+    }
+  }
+
+  @Test
+  void whatYouStandOnInsideTheCellStillRaisesTheTarget() {
+    var cell = new SFVec3i(0, 10, 0);
+
+    assertEquals(10.5, VectorHelper.standingMiddleOfBlock(cell, Blocks.OAK_SLAB.defaultBlockState()).y);
+    assertEquals(10.0625, VectorHelper.standingMiddleOfBlock(cell, Blocks.CARPET.white().defaultBlockState()).y);
   }
 
   @Test
