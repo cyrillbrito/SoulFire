@@ -53,6 +53,8 @@ public final class Costs {
   /// Submerged travel is slower and consumes air. Prefer the water surface
   /// whenever both routes cover the same horizontal distance.
   public static final double SUBMERGED_MOVEMENT = 4;
+  /// Landing on farmland can trample it, so prefer a short detour.
+  public static final double TRAMPLE_FARMLAND = 5;
   /// Vertical climbables are slower than walking one horizontal block.
   public static final double CLIMB = 2;
   /// Falling 1 block takes ~5.63 ticks.

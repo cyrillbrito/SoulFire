@@ -315,6 +315,124 @@ final class PathfindingTest {
     ));
   }
 
+  @ParameterizedTest
+  @ValueSource(strings = {"farmland", "dirt_path"})
+  void pathfindingWalksAcrossRaisedFloors(String floorId) {
+    var floor = floorId.equals("farmland") ? Blocks.FARMLAND : Blocks.DIRT_PATH;
+    var accessor = new TestBlockAccessorBuilder();
+    accessor.setBlockAt(0, 0, 0, Blocks.STONE);
+    for (var x = 1; x <= 4; x++) {
+      accessor.setBlockAt(x, 0, 0, floor);
+      if (floor == Blocks.FARMLAND) {
+        accessor.setBlockAt(x, 1, 0, Blocks.WHEAT);
+      }
+    }
+    var constraint = new NoBlockActionsConstraint(TestPathConstraint.INSTANCE);
+    var inventory = new ProjectedInventory(
+      List.of(),
+      TestMiningCostCalculator.INSTANCE,
+      constraint
+    );
+    var routeFinder = new RouteFinder(new MinecraftGraph(
+      accessor.build(),
+      inventory,
+      constraint
+    ), new PosGoal(4, 1, 0));
+
+    var route = routeFinder.findRouteFuture(
+      NodeState.forInfo(new SFVec3i(0, 1, 0), inventory)
+    ).join();
+
+    assertInstanceOf(RouteFinder.FoundRouteResult.class, route);
+  }
+
+  @Test
+  void pathfindingLeavesFarmlandItStandsOn() {
+    var accessor = new TestBlockAccessorBuilder();
+    accessor.setBlockAt(0, 0, 0, Blocks.FARMLAND);
+    accessor.setBlockAt(1, 0, 0, Blocks.FARMLAND);
+    accessor.setBlockAt(2, 0, 0, Blocks.STONE);
+    var constraint = new NoBlockActionsConstraint(TestPathConstraint.INSTANCE);
+    var inventory = new ProjectedInventory(
+      List.of(),
+      TestMiningCostCalculator.INSTANCE,
+      constraint
+    );
+    var routeFinder = new RouteFinder(new MinecraftGraph(
+      accessor.build(),
+      inventory,
+      constraint
+    ), new PosGoal(2, 1, 0));
+
+    var route = routeFinder.findRouteFuture(
+      NodeState.forInfo(new SFVec3i(0, 1, 0), inventory)
+    ).join();
+
+    assertInstanceOf(RouteFinder.FoundRouteResult.class, route);
+  }
+
+  @Test
+  void pathfindingDropsOntoFarmlandWhenThereIsNoOtherWay() {
+    var accessor = new TestBlockAccessorBuilder();
+    accessor.setBlockAt(0, 1, 0, Blocks.STONE);
+    accessor.setBlockAt(1, 0, 0, Blocks.FARMLAND);
+    var constraint = new NoBlockActionsConstraint(TestPathConstraint.INSTANCE);
+    var inventory = new ProjectedInventory(
+      List.of(),
+      TestMiningCostCalculator.INSTANCE,
+      constraint
+    );
+    var routeFinder = new RouteFinder(new MinecraftGraph(
+      accessor.build(),
+      inventory,
+      constraint
+    ), new PosGoal(1, 1, 0));
+
+    var route = routeFinder.findRouteFuture(
+      NodeState.forInfo(new SFVec3i(0, 2, 0), inventory)
+    ).join();
+
+    assertInstanceOf(RouteFinder.FoundRouteResult.class, route);
+  }
+
+  @Test
+  void pathfindingStepsDownBesideFarmlandRatherThanDropOntoIt() {
+    // With a stone step beside it, the route avoids dropping onto farmland
+    var accessor = new TestBlockAccessorBuilder();
+    accessor.setBlockAt(0, 1, 0, Blocks.STONE);
+    accessor.setBlockAt(1, 0, 0, Blocks.FARMLAND);
+    accessor.setBlockAt(0, 0, 1, Blocks.STONE);
+    accessor.setBlockAt(1, 0, 1, Blocks.STONE);
+    var constraint = new NoBlockActionsConstraint(TestPathConstraint.INSTANCE);
+    var inventory = new ProjectedInventory(
+      List.of(),
+      TestMiningCostCalculator.INSTANCE,
+      constraint
+    );
+    var routeFinder = new RouteFinder(new MinecraftGraph(
+      accessor.build(),
+      inventory,
+      constraint
+    ), new PosGoal(1, 1, 0));
+
+    var route = routeFinder.findRouteFuture(
+      NodeState.forInfo(new SFVec3i(0, 2, 0), inventory)
+    ).join();
+
+    var foundRouteResult = assertInstanceOf(
+      RouteFinder.FoundRouteResult.class,
+      route
+    );
+    var movements = foundRouteResult.actions().stream()
+      .filter(MovementAction.class::isInstance)
+      .map(MovementAction.class::cast)
+      .map(MovementAction::blockPosition)
+      .toList();
+    // Onto the stone first, not straight onto the farmland
+    assertEquals(2, movements.size());
+    assertEquals(new SFVec3i(1, 1, 0), movements.getLast());
+  }
+
   @Test
   void pathfindingDownStaircaseWithoutBlockActions() {
     var accessor = new TestBlockAccessorBuilder();

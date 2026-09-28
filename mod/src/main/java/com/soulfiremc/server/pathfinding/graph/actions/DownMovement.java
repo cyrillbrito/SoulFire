@@ -43,6 +43,8 @@ public final class DownMovement extends GraphAction implements Cloneable {
   // Mutable
   private int closestBlockToFallOn = Integer.MIN_VALUE;
   // Mutable
+  private boolean closestBlockBreaksWhenFallenOn;
+  // Mutable
   private int closestObstructingBlock = Integer.MIN_VALUE;
 
   private DownMovement(SubscriptionConsumer blockSubscribers) {
@@ -112,6 +114,9 @@ public final class DownMovement extends GraphAction implements Cloneable {
       };
 
     cost += breakCost.miningCost();
+    if (closestBlockBreaksWhenFallenOn) {
+      cost += Costs.TRAMPLE_FARMLAND;
+    }
 
     var absoluteTargetFeetBlock = node.add(0, closestBlockToFallOn + 1, 0);
 
@@ -189,6 +194,8 @@ public final class DownMovement extends GraphAction implements Cloneable {
       )) {
         // We found a block to fall on
         downMovement.closestBlockToFallOn = yLevel;
+        downMovement.closestBlockBreaksWhenFallenOn =
+          SFBlockHelpers.breaksWhenFallenOn(blockState);
       }
 
       return MinecraftGraph.SubscriptionSingleResult.CONTINUE;
