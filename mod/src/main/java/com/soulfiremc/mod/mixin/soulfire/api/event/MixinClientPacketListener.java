@@ -24,6 +24,7 @@ import com.soulfiremc.server.api.event.bot.BotDamageEvent;
 import com.soulfiremc.server.api.event.bot.BotOpenContainerEvent;
 import com.soulfiremc.server.api.event.bot.BotShouldRespawnEvent;
 import com.soulfiremc.server.bot.BotConnection;
+import com.soulfiremc.server.bot.HealthDamageTracker;
 import net.minecraft.client.multiplayer.ClientPacketListener;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -32,12 +33,16 @@ import net.minecraft.network.protocol.game.ClientboundLevelChunkWithLightPacket;
 import net.minecraft.network.protocol.game.ClientboundOpenScreenPacket;
 import net.minecraft.network.protocol.game.ClientboundSetHealthPacket;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 @Mixin(ClientPacketListener.class)
 public class MixinClientPacketListener {
+  @Unique
+  private final HealthDamageTracker soulfire$damageTracker = new HealthDamageTracker();
+
   @Inject(method = "handleLevelChunkWithLight", at = @At("RETURN"))
   private void onLevelChunkWithLight(
     ClientboundLevelChunkWithLightPacket packet,
@@ -62,25 +67,24 @@ public class MixinClientPacketListener {
     return !event.shouldRespawn();
   }
 
+  // Vanilla packet handlers start with PacketUtils.ensureRunningOnSameThread: called on the network
+  // thread, it queues the packet for the game thread and throws, and the handler runs again there.
+  // An injection at HEAD sees both calls, so the two below only act on the game-thread one (the
+  // check vanilla makes).
   @Inject(method = "handleSetHealth", at = @At("HEAD"))
   private void onSetHealth(ClientboundSetHealthPacket packet, CallbackInfo ci) {
     var bot = BotConnection.current();
-    var player = bot.minecraft().player;
-    if (player == null) {
+    if (!bot.minecraft().packetProcessor().isSameThread() || bot.minecraft().player == null) {
       return;
     }
 
-    var previousHealth = player.getHealth();
-    var newHealth = packet.getHealth();
-
-    // Only fire damage event if health decreased
-    if (newHealth < previousHealth) {
-      var damageAmount = previousHealth - newHealth;
+    var damage = soulfire$damageTracker.update(packet.getHealth());
+    if (damage != null) {
       var event = new BotDamageEvent(
         BotConnection.current(),
-        previousHealth,
-        newHealth,
-        damageAmount
+        damage.previousHealth(),
+        damage.newHealth(),
+        damage.amount()
       );
       SoulFireAPI.postEvent(event);
     }
@@ -89,7 +93,7 @@ public class MixinClientPacketListener {
   @Inject(method = "handleOpenScreen", at = @At("HEAD"))
   private void onOpenScreen(ClientboundOpenScreenPacket packet, CallbackInfo ci) {
     var bot = BotConnection.current();
-    if (bot.minecraft().player == null) {
+    if (!bot.minecraft().packetProcessor().isSameThread() || bot.minecraft().player == null) {
       return;
     }
 
