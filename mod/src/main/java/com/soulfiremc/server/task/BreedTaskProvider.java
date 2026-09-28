@@ -492,10 +492,12 @@ public final class BreedTaskProvider implements BotTaskProvider<BreedTask> {
       return new PairSearch(null, compatiblePairExists);
     }
 
+    /// On the client `AgeableMob.getAge()` is only -1 (baby) or 1 (adult):
+    /// the real age, and with it the breeding cooldown, stays on the server.
     private boolean eligible(Animal animal) {
       return animal.isAlive()
         && !animal.isRemoved()
-        && animal.getAge() == 0
+        && !animal.isBaby()
         && !(animal instanceof Mule)
         && !probablyInLove(animal);
     }
