@@ -222,7 +222,10 @@ public final class PathConstraintImpl implements PathConstraint {
 
     return StreamSupport.stream(((ClientLevel) entity.level()).entitiesForRendering().spliterator(), false)
       .filter(e -> e != entity)
+      // Players and some other living entities have no follow range, and
+      // reading an attribute an entity doesn't have throws.
       .flatMap(e -> e instanceof LivingEntity livingEntity
+        && livingEntity.getAttributes().hasAttribute(Attributes.FOLLOW_RANGE)
         && livingEntity.getAttributeValue(Attributes.FOLLOW_RANGE) > 0
         && shouldAvoidEntity(e)
         ? Stream.of(livingEntity) : Stream.empty())
