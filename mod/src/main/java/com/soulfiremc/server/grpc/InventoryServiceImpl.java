@@ -36,6 +36,7 @@ import io.grpc.stub.StreamObserver;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.component.DataComponents;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.Identifier;
 import net.minecraft.tags.TagKey;
@@ -1061,14 +1062,7 @@ public final class InventoryServiceImpl
     var context = Context.create(bot);
     requireEmptyCursor(context);
     var planned = planTaskBatch(context, operations, from, to);
-    for (var move : planned.moves()) {
-      moveExact(
-        context,
-        context.menu.getSlot(move.source),
-        context.menu.getSlot(move.destination),
-        move.count
-      );
-    }
+    applyMoves(context, planned.moves());
     requireEmptyCursor(context);
     return planned.transferred();
   }
@@ -1263,6 +1257,9 @@ public final class InventoryServiceImpl
         .withDescription("Destination does not have enough space")
         .asRuntimeException();
     }
+    if (takenWholeOnly(source) && count != sourceStack.getCount()) {
+      throw wholeOnly(source);
+    }
 
     click(context, source.index, 0, ContainerInput.PICKUP);
     for (var moved = 0; moved < count; moved++) {
@@ -1270,6 +1267,60 @@ public final class InventoryServiceImpl
     }
     if (!context.menu.getCarried().isEmpty()) {
       click(context, source.index, 0, ContainerInput.PICKUP);
+    }
+  }
+
+  /// Whether a slot only gives its stack whole: an output slot (a furnace's, a
+  /// crafting result) takes nothing back, so the rest of a partly taken stack
+  /// would stay on the cursor, as it would for a player.
+  private static boolean takenWholeOnly(Slot slot) {
+    var stack = slot.getItem();
+    return !stack.isEmpty() && !slot.mayPlace(stack);
+  }
+
+  private static StatusRuntimeException wholeOnly(Slot slot) {
+    var stack = slot.getItem();
+    return Status.FAILED_PRECONDITION
+      .withDescription(
+        "Slot %d is an output: it can only be taken whole, all %d %s"
+          .formatted(
+            slot.index,
+            stack.getCount(),
+            BuiltInRegistries.ITEM.getKey(stack.getItem())
+          )
+      )
+      .asRuntimeException();
+  }
+
+  /// Applies planned moves. Moves from one source are consecutive (the
+  /// planners go source by source). A source that only gives its stack whole
+  /// is picked up once and spread over its moves, which must take all of it:
+  /// checked for every source before the first click.
+  private static void applyMoves(Context context, List<Move> moves) {
+    for (var i = 0; i < moves.size(); ) {
+      var source = context.menu.getSlot(moves.get(i).source);
+      var planned = 0;
+      for (; i < moves.size() && moves.get(i).source == source.index; i++) {
+        planned += moves.get(i).count;
+      }
+      if (takenWholeOnly(source) && planned != source.getItem().getCount()) {
+        throw wholeOnly(source);
+      }
+    }
+    for (var i = 0; i < moves.size(); ) {
+      var move = moves.get(i);
+      var source = context.menu.getSlot(move.source);
+      if (!takenWholeOnly(source)) {
+        moveExact(context, source, context.menu.getSlot(move.destination), move.count);
+        i++;
+        continue;
+      }
+      click(context, source.index, 0, ContainerInput.PICKUP);
+      for (; i < moves.size() && moves.get(i).source == source.index; i++) {
+        for (var placed = 0; placed < moves.get(i).count; placed++) {
+          click(context, moves.get(i).destination, 1, ContainerInput.PICKUP);
+        }
+      }
     }
   }
 
@@ -1314,15 +1365,7 @@ public final class InventoryServiceImpl
         area(context.layout, slot.index)
       ))
       .toList();
-    var plan = planMoves(sources, destinations, count);
-    for (var move : plan) {
-      moveExact(
-        context,
-        context.menu.getSlot(move.source),
-        context.menu.getSlot(move.destination),
-        move.count
-      );
-    }
+    applyMoves(context, planMoves(sources, destinations, count));
   }
 
   private static boolean matchesArea(
