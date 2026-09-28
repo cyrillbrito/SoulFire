@@ -32,6 +32,16 @@ private class FabricSystemLibrariesArgumentProvider(
   }
 }
 
+// Mockito's inline mock maker needs its agent loaded at startup on Java 21+.
+private class JavaAgentArgumentProvider(
+  @get:Classpath
+  val agent: FileCollection
+) : CommandLineArgumentProvider {
+  override fun asArguments(): Iterable<String> = listOf("-javaagent:${agent.singleFile.absolutePath}")
+}
+
+val mockitoAgent = configurations.create("mockitoAgent")
+
 dependencies {
   libs.bundles.bom.get().forEach { api(platform(it)) }
 
@@ -89,6 +99,10 @@ dependencies {
   testRuntimeOnly(libs.junit.launcher)
   testRuntimeOnly(libs.fabric.loader.junit)
   testImplementation(libs.junit)
+  testImplementation(libs.mockito)
+  mockitoAgent(libs.mockito) {
+    isTransitive = false
+  }
 
   jooqCodegen(libs.jooq.codegen)
   jooqCodegen(libs.jooq.meta.extensions)
@@ -223,6 +237,7 @@ tasks {
     systemProperty("fabric.debug.disableModIds", "viafabricplus,viafabricplus-api,viafabricplus-visuals,viafabricplus-bedrock")
     jvmArgs("--enable-native-access=ALL-UNNAMED")
     jvmArgumentProviders.add(FabricSystemLibrariesArgumentProvider(configurations.testRuntimeClasspath.get()))
+    jvmArgumentProviders.add(JavaAgentArgumentProvider(mockitoAgent))
   }
 
   processIncludeJars {

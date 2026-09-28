@@ -68,6 +68,7 @@ import net.minecraft.network.protocol.game.ClientboundForgetLevelChunkPacket;
 import net.minecraft.network.protocol.game.ClientboundGameEventPacket;
 import net.minecraft.network.protocol.game.ClientboundLevelChunkWithLightPacket;
 import net.minecraft.network.protocol.game.ClientboundLevelParticlesPacket;
+import net.minecraft.network.protocol.game.ClientboundPlayerCombatKillPacket;
 import net.minecraft.network.protocol.game.ClientboundPlayerInfoRemovePacket;
 import net.minecraft.network.protocol.game.ClientboundPlayerInfoUpdatePacket;
 import net.minecraft.network.protocol.game.ClientboundResetScorePacket;
@@ -390,7 +391,7 @@ public final class BotLiveServiceImpl extends BotLiveServiceGrpc.BotLiveServiceI
     var lastEntities = new AtomicReference<Map<Integer, ObservedEntity>>(Map.of());
     var lastEntityScan = new AtomicLong();
     var spawnedConnection = new AtomicReference<BotConnection>(null);
-    var dead = new AtomicReference<Boolean>(null);
+    var deaths = new BotDeathTracker();
     var cleanupActions = new CopyOnWriteArrayList<Runnable>();
     Runnable cleanup = () -> {
       if (!closed.compareAndSet(false, true)) {
@@ -450,7 +451,7 @@ public final class BotLiveServiceImpl extends BotLiveServiceGrpc.BotLiveServiceI
         lastState,
         lastInventory,
         spawnedConnection,
-        dead);
+        deaths);
       if (filter.getIncludeEntityEvents()) {
         emitEntityChanges(
           current,
@@ -496,7 +497,7 @@ public final class BotLiveServiceImpl extends BotLiveServiceGrpc.BotLiveServiceI
       lastInventory.set(null);
       lastEntities.set(Map.of());
       spawnedConnection.set(null);
-      dead.set(null);
+      deaths.reset();
       eventContext.newEpoch();
       if (filter.getIncludeLifecycle()) {
         emitLifecycle(
@@ -532,7 +533,7 @@ public final class BotLiveServiceImpl extends BotLiveServiceGrpc.BotLiveServiceI
         lastState,
         lastInventory,
         spawnedConnection,
-        dead);
+        deaths);
     };
     register(cleanupActions, BotPostTickEvent.class, stateListener);
 
@@ -554,9 +555,34 @@ public final class BotLiveServiceImpl extends BotLiveServiceGrpc.BotLiveServiceI
       lastInventory.set(null);
       lastEntities.set(Map.of());
       spawnedConnection.set(null);
-      dead.set(null);
+      deaths.reset();
     };
     register(cleanupActions, BotDisconnectedEvent.class, disconnectListener);
+
+    if (filter.getIncludeLifecycle()) {
+      // Deaths are also seen per tick, but the bot can respawn before the next
+      // tick: see BotDeathTracker.
+      Consumer<BotPacketPreReceiveEvent> deathListener = event -> {
+        if (
+          !matches(event.connection(), instance, botId)
+            || !(event.packet() instanceof ClientboundPlayerCombatKillPacket kill)
+        ) {
+          return;
+        }
+        var player = event.connection().minecraft().player;
+        if (player == null || kill.playerId() != player.getId()) {
+          return;
+        }
+        if (deaths.onKill(player)) {
+          emitLifecycle(
+            serverObserver,
+            closed,
+            BotLifecycleKind.BOT_LIFECYCLE_DIED,
+            kill.message().getString());
+        }
+      };
+      register(cleanupActions, BotPacketPreReceiveEvent.class, deathListener);
+    }
 
     if (filter.getIncludeChat()) {
       Consumer<ChatMessageReceiveEvent> chatListener = event -> {
@@ -777,7 +803,7 @@ public final class BotLiveServiceImpl extends BotLiveServiceGrpc.BotLiveServiceI
     AtomicReference<BotLiveState> lastState,
     AtomicReference<BotInventoryStateResponse> lastInventory,
     AtomicReference<BotConnection> spawnedConnection,
-    AtomicReference<Boolean> dead
+    BotDeathTracker deaths
   ) {
     try {
       var snapshot = callInBotContext(connection, () -> {
@@ -791,7 +817,7 @@ public final class BotLiveServiceImpl extends BotLiveServiceGrpc.BotLiveServiceI
           filter.getIncludeInventory()
             ? BotServiceImpl.buildInventoryStatePublic(minecraft, player, false)
             : null,
-          player.isDeadOrDying());
+          deaths.onTick(player));
       });
       if (snapshot == null) {
         return;
@@ -816,17 +842,9 @@ public final class BotLiveServiceImpl extends BotLiveServiceGrpc.BotLiveServiceI
         emitLifecycle(observer, closed, BotLifecycleKind.BOT_LIFECYCLE_SPAWNED, null);
       }
 
-      var previousDead = dead.getAndSet(snapshot.dead());
-      if (filter.getIncludeLifecycle()
-        && previousDead != null
-        && previousDead != snapshot.dead()) {
-        emitLifecycle(
-          observer,
-          closed,
-          snapshot.dead()
-            ? BotLifecycleKind.BOT_LIFECYCLE_DIED
-            : BotLifecycleKind.BOT_LIFECYCLE_RESPAWNED,
-          null);
+      var deathChange = snapshot.deathChange();
+      if (filter.getIncludeLifecycle() && deathChange != null) {
+        emitLifecycle(observer, closed, deathChange, null);
       }
 
       if (snapshot.inventory() != null) {
@@ -1618,7 +1636,7 @@ public final class BotLiveServiceImpl extends BotLiveServiceGrpc.BotLiveServiceI
   private record TickSnapshot(
     BotLiveState state,
     @Nullable BotInventoryStateResponse inventory,
-    boolean dead
+    @Nullable BotLifecycleKind deathChange
   ) {}
 
   private record ObservedEntity(
