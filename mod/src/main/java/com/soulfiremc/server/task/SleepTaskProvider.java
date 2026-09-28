@@ -57,6 +57,9 @@ public final class SleepTaskProvider implements BotTaskProvider<SleepTask> {
   private static final int DEFAULT_RETRY_INTERVAL_TICKS = 20;
   private static final int MAX_RETRY_INTERVAL_TICKS = 1_200;
   private static final int CONFIRMATION_TIMEOUT_TICKS = 100;
+  private static final int BED_APPROACH_RADIUS = 2;
+  private static final double SLEEP_RANGE_HORIZONTAL = 2.5;
+  private static final double SLEEP_RANGE_VERTICAL = 1.5;
   private static final Set<ControlResource> RESOURCES = Set.of(
     ControlResource.MOVEMENT,
     ControlResource.ROTATION,
@@ -132,6 +135,16 @@ public final class SleepTaskProvider implements BotTaskProvider<SleepTask> {
         )
         .asRuntimeException();
     }
+  }
+
+  /// The server refuses to let a player sleep more than 3 blocks
+  /// (horizontally, 2 vertically) from the bed's bottom center: "the bed is
+  /// too far away". Stay half a block inside that.
+  static boolean inSleepRange(Vec3 position, BlockPos bed) {
+    var center = Vec3.atBottomCenterOf(bed);
+    return Math.abs(position.x - center.x) <= SLEEP_RANGE_HORIZONTAL
+      && Math.abs(position.y - center.y) <= SLEEP_RANGE_VERTICAL
+      && Math.abs(position.z - center.z) <= SLEEP_RANGE_HORIZONTAL;
   }
 
   private static BlockPos toBlockPos(BlockPosition position) {
@@ -232,7 +245,7 @@ public final class SleepTaskProvider implements BotTaskProvider<SleepTask> {
     private void navigate() {
       var target = Objects.requireNonNull(bed);
       var player = requirePlayer();
-      if (player.position().distanceToSqr(Vec3.atCenterOf(target)) <= 16) {
+      if (inSleepRange(player.position(), target)) {
         stopPath(ControlStopReason.CANCELLED, null);
         transition(Stage.INTERACT, "Entering bed");
         return;
@@ -240,7 +253,7 @@ public final class SleepTaskProvider implements BotTaskProvider<SleepTask> {
       if (path == null) {
         path = PathExecutor.createPathfinding(
           context.bot(),
-          new CloseToPosGoal(SFVec3i.fromInt(target), 3),
+          new CloseToPosGoal(SFVec3i.fromInt(target), BED_APPROACH_RADIUS),
           constraint
         );
         path.onStarted();
@@ -275,7 +288,7 @@ public final class SleepTaskProvider implements BotTaskProvider<SleepTask> {
       var target = Objects.requireNonNull(bed);
       requireBed(target);
       var player = requirePlayer();
-      if (player.position().distanceToSqr(Vec3.atCenterOf(target)) > 36) {
+      if (!inSleepRange(player.position(), target)) {
         transition(Stage.NAVIGATE, "Returning to bed");
         return;
       }
@@ -342,6 +355,9 @@ public final class SleepTaskProvider implements BotTaskProvider<SleepTask> {
       stageTicks = 1;
     }
 
+    /// `BlockPos.betweenClosed` reuses one mutable position for every
+    /// element, so each match is copied before `min` keeps a reference to it.
+    /// Otherwise the result is whatever position the iteration ended on.
     private @Nullable BlockPos nearestBed() {
       var level = Objects.requireNonNull(context.bot().minecraft().level);
       var origin = requirePlayer().blockPosition();
@@ -361,9 +377,9 @@ public final class SleepTaskProvider implements BotTaskProvider<SleepTask> {
         .filter(level::hasChunkAt)
         .filter(position ->
           level.getBlockState(position).getBlock() instanceof BedBlock)
+        .map(BlockPos::immutable)
         .min(Comparator.comparingDouble(position ->
           position.distSqr(origin)))
-        .map(BlockPos::immutable)
         .orElse(null);
     }
 
