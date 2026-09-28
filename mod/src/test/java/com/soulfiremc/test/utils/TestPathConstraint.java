@@ -34,7 +34,8 @@ public final class TestPathConstraint implements DelegatePathConstraint {
     50,     // maxEnemyPenalty
     2,      // breakBlockPenalty
     5,      // placeBlockPenalty
-    180     // expireTimeout
+    180,    // expireTimeout
+    1.2     // maximumQualityBound
   );
 
   private TestPathConstraint() {}

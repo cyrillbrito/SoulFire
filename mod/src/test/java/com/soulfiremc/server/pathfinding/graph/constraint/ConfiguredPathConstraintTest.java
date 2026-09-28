@@ -56,6 +56,36 @@ final class ConfiguredPathConstraintTest {
     assertEquals(1.5, configured.maximumQualityBound());
   }
 
+  @Test
+  void theDelegatesOwnSearchModeKeepsTheDelegatesBound() {
+    var delegate = new DelegatePathConstraint() {
+      @Override
+      public PathConstraint delegate() {
+        return TestPathConstraint.INSTANCE;
+      }
+
+      @Override
+      public double maximumQualityBound() {
+        return 2.5;
+      }
+    };
+    var configured = new ConfiguredPathConstraint(
+      delegate,
+      OptionalDouble.empty(),
+      OptionalDouble.empty(),
+      OptionalInt.empty(),
+      Optional.empty(),
+      Optional.of(RouteSearchMode.NORMAL),
+      OptionalDouble.empty(),
+      OptionalInt.empty(),
+      OptionalInt.empty(),
+      OptionalInt.empty(),
+      Optional.empty()
+    );
+
+    assertEquals(2.5, configured.maximumQualityBound());
+  }
+
   private static ConfiguredPathConstraint configured(
     Optional<Boolean> sprint
   ) {

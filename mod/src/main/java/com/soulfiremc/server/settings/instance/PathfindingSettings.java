@@ -17,6 +17,7 @@
  */
 package com.soulfiremc.server.settings.instance;
 
+import com.soulfiremc.server.pathfinding.RouteSearchMode;
 import com.soulfiremc.server.settings.lib.SettingsObject;
 import com.soulfiremc.server.settings.lib.SettingsSource;
 import com.soulfiremc.server.settings.property.*;
@@ -52,6 +53,27 @@ public final class PathfindingSettings implements SettingsObject {
       .uiName("Avoid Harmful Entities")
       .description("Add a penalty to paths that go near harmful entities like hostile mobs")
       .defaultValue(true)
+      .build();
+  public static final BooleanProperty<SettingsSource.Bot> AVOID_FLUIDS =
+    ImmutableBooleanProperty.<SettingsSource.Bot>builder()
+            .sourceType(SettingsSource.Bot.INSTANCE)
+      .namespace(NAMESPACE)
+      .key("avoid-fluids")
+      .uiName("Avoid Fluids")
+      .description("Keep routes out of water and lava, unless a request sets avoid_fluids itself")
+      .defaultValue(false)
+      .build();
+  public static final DoubleProperty<SettingsSource.Bot> MAXIMUM_QUALITY_BOUND =
+    ImmutableDoubleProperty.<SettingsSource.Bot>builder()
+            .sourceType(SettingsSource.Bot.INSTANCE)
+      .namespace(NAMESPACE)
+      .key("maximum-quality-bound")
+      .uiName("Maximum Quality Bound")
+      .description("Largest accepted route-quality bound in the normal search mode, unless a request sets its own. Higher accepts longer routes instead of throwing away a route the search found but couldn't prove short enough")
+      .defaultValue(RouteSearchMode.NORMAL.defaultQualityBound())
+      .minValue(1.0d)
+      .maxValue(RouteSearchMode.NORMAL.initialEpsilon())
+      .stepValue(0.1d)
       .build();
   public static final IntProperty<SettingsSource.Bot> MAX_ENEMY_PENALTY =
     ImmutableIntProperty.<SettingsSource.Bot>builder()

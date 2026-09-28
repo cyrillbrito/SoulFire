@@ -68,7 +68,10 @@ public record ConfiguredPathConstraint(
     if (configuredMaximumQualityBound.isPresent()) {
       return configuredMaximumQualityBound.getAsDouble();
     }
+    // Asking for the mode the delegate already uses keeps the delegate's
+    // bound (the bot's setting for the normal mode).
     return configuredSearchMode
+      .filter(mode -> mode != delegate.searchMode())
       .map(RouteSearchMode::defaultQualityBound)
       .orElseGet(delegate::maximumQualityBound);
   }

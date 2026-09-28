@@ -58,6 +58,7 @@ public final class PathConstraintImpl implements PathConstraint {
   private final int breakBlockPenalty;
   private final int placeBlockPenalty;
   private final int expireTimeout;
+  private final double maximumQualityBound;
   private final CachedLazyObject<List<EntityRangeData>> unfriendlyEntities = new CachedLazyObject<>(this::getUnfriendlyEntitiesExpensive, 10, TimeUnit.SECONDS);
 
   public PathConstraintImpl(
@@ -69,7 +70,8 @@ public final class PathConstraintImpl implements PathConstraint {
     int maxEnemyPenalty,
     int breakBlockPenalty,
     int placeBlockPenalty,
-    int expireTimeout) {
+    int expireTimeout,
+    double maximumQualityBound) {
     this.entity = entity;
     this.levelHeightAccessor = levelHeightAccessor;
     this.allowBreakingUndiggable = allowBreakingUndiggable;
@@ -79,6 +81,7 @@ public final class PathConstraintImpl implements PathConstraint {
     this.breakBlockPenalty = breakBlockPenalty;
     this.placeBlockPenalty = placeBlockPenalty;
     this.expireTimeout = expireTimeout;
+    this.maximumQualityBound = maximumQualityBound;
   }
 
   public PathConstraintImpl(BotConnection botConnection) {
@@ -102,7 +105,8 @@ public final class PathConstraintImpl implements PathConstraint {
       settingsSource.get(PathfindingSettings.MAX_ENEMY_PENALTY),
       settingsSource.get(PathfindingSettings.BREAK_BLOCK_PENALTY),
       settingsSource.get(PathfindingSettings.PLACE_BLOCK_PENALTY),
-      settingsSource.get(PathfindingSettings.EXPIRE_TIMEOUT)
+      settingsSource.get(PathfindingSettings.EXPIRE_TIMEOUT),
+      settingsSource.get(PathfindingSettings.MAXIMUM_QUALITY_BOUND)
     );
   }
 
@@ -212,6 +216,13 @@ public final class PathConstraintImpl implements PathConstraint {
   @Override
   public int expireTimeout() {
     return expireTimeout;
+  }
+
+  /// The bound for this constraint's search mode, which is always the normal
+  /// one: a request that picks another mode gets that mode's own bound.
+  @Override
+  public double maximumQualityBound() {
+    return maximumQualityBound;
   }
 
 

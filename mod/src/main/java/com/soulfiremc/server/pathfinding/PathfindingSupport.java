@@ -41,6 +41,7 @@ import com.soulfiremc.server.pathfinding.graph.constraint.NoBlockPlacingConstrai
 import com.soulfiremc.server.pathfinding.graph.constraint.PathConstraint;
 import com.soulfiremc.server.pathfinding.graph.constraint.PathConstraintImpl;
 import com.soulfiremc.server.pathfinding.graph.constraint.PathYRangeConstraint;
+import com.soulfiremc.server.settings.instance.PathfindingSettings;
 import com.soulfiremc.server.util.BlockItems;
 import com.soulfiremc.server.util.SFItemHelpers;
 import io.grpc.Status;
@@ -350,7 +351,10 @@ public final class PathfindingSupport {
     if (!options.getAllowPlacing()) {
       constraint = new NoBlockPlacingConstraint(constraint);
     }
-    if (options.getAvoidFluids()) {
+    var avoidFluids = options.hasAvoidFluids()
+      ? options.getAvoidFluids()
+      : bot.settingsSource().get(PathfindingSettings.AVOID_FLUIDS);
+    if (avoidFluids) {
       constraint = AvoidFluidConstraint.forPlayer(
         constraint,
         bot.minecraft().player
