@@ -57,9 +57,17 @@ async function containerRunning() {
   return r?.stdout.trim() === "true";
 }
 
-/** Starts the server, or reuses the one left running by an earlier run. */
+/** The host address the running container publishes the server on, e.g. `127.0.0.1:25566`. */
+async function publishedAddress() {
+  const r = await run("docker", ["port", CONTAINER, "25565/tcp"]).catch(() => null);
+  return r?.stdout.trim();
+}
+
+/** Starts the server, or reuses the one left running by an earlier run (on the same port). */
 export async function startMinecraft({ fresh }: { fresh: boolean }) {
-  if (fresh) await stopMinecraft();
+  if (fresh || ((await containerRunning()) && (await publishedAddress()) !== `127.0.0.1:${MINECRAFT_PORT}`)) {
+    await stopMinecraft();
+  }
   if (await containerRunning()) {
     console.log(`[minecraft] reusing container ${CONTAINER}`);
   } else {
@@ -164,7 +172,7 @@ const BOT_SETTINGS: Record<string, Record<string, ReturnType<typeof value>>> = {
 
 /**
  * Starts SoulFire from the jar, points a fresh instance at the Minecraft server, and brings the bot
- * in. SoulFire's console goes to `logFile`.
+ * in. SoulFire's console goes to `logFile`. If a step after the start fails, SoulFire is stopped.
  */
 export async function startSoulFire(jarPath: string, minecraft: { host: string; port: number }, logFile: string) {
   console.log(`[soulfire] starting ${path.relative(REPO_DIR, jarPath)}...`);
@@ -180,7 +188,16 @@ export async function startSoulFire(jarPath: string, minecraft: { host: string; 
     onLog: (line) => appendFileSync(logFile, line + "\n"),
   });
   console.log(`[soulfire] ready in ${((Date.now() - started) / 1000).toFixed(1)}s`);
+  try {
+    return await startBot(soulfire, minecraft);
+  } catch (e) {
+    await soulfire.close().catch(() => {});
+    throw e;
+  }
+}
 
+/** Points a fresh instance at the Minecraft server and brings the bot in. */
+async function startBot(soulfire: Awaited<ReturnType<typeof SoulFire.install>>, minecraft: { host: string; port: number }) {
   // SoulFire keeps its instances in its database: start from a clean one each run.
   for (const old of await soulfire.instances()) {
     if (old.friendlyName === INSTANCE_NAME) await soulfire.instance(old.id).delete();

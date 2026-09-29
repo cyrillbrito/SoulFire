@@ -32,6 +32,7 @@ const tests: E2ETest[] = [];
 for (const file of readdirSync(path.join(E2E_DIR, "tests")).filter((f) => f.endsWith(".ts")).sort()) {
   tests.push((await import(path.join(E2E_DIR, "tests", file))).default);
 }
+if (!tests.length) throw new Error("no tests in tests/");
 const selected = names.length ? tests.filter((t) => names.includes(t.name)) : tests;
 const unknown = names.filter((n) => !tests.some((t) => t.name === n));
 if (unknown.length) throw new Error(`no such test: ${unknown.join(", ")} (have: ${tests.map((t) => t.name).join(", ")})`);
@@ -43,13 +44,14 @@ const runDir = path.join(E2E_DIR, "runs", new Date().toISOString().replace(/[:.]
 mkdirSync(runDir, { recursive: true });
 console.log(`[e2e] logs in ${path.relative(process.cwd(), runDir)}`);
 
-const started = Date.now();
-const minecraft = await startMinecraft({ fresh: flags.fresh });
-const soulfire = await startSoulFire(jar, minecraft, path.join(runDir, "soulfire.log"));
-console.log(`[e2e] set up in ${((Date.now() - started) / 1000).toFixed(1)}s\n`);
-
 let failed = 0;
+let soulfire: Awaited<ReturnType<typeof startSoulFire>> | undefined;
 try {
+  const started = Date.now();
+  const minecraft = await startMinecraft({ fresh: flags.fresh });
+  soulfire = await startSoulFire(jar, minecraft, path.join(runDir, "soulfire.log"));
+  console.log(`[e2e] set up in ${((Date.now() - started) / 1000).toFixed(1)}s\n`);
+
   for (const test of selected) {
     const t0 = Date.now();
     try {
@@ -61,8 +63,10 @@ try {
     }
   }
 } finally {
-  await soulfire.stop();
-  await saveMinecraftLog(path.join(runDir, "minecraft.log"));
+  // Every step runs even if one before it fails.
+  const report = (step: string) => (e: unknown) => console.log(`[e2e] ${step} failed: ${e instanceof Error ? e.message : e}`);
+  await soulfire?.stop().catch(report("stopping SoulFire"));
+  await saveMinecraftLog(path.join(runDir, "minecraft.log")).catch(report("saving the Minecraft log"));
   if (flags.stop) await stopMinecraft();
 }
 console.log(`\n${selected.length - failed}/${selected.length} passed`);
