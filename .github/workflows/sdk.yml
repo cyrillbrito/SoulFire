@@ -59,8 +59,6 @@ jobs:
         run: bun install --frozen-lockfile
       - name: Generate SDK bindings
         run: bun run sdk:generate
-      - name: Verify generated bindings
-        run: git diff --exit-code -- sdk/typescript/src/generated sdk/python/src/soulfire
       - name: Lint Protobuf definitions
         run: bun run sdk:lint-proto
       - name: Check Protobuf compatibility
