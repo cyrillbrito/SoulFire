@@ -147,6 +147,8 @@ message EntitySnapshot {
   optional ItemStackSnapshot item = 21;
   bool alive = 22;
   google.protobuf.Struct metadata = 23;
+  // For ageable mobs, as the client sees it: -1 for a baby, 1 for an adult.
+  // The real age and the breeding cooldown are only known to the server.
   optional int32 age_ticks = 24;
   optional bool tamed = 25;
   // Client-observable aggression state. This is true while a mob exposes an
