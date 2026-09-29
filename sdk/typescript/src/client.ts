@@ -2207,6 +2207,32 @@ export class SoulFireBot {
   }
 
   /**
+   * Clicks a button of the open container: an enchantment option (0-2), a
+   * stonecutter recipe, a loom pattern, a lectern's page buttons. The open
+   * container's `layout.buttons` lists them. Queued for the next game tick:
+   * refresh the container to see the result.
+   */
+  public clickContainerButton(
+    buttonId: number,
+    options?: CallOptions,
+  ): Effect.Effect<void, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const response = yield* rpc("SoulFireBot.clickContainerButton", (signal) =>
+        this.botClient.clickContainerButton(
+          { instanceId: this.instanceId, botId: this.id, buttonId },
+          withSignal(this.#actionOptions(options), signal),
+        ),
+      );
+      yield* Effect.try({
+        try: () =>
+          requireSuccess(response, "Clicking the container button failed"),
+        catch: (cause) =>
+          operationError("SoulFireBot.clickContainerButton", cause),
+      });
+    });
+  }
+
+  /**
    * The server dialog on screen (Minecraft 1.21.6+), if any.
    */
   public dialog(
