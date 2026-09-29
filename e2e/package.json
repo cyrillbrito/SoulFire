@@ -8,7 +8,9 @@
   },
   "dependencies": {
     "@bufbuild/protobuf": "2.15.0",
-    "@soulfiremc/sdk": "workspace:*"
+    "@effect/platform-node": "0.108.2",
+    "@soulfiremc/sdk": "workspace:*",
+    "effect": "3.22.2"
   },
   "devDependencies": {
     "@types/node": "26.6.3",
