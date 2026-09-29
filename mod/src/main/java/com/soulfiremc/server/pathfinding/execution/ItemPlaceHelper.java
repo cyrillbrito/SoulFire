@@ -30,11 +30,15 @@ import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.inventory.ContainerInput;
 import net.minecraft.world.inventory.InventoryMenu;
+import net.minecraft.world.inventory.Slot;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.Blocks;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
+import java.util.function.ToIntFunction;
 
 @Slf4j
 public final class ItemPlaceHelper {
@@ -127,48 +131,75 @@ public final class ItemPlaceHelper {
 
   public static boolean placeBestToolInHand(BotConnection connection, SFVec3i blockPosition) {
     var player = connection.minecraft().player;
-    var playerInventory = player.inventoryMenu;
     var level = connection.minecraft().level;
-
-    ItemStack bestItemStack = null;
-    var bestCost = Integer.MAX_VALUE;
-    var sawEmpty = false;
-    for (var slot : playerInventory.slots) {
-      var slotItem = slot.getItem();
-      if (slotItem.isEmpty()) {
-        if (sawEmpty) {
-          continue;
-        }
-
-        sawEmpty = true;
-      }
-
-      var optionalBlock = level.getBlockState(blockPosition.toBlockPos());
-      if (optionalBlock.getBlock() == Blocks.VOID_AIR) {
-        throw new IllegalStateException("Block at %s is not loaded".formatted(blockPosition));
-      }
-
-      var cost =
-        Costs.getRequiredMiningTicks(player, slotItem, optionalBlock)
-          .ticks();
-
-      if (cost < bestCost || (slotItem.isEmpty() && cost == bestCost)) {
-        bestCost = cost;
-        bestItemStack = slotItem;
-      }
+    var blockState = level.getBlockState(blockPosition.toBlockPos());
+    if (blockState.getBlock() == Blocks.VOID_AIR) {
+      throw new IllegalStateException("Block at %s is not loaded".formatted(blockPosition));
     }
 
-    // Our hand is the best tool
-    if (bestItemStack == null) {
-      return true;
-    }
-
-    var finalBestItemStack = bestItemStack;
-    placeInHand(connection.minecraft().gameMode, player,
-      SFInventoryHelpers.findMatchingSlotForAction(player.getInventory(), playerInventory,
-          slot -> ItemStack.isSameItemSameComponents(slot, finalBestItemStack))
-        .orElseThrow(() -> new IllegalStateException("Failed to find item stack to use")));
+    var slot = bestToolSlot(
+      player.inventoryMenu.slots.stream().map(Slot::getItem).toList(),
+      SFInventoryHelpers.getSelectedSlot(player.getInventory()),
+      stack -> Costs.getRequiredMiningTicks(player, stack, blockState).ticks()
+    );
+    placeInHand(connection.minecraft().gameMode, player, slot);
     return true;
+  }
+
+  /// The player-menu slot to hold for mining (`menuItems` indexed like the
+  /// player menu, `selectedSlot` the held hotbar slot in it): the fastest item
+  /// in the hotbar or the inventory, else an empty hand, else what is held (a
+  /// full inventory: anything that isn't a faster tool mines at hand speed).
+  /// An empty slot beats a tool that is no faster, to spare its durability.
+  ///
+  /// Never the off-hand, the armor or the crafting grid. Taking the off-hand
+  /// (even an empty one, as "the empty hand") swaps what you hold into it:
+  /// the logs you were chopping, which every log picked up after then tops
+  /// up, out of reach of deposits.
+  static int bestToolSlot(
+    List<ItemStack> menuItems,
+    int selectedSlot,
+    ToIntFunction<ItemStack> miningTicks
+  ) {
+    var candidates = mainHandCandidates(selectedSlot);
+    var bestSlot = -1;
+    var bestCost = miningTicks.applyAsInt(ItemStack.EMPTY);
+    for (var slot : candidates) {
+      var stack = menuItems.get(slot);
+      if (stack.isEmpty()) {
+        continue;
+      }
+      var cost = miningTicks.applyAsInt(stack);
+      if (cost < bestCost) {
+        bestCost = cost;
+        bestSlot = slot;
+      }
+    }
+    if (bestSlot >= 0) {
+      return bestSlot;
+    }
+    for (var slot : candidates) {
+      if (menuItems.get(slot).isEmpty()) {
+        return slot;
+      }
+    }
+    return selectedSlot;
+  }
+
+  /// The slots an item for the main hand is taken from, in order: the held
+  /// one, the rest of the hotbar, the inventory.
+  private static List<Integer> mainHandCandidates(int selectedSlot) {
+    var slots = new ArrayList<Integer>();
+    slots.add(selectedSlot);
+    for (var slot = InventoryMenu.USE_ROW_SLOT_START; slot < InventoryMenu.USE_ROW_SLOT_END; slot++) {
+      if (slot != selectedSlot) {
+        slots.add(slot);
+      }
+    }
+    for (var slot = InventoryMenu.INV_SLOT_START; slot < InventoryMenu.INV_SLOT_END; slot++) {
+      slots.add(slot);
+    }
+    return slots;
   }
 
   private static void placeInHand(MultiPlayerGameMode gameMode, LocalPlayer player, int slot) {

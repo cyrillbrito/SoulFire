@@ -1526,6 +1526,14 @@ public final class InventoryServiceImpl
       .orElseThrow(() -> Status.NOT_FOUND
         .withDescription("No matching item is available")
         .asRuntimeException());
+    if (area(context.layout, source.index) == InventoryArea.INVENTORY_AREA_OFFHAND) {
+      // Through an empty hotbar slot: a swap with the held one would put
+      // what you hold into the off-hand.
+      var hotbarIndex = SFInventoryHelpers.hotbarForSwapIn(context.player.getInventory());
+      click(context, source.index, hotbarIndex, ContainerInput.SWAP);
+      context.player.getInventory().setSelectedSlot(hotbarIndex);
+      return;
+    }
     click(context, source.index, selected, ContainerInput.SWAP);
     context.player.getInventory().setSelectedSlot(selected);
   }

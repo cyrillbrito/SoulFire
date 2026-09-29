@@ -89,7 +89,15 @@ public final class TaskInventorySupport {
       return false;
     }
 
-    swapWithSelectedHotbar(bot, inventorySlot);
+    if (inventorySlot == InventoryMenu.SHIELD_SLOT) {
+      // Through an empty hotbar slot: a swap with the held one would put
+      // what you hold into the off-hand.
+      var hotbar = SFInventoryHelpers.hotbarForSwapIn(player.getInventory());
+      swapWithHotbar(bot, inventorySlot, hotbar);
+      player.getInventory().setSelectedSlot(hotbar);
+    } else {
+      swapWithSelectedHotbar(bot, inventorySlot);
+    }
     return selector.test(player.getMainHandItem());
   }
 
