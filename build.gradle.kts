@@ -31,6 +31,12 @@ allprojects {
         includeGroup("net.raphimc")
       }
     }
+    maven("https://stackanvil-maven.pistonmaster.net/") {
+      name = "StackAnvil Repository"
+      content {
+        includeGroup("io.github.stackanvil")
+      }
+    }
     maven("https://jitpack.io") {
       name = "Jitpack Repository"
       content {
@@ -74,6 +80,7 @@ allprojects {
       name = "OpenCollab Snapshot Repository"
       content {
         includeGroup("org.cloudburstmc.netty")
+        includeGroup("dev.opencollab")
       }
     }
     mavenCentral()

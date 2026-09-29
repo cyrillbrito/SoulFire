@@ -3,7 +3,8 @@
   "ignoreDeps": [
     "net.fabricmc:intermediary",
     "eclipse-temurin",
-    "com.viaversion:viafabricplus"
+    "com.viaversion:viafabricplus",
+    "io.github.stackanvil:viafabricplus-bedrock-stackanvil"
   ],
   "packageRules": [
     {
