@@ -1,17 +1,22 @@
-import type {
-  DescMessage,
-  MessageInitShape,
-} from "@bufbuild/protobuf";
+import type { DescMessage, MessageInitShape } from "@bufbuild/protobuf";
 import type { CallOptions, Client } from "@connectrpc/connect";
+import { Effect } from "effect";
+import { operationError, type SoulFireOperationError } from "./errors.js";
+import { rpc, withSignal } from "./transport.js";
 
+import type {
+  BlockSnapshot,
+  EntitySnapshot,
+  PlayerSnapshot,
+} from "./generated/soulfire/domain_pb.js";
 import {
   WorldService,
   type CanSeeBlockRequestSchema,
   type CanSeeBlockResponse,
-  type EstimateExplosionDamageRequestSchema,
-  type EstimateExplosionDamageResponse,
   type EstimateDigTimeRequestSchema,
   type EstimateDigTimeResponse,
+  type EstimateExplosionDamageRequestSchema,
+  type EstimateExplosionDamageResponse,
   type GetWorldBlockRequestSchema,
   type GetWorldBlockResponse,
   type GetWorldEntityRequestSchema,
@@ -23,11 +28,6 @@ import {
   type RaycastRequestSchema,
   type RaycastResponse,
 } from "./generated/soulfire/world_pb.js";
-import type {
-  BlockSnapshot,
-  EntitySnapshot,
-  PlayerSnapshot,
-} from "./generated/soulfire/domain_pb.js";
 
 type BotScoped<T extends DescMessage> = Omit<
   MessageInitShape<T>,
@@ -46,24 +46,37 @@ export class SoulFireWorld {
     private readonly client: Client<typeof WorldService>,
   ) {}
 
-  public async player(options?: CallOptions): Promise<PlayerSnapshot> {
-    const response = await this.client.getPlayerSnapshot(
-      this.scope(),
-      options,
-    );
-    if (response.player === undefined) {
-      throw new Error("SoulFire did not return a player snapshot");
-    }
-    return response.player;
+  public player(
+    options?: CallOptions,
+  ): Effect.Effect<PlayerSnapshot, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const response = yield* rpc("SoulFireWorld.player", (signal) =>
+        this.client.getPlayerSnapshot(
+          this.scope(),
+          withSignal(options, signal),
+        ),
+      );
+      if (response.player === undefined) {
+        return yield* Effect.fail(
+          operationError(
+            "SoulFireWorld.player",
+            new Error("SoulFire did not return a player snapshot"),
+          ),
+        );
+      }
+      return response.player;
+    });
   }
 
   public block(
     request: BotScoped<typeof GetWorldBlockRequestSchema>,
     options?: CallOptions,
-  ): Promise<GetWorldBlockResponse> {
-    return this.client.getWorldBlock(
-      { ...request, ...this.scope() },
-      options,
+  ): Effect.Effect<GetWorldBlockResponse, SoulFireOperationError> {
+    return rpc("SoulFireWorld.block", (signal) =>
+      this.client.getWorldBlock(
+        { ...request, ...this.scope() },
+        withSignal(options, signal),
+      ),
     );
   }
 
@@ -78,20 +91,24 @@ export class SoulFireWorld {
   public queryBlocks(
     request: BotScoped<typeof QueryBlocksRequestSchema>,
     options?: CallOptions,
-  ): Promise<QueryBlocksResponse> {
-    return this.client.queryBlocks(
-      { ...request, ...this.scope() },
-      options,
+  ): Effect.Effect<QueryBlocksResponse, SoulFireOperationError> {
+    return rpc("SoulFireWorld.queryBlocks", (signal) =>
+      this.client.queryBlocks(
+        { ...request, ...this.scope() },
+        withSignal(options, signal),
+      ),
     );
   }
 
   public entity(
     request: BotScoped<typeof GetWorldEntityRequestSchema>,
     options?: CallOptions,
-  ): Promise<GetWorldEntityResponse> {
-    return this.client.getWorldEntity(
-      { ...request, ...this.scope() },
-      options,
+  ): Effect.Effect<GetWorldEntityResponse, SoulFireOperationError> {
+    return rpc("SoulFireWorld.entity", (signal) =>
+      this.client.getWorldEntity(
+        { ...request, ...this.scope() },
+        withSignal(options, signal),
+      ),
     );
   }
 
@@ -103,10 +120,12 @@ export class SoulFireWorld {
   public queryEntities(
     request: BotScoped<typeof QueryEntitiesRequestSchema>,
     options?: CallOptions,
-  ): Promise<QueryEntitiesResponse> {
-    return this.client.queryEntities(
-      { ...request, ...this.scope() },
-      options,
+  ): Effect.Effect<QueryEntitiesResponse, SoulFireOperationError> {
+    return rpc("SoulFireWorld.queryEntities", (signal) =>
+      this.client.queryEntities(
+        { ...request, ...this.scope() },
+        withSignal(options, signal),
+      ),
     );
   }
 
@@ -118,10 +137,12 @@ export class SoulFireWorld {
   public raycast(
     request: BotScoped<typeof RaycastRequestSchema>,
     options?: CallOptions,
-  ): Promise<RaycastResponse> {
-    return this.client.raycast(
-      { ...request, ...this.scope() },
-      options,
+  ): Effect.Effect<RaycastResponse, SoulFireOperationError> {
+    return rpc("SoulFireWorld.raycast", (signal) =>
+      this.client.raycast(
+        { ...request, ...this.scope() },
+        withSignal(options, signal),
+      ),
     );
   }
 
@@ -131,10 +152,12 @@ export class SoulFireWorld {
   public raycastFromPlayer(
     request: PlayerRaycastRequest = {},
     options?: CallOptions,
-  ): Promise<RaycastResponse> {
-    return this.client.raycast(
-      { ...request, ...this.scope() },
-      options,
+  ): Effect.Effect<RaycastResponse, SoulFireOperationError> {
+    return rpc("SoulFireWorld.raycastFromPlayer", (signal) =>
+      this.client.raycast(
+        { ...request, ...this.scope() },
+        withSignal(options, signal),
+      ),
     );
   }
 
@@ -143,15 +166,17 @@ export class SoulFireWorld {
    * `maximumDistance`. `maximumDistance` defaults to 256, which is also the
    * most.
    */
-  public async blockAtCursor(
+  public blockAtCursor(
     maximumDistance = 256,
     options?: CallOptions,
-  ): Promise<BlockSnapshot | undefined> {
-    const response = await this.raycastFromPlayer(
-      { maximumDistance, includeEntities: false },
-      options,
-    );
-    return response.block;
+  ): Effect.Effect<BlockSnapshot | undefined, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const response = yield* this.raycastFromPlayer(
+        { maximumDistance, includeEntities: false },
+        options,
+      );
+      return response.block;
+    });
   }
 
   /**
@@ -159,15 +184,17 @@ export class SoulFireWorld {
    * `maximumDistance` or a block is in the way. `maximumDistance` defaults to
    * 3.5.
    */
-  public async entityAtCursor(
+  public entityAtCursor(
     maximumDistance = 3.5,
     options?: CallOptions,
-  ): Promise<EntitySnapshot | undefined> {
-    const response = await this.raycastFromPlayer(
-      { maximumDistance, includeEntities: true },
-      options,
-    );
-    return response.entity;
+  ): Effect.Effect<EntitySnapshot | undefined, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const response = yield* this.raycastFromPlayer(
+        { maximumDistance, includeEntities: true },
+        options,
+      );
+      return response.entity;
+    });
   }
 
   /**
@@ -179,10 +206,12 @@ export class SoulFireWorld {
   public estimateExplosionDamage(
     request: BotScoped<typeof EstimateExplosionDamageRequestSchema>,
     options?: CallOptions,
-  ): Promise<EstimateExplosionDamageResponse> {
-    return this.client.estimateExplosionDamage(
-      { ...request, ...this.scope() },
-      options,
+  ): Effect.Effect<EstimateExplosionDamageResponse, SoulFireOperationError> {
+    return rpc("SoulFireWorld.estimateExplosionDamage", (signal) =>
+      this.client.estimateExplosionDamage(
+        { ...request, ...this.scope() },
+        withSignal(options, signal),
+      ),
     );
   }
 
@@ -192,10 +221,12 @@ export class SoulFireWorld {
   public canSeeBlock(
     request: BotScoped<typeof CanSeeBlockRequestSchema>,
     options?: CallOptions,
-  ): Promise<CanSeeBlockResponse> {
-    return this.client.canSeeBlock(
-      { ...request, ...this.scope() },
-      options,
+  ): Effect.Effect<CanSeeBlockResponse, SoulFireOperationError> {
+    return rpc("SoulFireWorld.canSeeBlock", (signal) =>
+      this.client.canSeeBlock(
+        { ...request, ...this.scope() },
+        withSignal(options, signal),
+      ),
     );
   }
 
@@ -206,10 +237,12 @@ export class SoulFireWorld {
   public estimateDigTime(
     request: BotScoped<typeof EstimateDigTimeRequestSchema>,
     options?: CallOptions,
-  ): Promise<EstimateDigTimeResponse> {
-    return this.client.estimateDigTime(
-      { ...request, ...this.scope() },
-      options,
+  ): Effect.Effect<EstimateDigTimeResponse, SoulFireOperationError> {
+    return rpc("SoulFireWorld.estimateDigTime", (signal) =>
+      this.client.estimateDigTime(
+        { ...request, ...this.scope() },
+        withSignal(options, signal),
+      ),
     );
   }
 

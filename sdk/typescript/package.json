@@ -30,10 +30,6 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
-    "./promise": {
-      "types": "./dist/promise.d.ts",
-      "import": "./dist/promise.js"
-    },
     "./platform": {
       "types": "./dist/platform.d.ts",
       "import": "./dist/platform.js"
@@ -46,17 +42,9 @@
       "types": "./dist/node.d.ts",
       "import": "./dist/node.js"
     },
-    "./node/promise": {
-      "types": "./dist/node-promise.d.ts",
-      "import": "./dist/node-promise.js"
-    },
     "./bun": {
       "types": "./dist/bun.d.ts",
       "import": "./dist/bun.js"
-    },
-    "./bun/promise": {
-      "types": "./dist/bun-promise.d.ts",
-      "import": "./dist/bun-promise.js"
     },
     "./plugin-generator": {
       "types": "./dist/plugin-generator.d.ts",

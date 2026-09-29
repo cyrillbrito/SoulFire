@@ -1,11 +1,14 @@
 import type { MessageInitShape } from "@bufbuild/protobuf";
 import type { CallOptions, Client } from "@connectrpc/connect";
+import { Effect, Option, Stream } from "effect";
+import {
+  operationError,
+  rpcError,
+  type SoulFireOperationError,
+} from "./errors.js";
+import { rpc, withSignal } from "./transport.js";
 
 import { requireCompletedAction } from "./actions.js";
-import {
-  ChatService,
-  type TabCompleteResponse,
-} from "./generated/soulfire/chat_pb.js";
 import {
   BotEventFilterSchema,
   type BotActionResult,
@@ -13,6 +16,10 @@ import {
   type BotEvent,
   type ChatSource,
 } from "./generated/soulfire/bot_live_pb.js";
+import {
+  ChatService,
+  type TabCompleteResponse,
+} from "./generated/soulfire/chat_pb.js";
 
 export interface ChatMutationOptions {
   call?: CallOptions;
@@ -24,10 +31,7 @@ export interface TabCompleteOptions {
   cursor?: number;
 }
 
-export type ChatMatcher =
-  | string
-  | RegExp
-  | ((event: BotChatEvent) => boolean);
+export type ChatMatcher = string | RegExp | ((event: BotChatEvent) => boolean);
 
 export interface ChatMatch {
   readonly captures: readonly string[];
@@ -41,85 +45,106 @@ export interface WatchChatOptions {
 }
 
 export interface WaitForChatOptions extends WatchChatOptions {
-  readonly signal?: AbortSignal;
   readonly timeoutMs?: number;
 }
 
 type BotEventStream = (
   filter: MessageInitShape<typeof BotEventFilterSchema>,
   options?: CallOptions,
-) => AsyncIterable<BotEvent>;
+) => Stream.Stream<BotEvent, SoulFireOperationError>;
 
 export class SoulFireChat {
   public constructor(
     private readonly instanceId: string,
     private readonly botId: string,
     private readonly client: Client<typeof ChatService>,
-    private readonly actionOptions: (options?: CallOptions) =>
-      CallOptions | undefined,
+    private readonly actionOptions: (
+      options?: CallOptions,
+    ) => CallOptions | undefined,
     private readonly eventStream?: BotEventStream,
   ) {}
 
   /**
    * To public chat. `message` can't be blank or longer than 256 characters.
    */
-  public async send(
+  public send(
     message: string,
     options: ChatMutationOptions = {},
-  ): Promise<BotActionResult> {
-    const response = await this.client.sendPublicChat(
-      {
-        scope: this.scope(),
-        message,
-        ...(options.idempotencyKey === undefined
-          ? {}
-          : { idempotencyKey: options.idempotencyKey }),
-      },
-      this.actionOptions(options.call),
-    );
-    return requireCompletedAction(response.result);
+  ): Effect.Effect<BotActionResult, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const response = yield* rpc("SoulFireChat.send", (signal) =>
+        this.client.sendPublicChat(
+          {
+            scope: this.scope(),
+            message,
+            ...(options.idempotencyKey === undefined
+              ? {}
+              : { idempotencyKey: options.idempotencyKey }),
+          },
+          withSignal(this.actionOptions(options.call), signal),
+        ),
+      );
+      return yield* Effect.try({
+        try: () => requireCompletedAction(response.result),
+        catch: (cause) => operationError("SoulFireChat.send", cause),
+      });
+    });
   }
 
   /**
    * Runs a command; the leading `/` is optional.
    */
-  public async command(
+  public command(
     command: string,
     options: ChatMutationOptions = {},
-  ): Promise<BotActionResult> {
-    const response = await this.client.sendCommand(
-      {
-        scope: this.scope(),
-        command,
-        ...(options.idempotencyKey === undefined
-          ? {}
-          : { idempotencyKey: options.idempotencyKey }),
-      },
-      this.actionOptions(options.call),
-    );
-    return requireCompletedAction(response.result);
+  ): Effect.Effect<BotActionResult, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const response = yield* rpc("SoulFireChat.command", (signal) =>
+        this.client.sendCommand(
+          {
+            scope: this.scope(),
+            command,
+            ...(options.idempotencyKey === undefined
+              ? {}
+              : { idempotencyKey: options.idempotencyKey }),
+          },
+          withSignal(this.actionOptions(options.call), signal),
+        ),
+      );
+      return yield* Effect.try({
+        try: () => requireCompletedAction(response.result),
+        catch: (cause) => operationError("SoulFireChat.command", cause),
+      });
+    });
   }
 
   /**
    * Sends `/msg <recipient> <message>`.
    */
-  public async whisper(
+  public whisper(
     recipient: string,
     message: string,
     options: ChatMutationOptions = {},
-  ): Promise<BotActionResult> {
-    const response = await this.client.sendWhisper(
-      {
-        scope: this.scope(),
-        recipient,
-        message,
-        ...(options.idempotencyKey === undefined
-          ? {}
-          : { idempotencyKey: options.idempotencyKey }),
-      },
-      this.actionOptions(options.call),
-    );
-    return requireCompletedAction(response.result);
+  ): Effect.Effect<BotActionResult, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const response = yield* rpc("SoulFireChat.whisper", (signal) =>
+        this.client.sendWhisper(
+          {
+            scope: this.scope(),
+            recipient,
+            message,
+            ...(options.idempotencyKey === undefined
+              ? {}
+              : { idempotencyKey: options.idempotencyKey }),
+          },
+          withSignal(this.actionOptions(options.call), signal),
+        ),
+      );
+      return yield* Effect.try({
+        try: () => requireCompletedAction(response.result),
+        catch: (cause) => operationError("SoulFireChat.whisper", cause),
+      });
+    });
   }
 
   /**
@@ -129,14 +154,16 @@ export class SoulFireChat {
   public complete(
     input: string,
     options: TabCompleteOptions = {},
-  ): Promise<TabCompleteResponse> {
-    return this.client.tabComplete(
-      {
-        scope: this.scope(),
-        input,
-        ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
-      },
-      options.call,
+  ): Effect.Effect<TabCompleteResponse, SoulFireOperationError> {
+    return rpc("SoulFireChat.complete", (signal) =>
+      this.client.tabComplete(
+        {
+          scope: this.scope(),
+          input,
+          ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
+        },
+        withSignal(options.call, signal),
+      ),
     );
   }
 
@@ -146,101 +173,66 @@ export class SoulFireChat {
    * groups go in `captures` and `groups`. `options.sources` keeps only those
    * sources.
    */
-  public async *watch(
+  public watch(
     matcher: ChatMatcher,
     options: WatchChatOptions = {},
-  ): AsyncIterable<ChatMatch> {
-    if (this.eventStream === undefined) {
-      throw new Error("The bot event stream is unavailable");
-    }
-
-    const sources = options.sources === undefined
-      ? undefined
-      : new Set(options.sources);
-    for await (
-      const envelope of this.eventStream(
-        { includeChat: true },
-        options.call,
-      )
-    ) {
-      if (envelope.event.case !== "chat") {
-        continue;
-      }
-      const event = envelope.event.value;
-      if (sources !== undefined && !sources.has(event.source)) {
-        continue;
-      }
-      const match = matchChat(event, matcher);
-      if (match !== undefined) {
-        yield match;
-      }
-    }
+  ): Stream.Stream<ChatMatch, SoulFireOperationError> {
+    if (this.eventStream === undefined)
+      return Stream.fail(
+        rpcError(
+          "chat.watch",
+          new Error("The bot event stream is unavailable"),
+        ),
+      );
+    const sources =
+      options.sources === undefined ? undefined : new Set(options.sources);
+    return this.eventStream({ includeChat: true }, options.call).pipe(
+      Stream.filterMap((envelope) => {
+        if (
+          envelope.event.case !== "chat" ||
+          (sources !== undefined && !sources.has(envelope.event.value.source))
+        )
+          return Option.none();
+        return Option.fromNullable(matchChat(envelope.event.value, matcher));
+      }),
+    );
   }
 
   /**
    * The next chat event matching `matcher` (as in `watch`). No timeout unless
    * `timeoutMs` is set.
    */
-  public async waitFor(
+  public waitFor(
     matcher: ChatMatcher,
     options: WaitForChatOptions = {},
-  ): Promise<ChatMatch> {
-    const controller = new AbortController();
-    const inputSignals = [options.signal, options.call?.signal].filter(
-      (signal): signal is AbortSignal => signal !== undefined,
+  ): Effect.Effect<ChatMatch, SoulFireOperationError> {
+    const next = this.watch(matcher, options).pipe(
+      Stream.runHead,
+      Effect.flatMap((match) =>
+        Option.isSome(match)
+          ? Effect.succeed(match.value)
+          : Effect.fail(
+              rpcError(
+                "chat.waitFor",
+                new Error("The bot event stream ended before chat matched"),
+              ),
+            ),
+      ),
     );
-    const forwardAbort = (signal: AbortSignal) => {
-      controller.abort(signal.reason);
-    };
-    const listeners = inputSignals.map((signal) => {
-      const listener = () => forwardAbort(signal);
-      if (signal.aborted) {
-        forwardAbort(signal);
-      } else {
-        signal.addEventListener("abort", listener, { once: true });
-      }
-      return { listener, signal };
-    });
-    let timedOut = false;
-    const timeout = options.timeoutMs === undefined
-      ? undefined
-      : setTimeout(() => {
-        timedOut = true;
-        controller.abort();
-      }, options.timeoutMs);
-
-    try {
-      for await (
-        const match of this.watch(matcher, {
-          ...options,
-          call: { ...options.call, signal: controller.signal },
-        })
-      ) {
-        return match;
-      }
-      throw new Error("The bot event stream ended before chat matched");
-    } catch (cause) {
-      if (timedOut) {
-        throw new Error(
-          `Timed out after ${options.timeoutMs} ms waiting for chat`,
-          { cause },
+    return options.timeoutMs === undefined
+      ? next
+      : next.pipe(
+          Effect.timeoutFail({
+            duration: options.timeoutMs,
+            onTimeout: () =>
+              rpcError(
+                "chat.waitFor",
+                new Error(
+                  `Timed out after ${options.timeoutMs} ms waiting for chat`,
+                ),
+              ),
+          }),
         );
-      }
-      if (options.signal?.aborted) {
-        throw options.signal.reason ?? cause;
-      }
-      if (options.call?.signal?.aborted) {
-        throw options.call.signal.reason ?? cause;
-      }
-      throw cause;
-    } finally {
-      if (timeout !== undefined) {
-        clearTimeout(timeout);
-      }
-      for (const { listener, signal } of listeners) {
-        signal.removeEventListener("abort", listener);
-      }
-    }
   }
 
   private scope(): { instanceId: string; botId: string } {

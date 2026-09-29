@@ -39,8 +39,8 @@ operations at the same time. Effect scopes make their lifetime explicit.
 Interruption cancels the active task, resets movement, and releases acquired
 resources. Tagged errors preserve run, bot, phase, and action context.
 
-`@soulfiremc/beat-game/promise` is a facade over this runtime. It exposes
-Promises and async iterables without maintaining a second planner.
+The public API uses Effect. An async host runs one scoped workflow through
+`Effect.runPromise` and supplies its `AbortSignal` at that boundary.
 
 ## Recovery model
 

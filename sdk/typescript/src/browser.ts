@@ -1,27 +1,19 @@
 import * as FetchHttpClient from "@effect/platform/FetchHttpClient";
-import {
-  Effect,
-  Layer,
-  type Scope,
-} from "effect";
+import { Effect, Layer, type Scope } from "effect";
 
 import type { SoulFireOptions } from "./client.js";
 import {
-  SoulFire as UniversalSoulFire,
-  type SoulFireConnectionError,
-  type SoulFireClient,
   SoulFireService,
-} from "./effect-client.js";
+  SoulFire as UniversalSoulFire,
+  type SoulFireClient,
+  type SoulFireConnectionError,
+} from "./index.js";
 
 export * from "./index.js";
 
 function connect(
   options: SoulFireOptions,
-): Effect.Effect<
-  SoulFireClient,
-  SoulFireConnectionError,
-  Scope.Scope
-> {
+): Effect.Effect<SoulFireClient, SoulFireConnectionError, Scope.Scope> {
   return UniversalSoulFire.connectWithHttpClient(options).pipe(
     Effect.provide(FetchHttpClient.layer),
   );

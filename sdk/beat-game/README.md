@@ -1,6 +1,6 @@
 # `@soulfiremc/beat-game`
 
-`@soulfiremc/beat-game` is SoulFire's Effect-first progression application. It
+`@soulfiremc/beat-game` is SoulFire's Effect progression application. It
 composes the official SDK's observations, direct actions, pathfinding,
 control leases, generic tasks, and plugin APIs into checkpointed single-bot
 and multi-bot runs.
@@ -24,7 +24,7 @@ const program = Effect.scoped(
   Effect.gen(function* () {
     const soulfire = yield* SoulFire.connect({
       baseUrl: "https://soulfire.example.com",
-      token: process.env.SOULFIRE_TOKEN,
+      token: "your-api-token",
     });
     const bot = soulfire.instance(instanceId).bot(botId);
     const run = yield* beatGame(bot);
@@ -117,22 +117,20 @@ const run = yield* beatGame(bot, {
 });
 ```
 
-## Promise API
+## Call from an async host
+
+Use the normal entry point. Run connection setup, event consumers, and the
+run handle in one `Effect.scoped` workflow, as shown above. Convert that
+workflow once with `Effect.runPromise`.
+
+Pass your host's `AbortSignal` as the second argument:
 
 ```ts
-import { beatGame } from "@soulfiremc/beat-game/promise";
-
-const run = await beatGame(bot, { checkpointStore });
-
-for await (const event of run.events) {
-  console.log(event.type);
-}
-
-const result = await run.awaitCompletion();
+const result = await Effect.runPromise(program, { signal: request.signal });
 ```
 
-The Promise API wraps the same Effect runtime. It does not contain a second
-planner.
+Cancellation interrupts the run and closes its resources before the Promise
+settles. The former `/promise` entry point is removed.
 
 ## Reusable behavior exports
 
@@ -156,7 +154,6 @@ to core SoulFire RPCs.
 
 - `@soulfiremc/beat-game`: Effect runtime, models, behaviors, in-memory
   checkpoint store, coordinator, driver, errors, and planner functions.
-- `@soulfiremc/beat-game/promise`: Promise lifecycle and async iterables.
 - `@soulfiremc/beat-game/node`: crash-safe JSON checkpoint storage.
 
 See [`docs/beat-game-architecture.md`](../../docs/beat-game-architecture.md)

@@ -1246,10 +1246,7 @@ function liveEnvironmentDriver(
   bot: SoulFireBot,
 ): Effect.Effect<BeatGameDriver, never, Scope.Scope> {
   const fallback = makeSoulFireBeatGameDriver(bot);
-  return Effect.acquireRelease(
-    bot.observe({ filter: { includeEnvironment: true } }),
-    (session) => session.close().pipe(Effect.ignore),
-  ).pipe(
+  return bot.observe({ filter: { includeEnvironment: true } }).pipe(
     Effect.map((session) =>
       makeSoulFireBeatGameDriver(bot, {
         environment: Effect.sync(() => {

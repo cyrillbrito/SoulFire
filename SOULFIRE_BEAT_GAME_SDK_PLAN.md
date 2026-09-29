@@ -240,14 +240,12 @@ The runner ships as a separate first-party package in the same repository:
 
 ```text
 @soulfiremc/sdk
-@soulfiremc/sdk/promise
 @soulfiremc/beat-game
-@soulfiremc/beat-game/promise
 ```
 
 `@soulfiremc/beat-game` depends on the public `@soulfiremc/sdk` package. It does not add game-specific code to the base SDK bundle.
 
-The Effect implementation is canonical. The Promise API is a mechanical facade over the same runtime and state. It must not duplicate planner logic.
+Effect is the sole high-level API. An async host converts a complete scoped workflow with `Effect.runPromise`. The planner and its resource ownership remain in Effect.
 
 ### Public SDK boundary
 
@@ -289,23 +287,17 @@ export const beatGame: (
 ) => Effect.Effect<BeatGameRun, BeatGameError, Scope.Scope>
 ```
 
-### Promise facade
+### Async-host integration
 
-Promise users get the same lifecycle through promises and async iterables:
+Run connection setup and the beat-game run inside one `Effect.scoped`
+workflow. Convert that workflow once at the host boundary:
 
 ```ts
-const run = await beatGame(bot, {
-  checkpointStore: fileCheckpointStore("./runs"),
-})
-
-for await (const event of run.events) {
-  console.log(event)
-}
-
-const result = await run.awaitCompletion()
+const result = await Effect.runPromise(program, { signal: request.signal });
 ```
 
-The facade must pass the same conformance suite as the Effect API.
+The SDK README contains a complete async-host example. Resource ownership
+stays inside Effect until the workflow succeeds, fails, or is interrupted.
 
 ### Reusable behavior programs
 
@@ -650,7 +642,7 @@ Errors include:
 - retryability;
 - underlying cause when available.
 
-The Promise facade exposes equivalent `Error` subclasses.
+Async hosts receive the Effect runtime result at their execution boundary.
 
 ## Events and observability
 
@@ -880,7 +872,7 @@ No implementation begins before this phase is approved.
 - Implement the Effect-first driver.
 - Wrap and compose existing Mineflayer-parity tasks.
 - Implement only the missing game-specific behavior programs from primitives.
-- Implement the Promise facade.
+- Add a scoped async-host example.
 - Add deterministic tests.
 
 ### Phase 4: Build the planner
@@ -930,7 +922,7 @@ The migration is complete only when:
 - portal construction, item throwing, stronghold search, phase planning, recovery, and coordination live in TypeScript;
 - multi-bot coordination works in the first release;
 - every run has an active checkpoint store;
-- Effect is canonical and the Promise facade passes the same conformance suite;
+- Effect is the sole high-level API and scoped host interoperability tests pass;
 - deterministic planner tests pass;
 - protocol contract tests pass;
 - the real process-level smoke test passes;
@@ -948,9 +940,9 @@ Use state streams, keep action calls small, colocate the TypeScript worker with 
 
 Treat the runner as the protocol audit. Add direct observations instead of strategic RPCs.
 
-### TypeScript and Promise implementations drift
+### Duplicate TypeScript implementations drift
 
-Keep one Effect implementation and generate or mechanically wrap the Promise facade. Run shared conformance tests.
+Keep one Effect implementation. Use standard runtime and stream adapters at host boundaries.
 
 ### Restart recovery repeats destructive actions
 

@@ -5,7 +5,11 @@ import type {
 } from "@bufbuild/protobuf";
 import type { Value } from "@bufbuild/protobuf/wkt";
 import type { CallOptions } from "@connectrpc/connect";
+import { Effect, Either, Stream } from "effect";
+import { operationError, type SoulFireOperationError } from "./errors.js";
 
+import type { SoulFireInstance } from "./client.js";
+import type { CapabilitySet } from "./connection.js";
 import type {
   BotConnectionPhase,
   BotDesiredState,
@@ -18,15 +22,7 @@ import type {
   MinecraftAccountProto_AccountTypeProto,
 } from "./generated/soulfire/common_pb.js";
 import type { BotTask, BotTaskEvent } from "./generated/soulfire/task_pb.js";
-import type {
-  SoulFireBot,
-  SoulFireInstance,
-} from "./client.js";
-import type { CapabilitySet } from "./connection.js";
-import type {
-  SoulFireTask,
-  TaskStartOptions,
-} from "./tasks.js";
+import type { SoulFireTask, TaskStartOptions } from "./tasks.js";
 
 export interface FleetPoint {
   x: number;
@@ -60,7 +56,7 @@ export interface FleetSelector {
   requiredCapabilities?: readonly string[];
   predicate?: (
     bot: FleetBot,
-  ) => boolean | Promise<boolean>;
+  ) => boolean | Effect.Effect<boolean, SoulFireOperationError>;
   orderBy?:
     | "configured"
     | "name"
@@ -109,27 +105,22 @@ export interface FleetTaskEvent {
   readonly event: BotTaskEvent;
 }
 
-export type FleetTaskResultValue<
-  Result extends DescMessage | undefined,
-> = Result extends DescMessage ? MessageShape<Result> : BotTask;
+export type FleetTaskResultValue<Result extends DescMessage | undefined> =
+  Result extends DescMessage ? MessageShape<Result> : BotTask;
 
-export type FleetTaskOutcome<
-  Result extends DescMessage | undefined,
-> =
+export type FleetTaskOutcome<Result extends DescMessage | undefined> =
   | {
-    readonly status: "fulfilled";
-    readonly bot: FleetBot;
-    readonly value: FleetTaskResultValue<Result>;
-  }
+      readonly status: "fulfilled";
+      readonly bot: FleetBot;
+      readonly value: FleetTaskResultValue<Result>;
+    }
   | {
-    readonly status: "rejected";
-    readonly bot: FleetBot;
-    readonly error: unknown;
-  };
+      readonly status: "rejected";
+      readonly bot: FleetBot;
+      readonly error: unknown;
+    };
 
-export interface FleetTaskReport<
-  Result extends DescMessage | undefined,
-> {
+export interface FleetTaskReport<Result extends DescMessage | undefined> {
   readonly outcomes: readonly FleetTaskOutcome<Result>[];
   readonly fulfilled: readonly Extract<
     FleetTaskOutcome<Result>,
@@ -143,7 +134,6 @@ export interface FleetTaskReport<
 
 export interface FleetTaskStartOptions extends TaskStartOptions {
   concurrency?: number;
-  signal?: AbortSignal;
 }
 
 export class FleetTaskGroupError<
@@ -168,145 +158,117 @@ export class SoulFireFleetTaskGroup<
   public get size(): number {
     return this.members.length + this.startFailures.length;
   }
-
   public get botIds(): readonly string[] {
     return this.members.map(({ bot }) => bot.id);
   }
-
   public get taskIds(): readonly string[] {
     return this.members.map(({ task }) => task.id);
   }
-
   public task(botId: string): SoulFireTask<Result> | undefined {
     return this.members.find(({ bot }) => bot.id === botId)?.task;
   }
 
-  public async *events(options?: {
+  public events(options?: {
     afterRevision?: bigint;
     call?: CallOptions;
-  }): AsyncIterable<FleetTaskEvent> {
-    const controller = new AbortController();
-    const callSignal = options?.call?.signal;
-    const signal = callSignal === undefined
-      ? controller.signal
-      : AbortSignal.any([controller.signal, callSignal]);
-    const iterators = this.members.map(({ task }) =>
-      task.events({
-        ...(options?.afterRevision === undefined
-          ? {}
-          : { afterRevision: options.afterRevision }),
-        call: { ...options?.call, signal },
-      })[Symbol.asyncIterator]()
+  }): Stream.Stream<FleetTaskEvent, SoulFireOperationError> {
+    return Stream.mergeAll(
+      this.members.map(({ bot, task }) =>
+        task.events(options).pipe(Stream.map((event) => ({ bot, event }))),
+      ),
+      { concurrency: "unbounded", bufferSize: 1 },
     );
-    const pending = new Map<
-      number,
-      Promise<{
-        index: number;
-        result: IteratorResult<BotTaskEvent>;
-      }>
-    >();
-    const requestNext = (index: number): void => {
-      pending.set(
-        index,
-        iterators[index]!.next().then((result) => ({ index, result })),
-      );
-    };
-    iterators.forEach((_iterator, index) => requestNext(index));
-
-    try {
-      while (pending.size > 0) {
-        const { index, result } = await Promise.race(pending.values());
-        if (result.done) {
-          pending.delete(index);
-          continue;
-        }
-        requestNext(index);
-        yield {
-          bot: this.members[index]!.bot,
-          event: result.value,
-        };
-      }
-    } finally {
-      controller.abort();
-      await Promise.allSettled(
-        iterators.map((iterator) => iterator.return?.()),
-      );
-    }
   }
 
-  public async results(options?: {
+  public results(options?: {
     call?: CallOptions;
-  }): Promise<FleetTaskReport<Result>> {
-    const outcomes: FleetTaskOutcome<Result>[] = this.startFailures.map(
-      ({ bot, error }) => ({ status: "rejected", bot, error }),
-    );
-    const settled = await Promise.allSettled(
-      this.members.map(({ task }) => task.result(options)),
-    );
-    settled.forEach((result, index) => {
-      const member = this.members[index]!;
-      outcomes.push(
-        result.status === "fulfilled"
-          ? {
-            status: "fulfilled",
-            bot: member.bot,
-            value: result.value as FleetTaskResultValue<Result>,
-          }
-          : {
-            status: "rejected",
-            bot: member.bot,
-            error: result.reason,
-          },
-      );
-    });
-    return taskReport(outcomes);
-  }
-
-  public async requireResults(options?: {
-    call?: CallOptions;
-  }): Promise<
-    readonly Extract<
-      FleetTaskOutcome<Result>,
-      { status: "fulfilled" }
-    >[]
-  > {
-    const report = await this.results(options);
-    if (report.rejected.length > 0) {
-      throw new FleetTaskGroupError(report);
-    }
-    return report.fulfilled;
-  }
-
-  public async cancel(
-    reason = "",
-    options?: {
-      call?: CallOptions;
-      concurrency?: number;
-    },
-  ): Promise<FleetTaskReport<undefined>> {
-    const settled = await mapConcurrentSettled(
+  }): Effect.Effect<FleetTaskReport<Result>> {
+    return Effect.forEach(
       this.members,
-      options?.concurrency,
-      undefined,
-      ({ task }) => task.cancel(reason, options?.call),
+      ({ bot, task }) =>
+        task.result(options).pipe(
+          Effect.match({
+            onSuccess: (value): FleetTaskOutcome<Result> => ({
+              status: "fulfilled",
+              bot,
+              value,
+            }),
+            onFailure: (error): FleetTaskOutcome<Result> => ({
+              status: "rejected",
+              bot,
+              error,
+            }),
+          }),
+        ),
+      { concurrency: "unbounded" },
+    ).pipe(
+      Effect.map((outcomes) =>
+        taskReport([
+          ...this.startFailures.map(
+            ({ bot, error }): FleetTaskOutcome<Result> => ({
+              status: "rejected",
+              bot,
+              error,
+            }),
+          ),
+          ...outcomes,
+        ]),
+      ),
     );
-    const outcomes: FleetTaskOutcome<undefined>[] = settled.map(
-      (result, index) => {
-        const member = this.members[index]!;
-        return result.status === "fulfilled"
-          ? {
-            status: "fulfilled",
-            bot: member.bot,
-            value: result.value,
-          }
-          : {
-            status: "rejected",
-            bot: member.bot,
-            error: result.reason,
-          };
-      },
+  }
+
+  public requireResults(options?: {
+    call?: CallOptions;
+  }): Effect.Effect<
+    readonly Extract<FleetTaskOutcome<Result>, { status: "fulfilled" }>[],
+    FleetTaskGroupError<Result>
+  > {
+    return this.results(options).pipe(
+      Effect.flatMap((report) =>
+        report.rejected.length > 0
+          ? Effect.fail(new FleetTaskGroupError(report))
+          : Effect.succeed(report.fulfilled),
+      ),
     );
-    return taskReport(outcomes);
+  }
+
+  public cancel(
+    reason = "",
+    options?: { call?: CallOptions; concurrency?: number },
+  ): Effect.Effect<FleetTaskReport<undefined>, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const concurrency = yield* Effect.try({
+        try: () =>
+          Math.max(
+            1,
+            normalizeNonNegativeInteger(
+              options?.concurrency ?? 8,
+              "concurrency",
+            ),
+          ),
+        catch: (cause) => operationError("fleet.cancel", cause),
+      });
+      const outcomes = yield* Effect.forEach(
+        this.members,
+        ({ bot, task }) =>
+          task.cancel(reason, options?.call).pipe(
+            Effect.match({
+              onSuccess: (value): FleetTaskOutcome<undefined> => ({
+                status: "fulfilled",
+                bot,
+                value,
+              }),
+              onFailure: (error): FleetTaskOutcome<undefined> => ({
+                status: "rejected",
+                bot,
+                error,
+              }),
+            }),
+          ),
+        { concurrency },
+      );
+      return taskReport(outcomes);
+    });
   }
 }
 
@@ -316,86 +278,104 @@ export class SoulFireFleet {
     private readonly capabilities?: CapabilitySet,
   ) {}
 
-  public async select(
+  public select(
     selector: FleetSelector = {},
     options?: CallOptions,
-  ): Promise<readonly FleetBot[]> {
-    for (const capability of selector.requiredCapabilities ?? []) {
-      if (this.capabilities === undefined) {
-        throw new Error(
-          "Fleet capability selection requires a negotiated SoulFire connection",
+  ): Effect.Effect<readonly FleetBot[], SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      yield* Effect.try({
+        try: () => {
+          for (const capability of selector.requiredCapabilities ?? []) {
+            if (this.capabilities === undefined)
+              throw new Error(
+                "Fleet capability selection requires a negotiated SoulFire connection",
+              );
+            this.capabilities.require(capability);
+          }
+        },
+        catch: (cause) => operationError("fleet.select", cause),
+      });
+      const [entries, info] = yield* Effect.all(
+        [this.instance.bots(options), this.instance.info(options)],
+        { concurrency: 2 },
+      );
+      const accounts = new Map(
+        (info.config?.accounts ?? []).map((account) => [
+          account.profileId,
+          account,
+        ]),
+      );
+      let bots = entries
+        .map((entry): FleetBot => {
+          const account = accounts.get(entry.profileId);
+          return {
+            id: entry.profileId,
+            entry,
+            ...(account === undefined ? {} : { account }),
+            metadata: metadataRecord(account?.persistentMetadata ?? []),
+          };
+        })
+        .filter((bot) => matchesSelector(bot, selector));
+      if (selector.predicate !== undefined) {
+        const predicate = selector.predicate;
+        bots = yield* Effect.filter(
+          bots,
+          (bot) => {
+            const decision = predicate(bot);
+            return Effect.isEffect(decision)
+              ? decision
+              : Effect.succeed(decision);
+          },
+          { concurrency: "unbounded" },
         );
       }
-      this.capabilities.require(capability);
-    }
-
-    const [entries, info] = await Promise.all([
-      this.instance.bots(options),
-      this.instance.info(options),
-    ]);
-    const accounts = new Map(
-      (info.config?.accounts ?? []).map((account) => [
-        account.profileId,
-        account,
-      ]),
-    );
-    let bots = entries.map((entry) => {
-      const account = accounts.get(entry.profileId);
-      return {
-        id: entry.profileId,
-        entry,
-        ...(account === undefined ? {} : { account }),
-        metadata: metadataRecord(account?.persistentMetadata ?? []),
-      } satisfies FleetBot;
+      return yield* Effect.try({
+        try: () => {
+          orderBots(bots, selector);
+          return selector.limit === undefined
+            ? bots
+            : bots.slice(
+                0,
+                normalizeNonNegativeInteger(selector.limit, "limit"),
+              );
+        },
+        catch: (cause) => operationError("fleet.select", cause),
+      });
     });
-    bots = bots.filter((bot) => matchesSelector(bot, selector));
-
-    if (selector.predicate !== undefined) {
-      const decisions = await Promise.all(
-        bots.map((bot) => selector.predicate!(bot)),
-      );
-      bots = bots.filter((_bot, index) => decisions[index]);
-    }
-
-    orderBots(bots, selector);
-    if (selector.limit !== undefined) {
-      const limit = normalizeNonNegativeInteger(selector.limit, "limit");
-      bots = bots.slice(0, limit);
-    }
-    return bots;
   }
 
-  public async start(
+  public start(
     selector: FleetSelector = {},
     options?: CallOptions,
-  ): Promise<BotStatus[]> {
-    return this.instance.start(
-      { botIds: await this.ids(selector, options) },
-      options,
+  ): Effect.Effect<BotStatus[], SoulFireOperationError> {
+    return this.select(selector, options).pipe(
+      Effect.flatMap((bots) =>
+        this.instance.start({ botIds: bots.map(({ id }) => id) }, options),
+      ),
+    );
+  }
+  public stop(
+    selector: FleetSelector = {},
+    options?: CallOptions,
+  ): Effect.Effect<BotStatus[], SoulFireOperationError> {
+    return this.select(selector, options).pipe(
+      Effect.flatMap((bots) =>
+        this.instance.stop({ botIds: bots.map(({ id }) => id) }, options),
+      ),
+    );
+  }
+  public restart(
+    selector: FleetSelector = {},
+    options?: CallOptions,
+  ): Effect.Effect<BotStatus[], SoulFireOperationError> {
+    return this.select(selector, options).pipe(
+      Effect.flatMap((bots) =>
+        this.instance.restart({ botIds: bots.map(({ id }) => id) }, options),
+      ),
     );
   }
 
-  public async stop(
-    selector: FleetSelector = {},
-    options?: CallOptions,
-  ): Promise<BotStatus[]> {
-    return this.instance.stop(
-      { botIds: await this.ids(selector, options) },
-      options,
-    );
-  }
-
-  public async restart(
-    selector: FleetSelector = {},
-    options?: CallOptions,
-  ): Promise<BotStatus[]> {
-    return this.instance.restart(
-      { botIds: await this.ids(selector, options) },
-      options,
-    );
-  }
-
-  public async startTasks<
+  public startTasks<
     Input extends DescMessage,
     Result extends DescMessage | undefined = undefined,
   >(
@@ -404,120 +384,134 @@ export class SoulFireFleet {
     input:
       | MessageInitShape<Input>
       | ((
-        bot: FleetBot,
-        index: number,
-        total: number,
-      ) => MessageInitShape<Input> | Promise<MessageInitShape<Input>>),
+          bot: FleetBot,
+          index: number,
+          total: number,
+        ) =>
+          | MessageInitShape<Input>
+          | Effect.Effect<MessageInitShape<Input>, SoulFireOperationError>),
     resultSchema?: Result,
     options: FleetTaskStartOptions = {},
-  ): Promise<SoulFireFleetTaskGroup<Result>> {
-    const {
-      concurrency,
-      signal,
-      ...taskOptions
-    } = options;
-    signal?.throwIfAborted();
-    const bots = await this.select(selector, taskOptions.call);
-    const settled = await mapConcurrentSettled(
-      bots,
-      concurrency,
-      signal,
-      async (descriptor, index) => {
-        const taskInput = typeof input === "function"
-          ? await input(descriptor, index, bots.length)
-          : input;
-        return this.instance
-          .bot(descriptor.id)
-          .tasks
-          .start(inputSchema, taskInput, resultSchema, taskOptions);
-      },
-    );
-    const members: FleetTaskMember<Result>[] = [];
-    const failures: FleetTaskStartFailure[] = [];
-    settled.forEach((result, index) => {
-      const bot = bots[index]!;
-      if (result.status === "fulfilled") {
-        members.push({ bot, task: result.value });
-      } else {
-        failures.push({ bot, error: result.reason });
-      }
-    });
-
-    if (signal?.aborted) {
-      await Promise.allSettled(
-        members.map(({ task }) => task.cancel("fleet task start aborted")),
+  ): Effect.Effect<SoulFireFleetTaskGroup<Result>, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const { concurrency: requestedConcurrency = 8, ...taskOptions } = options;
+      const concurrency = yield* Effect.try({
+        try: () =>
+          Math.max(
+            1,
+            normalizeNonNegativeInteger(requestedConcurrency, "concurrency"),
+          ),
+        catch: (cause) => operationError("fleet.startTasks", cause),
+      });
+      const bots = yield* this.select(selector, taskOptions.call);
+      const started: FleetTaskMember<Result>[] = [];
+      const outcomes = yield* Effect.forEach(
+        bots,
+        (bot, index) =>
+          Effect.uninterruptibleMask((restore) =>
+            Effect.gen(this, function* () {
+              const value =
+                typeof input === "function"
+                  ? input(bot, index, bots.length)
+                  : input;
+              const taskInput = Effect.isEffect(value)
+                ? yield* restore(value)
+                : value;
+              const task = yield* this.instance
+                .bot(bot.id)
+                .tasks.start(inputSchema, taskInput, resultSchema, taskOptions);
+              const member = { bot, task };
+              started.push(member);
+              return member;
+            }),
+          ).pipe(Effect.either),
+        { concurrency },
+      ).pipe(
+        Effect.onError(() =>
+          Effect.forEach(
+            started,
+            ({ task }) =>
+              task.cancel("fleet task start aborted").pipe(Effect.ignore),
+            { concurrency, discard: true },
+          ),
+        ),
       );
-      signal.throwIfAborted();
-    }
-    return new SoulFireFleetTaskGroup(members, failures);
+      const members: FleetTaskMember<Result>[] = [];
+      const failures: FleetTaskStartFailure[] = [];
+      outcomes.forEach((outcome, index) => {
+        if (Either.isRight(outcome)) members.push(outcome.right);
+        else failures.push({ bot: bots[index]!, error: outcome.left });
+      });
+      return new SoulFireFleetTaskGroup(members, failures);
+    });
   }
-
-  public async distribute<Item>(
+  public distribute<Item>(
     items: readonly Item[],
     selector: FleetSelector = {},
     options: FleetDistributionOptions = {},
-  ): Promise<readonly FleetAssignment<Item>[]> {
-    const bots = await this.select(selector, options.call);
-    if (items.length > 0 && bots.length === 0) {
-      throw new Error("No bots matched the fleet selector");
-    }
-    const maximumItems = options.maximumItemsPerBot === undefined
-      ? Number.POSITIVE_INFINITY
-      : normalizeNonNegativeInteger(
-        options.maximumItemsPerBot,
-        "maximumItemsPerBot",
-      );
-    const buckets = bots.map(() => [] as Item[]);
+  ): Effect.Effect<readonly FleetAssignment<Item>[], SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const bots = yield* this.select(selector, options.call);
+      return yield* Effect.try({
+        try: () => {
+          if (items.length > 0 && bots.length === 0) {
+            throw new Error("No bots matched the fleet selector");
+          }
+          const maximumItems =
+            options.maximumItemsPerBot === undefined
+              ? Number.POSITIVE_INFINITY
+              : normalizeNonNegativeInteger(
+                  options.maximumItemsPerBot,
+                  "maximumItemsPerBot",
+                );
+          const buckets = bots.map(() => [] as Item[]);
 
-    if ((options.strategy ?? "round-robin") === "contiguous") {
-      let offset = 0;
-      for (let index = 0; index < bots.length; index++) {
-        const remainingBots = bots.length - index;
-        const remainingItems = items.length - offset;
-        const size = Math.min(
-          maximumItems,
-          Math.ceil(remainingItems / remainingBots),
-        );
-        buckets[index]!.push(...items.slice(offset, offset + size));
-        offset += size;
-      }
-    } else {
-      let botIndex = 0;
-      for (const item of items) {
-        while (
-          botIndex < bots.length
-          && buckets[botIndex]!.length >= maximumItems
-        ) {
-          botIndex++;
-        }
-        if (botIndex >= bots.length) {
-          break;
-        }
-        buckets[botIndex]!.push(item);
-        botIndex = (botIndex + 1) % bots.length;
-      }
-    }
+          if ((options.strategy ?? "round-robin") === "contiguous") {
+            let offset = 0;
+            for (let index = 0; index < bots.length; index++) {
+              const remainingBots = bots.length - index;
+              const remainingItems = items.length - offset;
+              const size = Math.min(
+                maximumItems,
+                Math.ceil(remainingItems / remainingBots),
+              );
+              buckets[index]!.push(...items.slice(offset, offset + size));
+              offset += size;
+            }
+          } else {
+            let botIndex = 0;
+            for (const item of items) {
+              while (
+                botIndex < bots.length &&
+                buckets[botIndex]!.length >= maximumItems
+              ) {
+                botIndex++;
+              }
+              if (botIndex >= bots.length) {
+                break;
+              }
+              buckets[botIndex]!.push(item);
+              botIndex = (botIndex + 1) % bots.length;
+            }
+          }
 
-    const assigned = buckets.reduce(
-      (total, bucket) => total + bucket.length,
-      0,
-    );
-    if ((options.requireAll ?? true) && assigned !== items.length) {
-      throw new RangeError(
-        `Fleet capacity ${assigned} is smaller than ${items.length} items`,
-      );
-    }
-    return bots.map((bot, index) => ({
-      bot,
-      items: buckets[index]!,
-    }));
-  }
-
-  private async ids(
-    selector: FleetSelector,
-    options?: CallOptions,
-  ): Promise<string[]> {
-    return (await this.select(selector, options)).map(({ id }) => id);
+          const assigned = buckets.reduce(
+            (total, bucket) => total + bucket.length,
+            0,
+          );
+          if ((options.requireAll ?? true) && assigned !== items.length) {
+            throw new RangeError(
+              `Fleet capacity ${assigned} is smaller than ${items.length} items`,
+            );
+          }
+          return bots.map((bot, index) => ({
+            bot,
+            items: buckets[index]!,
+          }));
+        },
+        catch: (cause) => operationError("fleet.distribute", cause),
+      });
+    });
   }
 }
 
@@ -528,20 +522,21 @@ function matchesSelector(bot: FleetBot, selector: FleetSelector): boolean {
     return false;
   }
   if (
-    selector.accountNames !== undefined
-    && !selector.accountNames.some(
-      (name) => name.localeCompare(
-        entry.accountName ?? account?.lastKnownName ?? "",
-        undefined,
-        { sensitivity: "accent" },
-      ) === 0,
+    selector.accountNames !== undefined &&
+    !selector.accountNames.some(
+      (name) =>
+        name.localeCompare(
+          entry.accountName ?? account?.lastKnownName ?? "",
+          undefined,
+          { sensitivity: "accent" },
+        ) === 0,
     )
   ) {
     return false;
   }
   if (
-    selector.accountTypes !== undefined
-    && (account === undefined || !selector.accountTypes.includes(account.type))
+    selector.accountTypes !== undefined &&
+    (account === undefined || !selector.accountTypes.includes(account.type))
   ) {
     return false;
   }
@@ -561,44 +556,42 @@ function matchesSelector(bot: FleetBot, selector: FleetSelector): boolean {
     return false;
   }
   if (
-    selector.minimumHealth !== undefined
-    && (live === undefined || live.health < selector.minimumHealth)
+    selector.minimumHealth !== undefined &&
+    (live === undefined || live.health < selector.minimumHealth)
   ) {
     return false;
   }
   if (
-    selector.maximumHealth !== undefined
-    && (live === undefined || live.health > selector.maximumHealth)
+    selector.maximumHealth !== undefined &&
+    (live === undefined || live.health > selector.maximumHealth)
   ) {
     return false;
   }
   if (
-    selector.minimumFoodLevel !== undefined
-    && (live === undefined || live.foodLevel < selector.minimumFoodLevel)
+    selector.minimumFoodLevel !== undefined &&
+    (live === undefined || live.foodLevel < selector.minimumFoodLevel)
   ) {
     return false;
   }
   if (
-    selector.maximumPingMs !== undefined
-    && (entry.pingMs === undefined || entry.pingMs > selector.maximumPingMs)
+    selector.maximumPingMs !== undefined &&
+    (entry.pingMs === undefined || entry.pingMs > selector.maximumPingMs)
   ) {
     return false;
   }
   if (selector.near !== undefined) {
     if (
-      live === undefined
-      || (
-        selector.near.dimension !== undefined
-        && live.dimension !== selector.near.dimension
-      )
-      || distanceSquared(live, selector.near)
-        > selector.near.radius * selector.near.radius
+      live === undefined ||
+      (selector.near.dimension !== undefined &&
+        live.dimension !== selector.near.dimension) ||
+      distanceSquared(live, selector.near) >
+        selector.near.radius * selector.near.radius
     ) {
       return false;
     }
   }
   return (selector.metadata ?? []).every((condition) =>
-    matchesMetadata(bot, condition)
+    matchesMetadata(bot, condition),
   );
 }
 
@@ -607,8 +600,8 @@ function matchesMetadata(
   condition: FleetMetadataSelector,
 ): boolean {
   const namespace = bot.metadata[condition.namespace];
-  const present = namespace !== undefined
-    && Object.hasOwn(namespace, condition.key);
+  const present =
+    namespace !== undefined && Object.hasOwn(namespace, condition.key);
   if (condition.exists !== undefined && present !== condition.exists) {
     return false;
   }
@@ -638,28 +631,25 @@ function orderBots(bots: FleetBot[], selector: FleetSelector): void {
     switch (order) {
       case "name":
         return (
-          left.entry.accountName
-          ?? left.account?.lastKnownName
-          ?? ""
+          left.entry.accountName ??
+          left.account?.lastKnownName ??
+          ""
         ).localeCompare(
-          right.entry.accountName
-          ?? right.account?.lastKnownName
-          ?? "",
+          right.entry.accountName ?? right.account?.lastKnownName ?? "",
         );
       case "health":
         return (
-          right.entry.liveState?.health ?? Number.NEGATIVE_INFINITY
-        ) - (
-          left.entry.liveState?.health ?? Number.NEGATIVE_INFINITY
+          (right.entry.liveState?.health ?? Number.NEGATIVE_INFINITY) -
+          (left.entry.liveState?.health ?? Number.NEGATIVE_INFINITY)
         );
       case "distance":
         if (selector.near === undefined) {
           throw new TypeError("orderBy distance requires a near selector");
         }
-        return distanceSquared(
-          left.entry.liveState,
-          selector.near,
-        ) - distanceSquared(right.entry.liveState, selector.near);
+        return (
+          distanceSquared(left.entry.liveState, selector.near) -
+          distanceSquared(right.entry.liveState, selector.near)
+        );
     }
   });
 }
@@ -710,24 +700,28 @@ function deepEqual(left: unknown, right: unknown): boolean {
     return true;
   }
   if (Array.isArray(left) && Array.isArray(right)) {
-    return left.length === right.length
-      && left.every((value, index) => deepEqual(value, right[index]));
+    return (
+      left.length === right.length &&
+      left.every((value, index) => deepEqual(value, right[index]))
+    );
   }
   if (
-    typeof left === "object"
-    && left !== null
-    && typeof right === "object"
-    && right !== null
-    && !Array.isArray(left)
-    && !Array.isArray(right)
+    typeof left === "object" &&
+    left !== null &&
+    typeof right === "object" &&
+    right !== null &&
+    !Array.isArray(left) &&
+    !Array.isArray(right)
   ) {
     const leftEntries = Object.entries(left);
     const rightRecord = right as Record<string, unknown>;
-    return leftEntries.length === Object.keys(rightRecord).length
-      && leftEntries.every(([key, value]) =>
-        Object.hasOwn(rightRecord, key)
-        && deepEqual(value, rightRecord[key])
-      );
+    return (
+      leftEntries.length === Object.keys(rightRecord).length &&
+      leftEntries.every(
+        ([key, value]) =>
+          Object.hasOwn(rightRecord, key) && deepEqual(value, rightRecord[key]),
+      )
+    );
   }
   return false;
 }
@@ -736,8 +730,9 @@ function includes<T>(
   values: readonly T[] | undefined,
   value: T | undefined,
 ): boolean {
-  return values === undefined
-    || (value !== undefined && values.includes(value));
+  return (
+    values === undefined || (value !== undefined && values.includes(value))
+  );
 }
 
 function distanceSquared(
@@ -760,61 +755,24 @@ function normalizeNonNegativeInteger(value: number, name: string): number {
   return Math.floor(value);
 }
 
-async function mapConcurrentSettled<Item, Result>(
-  items: readonly Item[],
-  requestedConcurrency: number | undefined,
-  signal: AbortSignal | undefined,
-  operation: (item: Item, index: number) => Promise<Result>,
-): Promise<PromiseSettledResult<Result>[]> {
-  if (items.length === 0) {
-    return [];
-  }
-  const concurrency = requestedConcurrency === undefined
-    ? Math.min(items.length, 8)
-    : Math.max(
-      1,
-      Math.min(
-        items.length,
-        normalizeNonNegativeInteger(requestedConcurrency, "concurrency"),
-      ),
-    );
-  const results = new Array<PromiseSettledResult<Result>>(items.length);
-  let nextIndex = 0;
-  await Promise.all(
-    Array.from({ length: concurrency }, async () => {
-      while (nextIndex < items.length) {
-        const index = nextIndex++;
-        try {
-          signal?.throwIfAborted();
-          results[index] = {
-            status: "fulfilled",
-            value: await operation(items[index]!, index),
-          };
-        } catch (reason) {
-          results[index] = { status: "rejected", reason };
-        }
-      }
-    }),
-  );
-  return results;
-}
-
 function taskReport<Result extends DescMessage | undefined>(
   outcomes: readonly FleetTaskOutcome<Result>[],
 ): FleetTaskReport<Result> {
   return {
     outcomes,
     fulfilled: outcomes.filter(
-      (outcome): outcome is Extract<
+      (
+        outcome,
+      ): outcome is Extract<
         FleetTaskOutcome<Result>,
         { status: "fulfilled" }
       > => outcome.status === "fulfilled",
     ),
     rejected: outcomes.filter(
-      (outcome): outcome is Extract<
-        FleetTaskOutcome<Result>,
-        { status: "rejected" }
-      > => outcome.status === "rejected",
+      (
+        outcome,
+      ): outcome is Extract<FleetTaskOutcome<Result>, { status: "rejected" }> =>
+        outcome.status === "rejected",
     ),
   };
 }

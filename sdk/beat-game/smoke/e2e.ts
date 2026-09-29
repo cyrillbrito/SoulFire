@@ -669,10 +669,9 @@ const program = Effect.scoped(Effect.gen(function* () {
   const checkpointStore = new JsonFileBeatGameCheckpointStore(
     path.join(artifactDirectory, "checkpoints"),
   );
-  const environmentSession = yield* Effect.acquireRelease(
-    bot.observe({ filter: { includeEnvironment: true } }),
-    (session) => session.close().pipe(Effect.ignore),
-  );
+  const environmentSession = yield* bot.observe({
+    filter: { includeEnvironment: true },
+  });
   if (joinedPlayer.dead) {
     yield* record("startup-readiness-deferred", {
       reason: "The planner must respawn a bot that attached while dead",

@@ -1,151 +1,197 @@
+import { Effect, type Scope } from "effect";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { createHash, createHmac, randomUUID } from "node:crypto";
-import { createReadStream } from "node:fs";
-import {
-  mkdir,
-  readFile,
-  rename,
-  rm,
-  stat,
-} from "node:fs/promises";
+import { createHmac } from "node:crypto";
+import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import readline from "node:readline";
-import net from "node:net";
 
-import AdmZip from "adm-zip";
-import * as tar from "tar";
-
+import { operationError, type SoulFireOperationError } from "./errors.js";
 import type {
   LocalSoulFireServer,
   SoulFireInstallOptions,
 } from "./install-types.js";
+import {
+  ensureDownload,
+  ensureJvm,
+  findAvailablePort,
+  getJavaHome,
+  requireLocalFile,
+  requireSha256Digest,
+  resolveDedicatedAsset,
+  resolveRelease,
+} from "./local-server-io.js";
+
 
 const ROOT_USER_UUID = "00000000-0000-0000-0000-000000000000";
 const DEFAULT_STARTUP_TIMEOUT_MS = 120_000;
-const RELEASES_API =
-  "https://api.github.com/repos/soulfiremc-com/SoulFire/releases";
 
-interface GitHubAsset {
-  browser_download_url?: string;
-  digest?: string;
-  name?: string;
-}
-
-interface GitHubRelease {
-  assets?: GitHubAsset[];
-  tag_name?: string;
-}
-
-interface AdoptiumRelease {
-  binary?: {
-    package?: {
-      checksum?: string;
-      link?: string;
-    };
-  };
-  release_name?: string;
-}
+export { resolveRelease } from "./local-server-io.js";
 
 export interface LocalServerHandle {
   readonly info: LocalSoulFireServer;
   readonly token: string;
   isRunning(): boolean;
   logs(): readonly string[];
-  restart(): Promise<void>;
-  stop(): Promise<void>;
-  close(): Promise<void>;
+  restart(): Effect.Effect<void, SoulFireOperationError>;
+  stop(): Effect.Effect<void>;
+  close(): Effect.Effect<void>;
 }
 
-export async function installLocalServer(
+export function installLocalServer(
   options: SoulFireInstallOptions = {},
-): Promise<LocalServerHandle> {
-  const fetchImplementation = options.fetch ?? globalThis.fetch;
-  if (fetchImplementation === undefined) {
-    throw new Error("SoulFire.install() requires a fetch implementation");
-  }
-
-  const directory = path.resolve(options.directory ?? ".soulfire");
-  await mkdir(directory, { recursive: true });
-
-  const managedJvmDirectory = path.join(directory, "jvm-25");
-  const javaPath = options.javaPath === undefined
-    ? await ensureJvm(
-      managedJvmDirectory,
-      fetchImplementation,
-    )
-    : await requireLocalFile(options.javaPath, "Java executable");
-  const javaHome = options.javaPath === undefined
-    ? getJavaHome(managedJvmDirectory)
-    : path.dirname(path.dirname(javaPath));
-  const localJarPath = options.jarPath === undefined
-    ? undefined
-    : await requireLocalFile(options.jarPath, "SoulFire JAR");
-  let installedVersion = "local";
-  let jarPath = localJarPath;
-  if (jarPath === undefined) {
-    const release = await resolveRelease(
-      options.version,
-      fetchImplementation,
+): Effect.Effect<LocalServerHandle, SoulFireOperationError, Scope.Scope> {
+  return Effect.gen(function* () {
+    const startupTimeout =
+      options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS;
+    if (!Number.isFinite(startupTimeout) || startupTimeout <= 0) {
+      return yield* Effect.fail(
+        operationError(
+          "install.timeout",
+          new RangeError("startupTimeoutMs must be a positive finite number"),
+        ),
+      );
+    }
+    const fetchImplementation = options.fetch ?? globalThis.fetch;
+    const directory = path.resolve(options.directory ?? ".soulfire");
+    yield* installIO("install.mkdir", () => mkdir(directory, { recursive: true }));
+    const managedJvmDirectory = path.join(directory, "jvm-25");
+    const javaPath = yield* installIO("install.java", (signal) =>
+      options.javaPath === undefined
+        ? ensureJvm(managedJvmDirectory, (input, init) =>
+            fetchImplementation(input, { ...init, signal }),
+          )
+        : requireLocalFile(options.javaPath, "Java executable"),
     );
-    const jar = resolveDedicatedAsset(release, options.version);
-    jarPath = path.join(directory, "jars", jar.name);
-    await ensureDownload(
-      jar.browser_download_url,
-      jarPath,
-      requireSha256Digest(jar.digest, "SoulFire release"),
-      fetchImplementation,
-    );
-    installedVersion = release.tag_name;
-  }
-
-  const runDirectory = path.join(directory, "server");
-  await mkdir(runDirectory, { recursive: true });
-  const port = options.port ?? (await findAvailablePort());
-  validatePort(port);
-
-  const logs: string[] = [];
-  const handleLog = (line: string) => {
-    logs.push(line);
-    options.onLog?.(line);
-  };
-  const spawnServer = () =>
-    spawn(
-      javaPath,
-      [
-        ...(options.javaArgs ?? []),
-        `-Dsf.grpc.port=${port}`,
-        "-jar",
-        jarPath,
-      ],
-      {
-        cwd: runDirectory,
-        env: {
-          ...process.env,
-          JAVA_HOME: javaHome,
+    const javaHome =
+      options.javaPath === undefined
+        ? getJavaHome(managedJvmDirectory)
+        : path.dirname(path.dirname(javaPath));
+    let jarPath: string;
+    let installedVersion = "local";
+    if (options.jarPath === undefined) {
+      const release = yield* installIO("install.release", (signal) =>
+        resolveRelease(options.version, (input, init) =>
+          fetchImplementation(input, { ...init, signal }),
+        ),
+      );
+      const jar = yield* Effect.try({
+        try: () => resolveDedicatedAsset(release, options.version),
+        catch: (cause) => operationError("install.release", cause),
+      });
+      jarPath = path.join(directory, "jars", jar.name);
+      const digest = yield* Effect.try({
+        try: () => requireSha256Digest(jar.digest, "SoulFire release"),
+        catch: (cause) => operationError("install.release", cause),
+      });
+      yield* installIO("install.download", (signal) =>
+        ensureDownload(
+          jar.browser_download_url,
+          jarPath,
+          digest,
+          (input, init) => fetchImplementation(input, { ...init, signal }),
+        ),
+      );
+      installedVersion = release.tag_name;
+    } else
+      jarPath = yield* installIO("install.jar", () =>
+        requireLocalFile(options.jarPath!, "SoulFire JAR"),
+      );
+    const runDirectory = path.join(directory, "server");
+    yield* installIO("install.mkdir", () => mkdir(runDirectory, { recursive: true }));
+    const port =
+      options.port ?? (yield* installIO("install.port", () => findAvailablePort()));
+    if (!Number.isSafeInteger(port) || port < 1 || port > 65535)
+      return yield* Effect.fail(
+        operationError(
+          "install.port",
+          new RangeError("port must be an integer between 1 and 65535"),
+        ),
+      );
+    const logs: string[] = [];
+    const spawnServer = () =>
+      spawn(
+        javaPath,
+        [
+          ...(options.javaArgs ?? []),
+          `-Dsf.grpc.port=${port}`,
+          "-jar",
+          jarPath,
+        ],
+        {
+          cwd: runDirectory,
+          env: { ...process.env, JAVA_HOME: javaHome },
+          stdio: "pipe",
+          windowsHide: true,
         },
-        stdio: "pipe",
-        windowsHide: true,
-      },
-    );
-  let child = spawnServer();
-
-  try {
-    await waitForServerReady(
-      child,
-      handleLog,
-      options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS,
-    );
-    const secretKey = await readFile(path.join(runDirectory, "secret-key.bin"));
-    const baseUrl = `http://127.0.0.1:${port}`;
-    let info: LocalSoulFireServer = {
-        baseUrl,
+      );
+    const semaphore = yield* Effect.makeSemaphore(1);
+    let child: ChildProcessWithoutNullStreams;
+    let info: LocalSoulFireServer;
+    const start = Effect.fn("SoulFire.install.start")(function* () {
+      child = yield* Effect.try({
+        try: spawnServer,
+        catch: (cause) => operationError("install.spawn", cause),
+      });
+      const current = child;
+      const output = readline.createInterface({ input: current.stdout });
+      const errors = readline.createInterface({ input: current.stderr });
+      const onLine = (rawLine: string) => {
+        const line = rawLine.replace(/\u001B\[[0-9;]*[A-Za-z]/g, "").trim();
+        if (line.length === 0) return;
+        logs.push(line);
+        try {
+          options.onLog?.(line);
+        } catch {
+          /* Keep draining process output if a log consumer fails. */
+        }
+      };
+      output.on("line", onLine);
+      errors.on("line", onLine);
+      current.once("close", () => {
+        output.close();
+        errors.close();
+      });
+      yield* waitForServerReady(current, output, errors).pipe(
+        Effect.timeoutFail({
+          duration: startupTimeout,
+          onTimeout: () =>
+            operationError(
+              "install.ready",
+              new Error(
+                "SoulFire did not finish loading before the startup timeout",
+              ),
+            ),
+        }),
+        Effect.onError(() => stopChild(current)),
+      );
+      if (current.pid === undefined)
+        return yield* Effect.fail(
+          operationError(
+            "install.pid",
+            new Error("SoulFire process did not provide a process ID"),
+          ),
+        );
+      info = {
+        baseUrl: `http://127.0.0.1:${port}`,
         directory,
         jarPath,
         javaPath,
-        pid: requirePid(child.pid),
+        pid: current.pid,
         runDirectory,
         version: installedVersion,
       };
+    });
+    const stop = Effect.suspend(() =>
+      child === undefined ? Effect.void : stopChild(child),
+    );
+    // Register process ownership before waiting for readiness.
+    yield* Effect.acquireRelease(Effect.void, () =>
+      semaphore.withPermits(1)(stop),
+    );
+    yield* start();
+    const secretKey = yield* installIO("install.token", () =>
+      readFile(path.join(runDirectory, "secret-key.bin")),
+    );
     return {
       get info() {
         return info;
@@ -153,341 +199,85 @@ export async function installLocalServer(
       token: createRootApiToken(secretKey),
       isRunning: () => child.exitCode === null && child.signalCode === null,
       logs: () => [...logs],
-      restart: async () => {
-        await stopChild(child);
-        child = spawnServer();
-        await waitForServerReady(
-          child,
-          handleLog,
-          options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS,
-        );
-        info = { ...info, pid: requirePid(child.pid) };
-      },
-      stop: () => stopChild(child),
-      close: () => stopChild(child),
+      restart: () =>
+        semaphore.withPermits(1)(stop.pipe(Effect.zipRight(start()))),
+      stop: () => semaphore.withPermits(1)(stop),
+      close: () => semaphore.withPermits(1)(stop),
     };
-  } catch (error) {
-    await stopChild(child);
-    throw error;
-  }
-}
-
-async function requireLocalFile(
-  value: string,
-  description: string,
-): Promise<string> {
-  const resolved = path.resolve(value);
-  let metadata;
-  try {
-    metadata = await stat(resolved);
-  } catch (cause) {
-    throw new Error(`${description} does not exist: ${resolved}`, { cause });
-  }
-  if (!metadata.isFile()) {
-    throw new Error(`${description} is not a file: ${resolved}`);
-  }
-  return resolved;
-}
-
-export async function resolveRelease(
-  version: string | undefined,
-  fetchImplementation: typeof globalThis.fetch,
-): Promise<Required<Pick<GitHubRelease, "assets" | "tag_name">>> {
-  const requestedVersion = version?.trim();
-  if (version !== undefined && !requestedVersion) {
-    throw new TypeError("SoulFire version must not be empty");
-  }
-
-  const endpoint =
-    requestedVersion === undefined
-      ? `${RELEASES_API}/latest`
-      : `${RELEASES_API}/tags/${encodeURIComponent(requestedVersion)}`;
-  const response = await fetchImplementation(endpoint, {
-    headers: {
-      Accept: "application/vnd.github+json",
-      "User-Agent": "@soulfiremc/sdk",
-      "X-GitHub-Api-Version": "2022-11-28",
-    },
   });
-  if (!response.ok) {
-    throw new Error(
-      `Failed to fetch SoulFire release metadata (${response.status})`,
-    );
-  }
-
-  const release = (await response.json()) as GitHubRelease;
-  if (!release.tag_name || !Array.isArray(release.assets)) {
-    throw new Error("SoulFire release metadata was incomplete");
-  }
-  return {
-    assets: release.assets,
-    tag_name: release.tag_name,
-  };
 }
 
-function resolveDedicatedAsset(
-  release: Required<Pick<GitHubRelease, "assets" | "tag_name">>,
-  requestedVersion: string | undefined,
-): Required<
-  Pick<GitHubAsset, "browser_download_url" | "digest" | "name">
-> {
-  const expectedName = `SoulFireDedicated-${
-    requestedVersion?.trim() ?? release.tag_name
-  }.jar`;
-  const asset =
-    release.assets.find((candidate) => candidate.name === expectedName) ??
-    release.assets.find((candidate) =>
-      /^SoulFireDedicated-.+\.jar$/.test(candidate.name ?? ""),
-    );
-  if (!asset?.name || !asset.browser_download_url || !asset.digest) {
-    throw new Error(
-      `SoulFire release ${release.tag_name} has no verified dedicated server JAR`,
-    );
-  }
-  return {
-    browser_download_url: asset.browser_download_url,
-    digest: asset.digest,
-    name: asset.name,
-  };
-}
-
-async function ensureJvm(
-  jvmDirectory: string,
-  fetchImplementation: typeof globalThis.fetch,
-): Promise<string> {
-  const javaPath = path.join(
-    getJavaHome(jvmDirectory),
-    "bin",
-    process.platform === "win32" ? "java.exe" : "java",
-  );
-  if (await exists(javaPath)) {
-    return javaPath;
-  }
-
-  const os = detectOs();
-  const architecture = detectArchitecture();
-  const metadataUrl =
-    "https://api.adoptium.net/v3/assets/latest/25/hotspot" +
-    `?architecture=${architecture}&image_type=jre&os=${os}&vendor=eclipse`;
-  const response = await fetchImplementation(metadataUrl);
-  if (!response.ok) {
-    throw new Error(`Failed to fetch JVM metadata (${response.status})`);
-  }
-
-  const releases = (await response.json()) as AdoptiumRelease[];
-  const packageMetadata = releases[0]?.binary?.package;
-  const checksum = packageMetadata?.checksum;
-  const downloadUrl = packageMetadata?.link;
-  const releaseName = releases[0]?.release_name;
-  if (!checksum || !downloadUrl || !releaseName) {
-    throw new Error("JVM metadata was incomplete");
-  }
-
-  const temporaryRoot = path.join(
-    path.dirname(jvmDirectory),
-    `.jvm-25-${randomUUID()}`,
-  );
-  const archivePath = `${temporaryRoot}.download`;
-  await mkdir(temporaryRoot, { recursive: true });
-
-  try {
-    await downloadFile(
-      downloadUrl,
-      archivePath,
-      checksum,
-      fetchImplementation,
-    );
-    if (downloadUrl.endsWith(".zip")) {
-      new AdmZip(archivePath).extractAllTo(temporaryRoot, true);
-    } else if (downloadUrl.endsWith(".tar.gz")) {
-      await tar.x({ cwd: temporaryRoot, file: archivePath });
-    } else {
-      throw new Error("Unsupported JVM archive type");
-    }
-
-    const extractedJvm = path.join(temporaryRoot, `${releaseName}-jre`);
-    const extractedJava = path.join(
-      getJavaHome(extractedJvm),
-      "bin",
-      process.platform === "win32" ? "java.exe" : "java",
-    );
-    if (!(await exists(extractedJava))) {
-      throw new Error("Extracted JVM is missing the Java executable");
-    }
-
-    await rm(jvmDirectory, { force: true, recursive: true });
-    await rename(extractedJvm, jvmDirectory);
-  } finally {
-    await rm(archivePath, { force: true });
-    await rm(temporaryRoot, { force: true, recursive: true });
-  }
-
-  return javaPath;
-}
-
-async function ensureDownload(
-  url: string,
-  destination: string,
-  checksum: string,
-  fetchImplementation: typeof globalThis.fetch,
-): Promise<void> {
-  if (
-    (await exists(destination)) &&
-    (await sha256File(destination)) === checksum
-  ) {
-    return;
-  }
-
-  await mkdir(path.dirname(destination), { recursive: true });
-  const temporaryPath = `${destination}.${randomUUID()}.download`;
-  try {
-    await downloadFile(url, temporaryPath, checksum, fetchImplementation);
-    await rm(destination, { force: true });
-    await rename(temporaryPath, destination);
-  } finally {
-    await rm(temporaryPath, { force: true });
-  }
-}
-
-async function downloadFile(
-  url: string,
-  destination: string,
-  checksum: string,
-  fetchImplementation: typeof globalThis.fetch,
-): Promise<void> {
-  const response = await fetchImplementation(url);
-  if (!response.ok || response.body === null) {
-    throw new Error(`Download failed for ${url} (${response.status})`);
-  }
-
-  const file = await import("node:fs/promises").then(({ open }) =>
-    open(destination, "wx"),
-  );
-  const hash = createHash("sha256");
-  try {
-    const reader = response.body.getReader();
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) {
-        break;
-      }
-      await file.write(value);
-      hash.update(value);
-    }
-    await file.sync();
-  } finally {
-    await file.close();
-  }
-
-  const actualChecksum = hash.digest("hex");
-  if (actualChecksum !== checksum.toLowerCase()) {
-    throw new Error("Downloaded file checksum verification failed");
-  }
-}
-
-function requireSha256Digest(digest: string, label: string): string {
-  const match = /^sha256:([a-fA-F0-9]{64})$/.exec(digest);
-  if (!match?.[1]) {
-    throw new Error(`${label} did not include a SHA-256 digest`);
-  }
-  return match[1].toLowerCase();
-}
-
-async function sha256File(filePath: string): Promise<string> {
-  const hash = createHash("sha256");
-  const stream = createReadStream(filePath);
-  for await (const chunk of stream) {
-    hash.update(chunk);
-  }
-  return hash.digest("hex");
-}
-
-async function waitForServerReady(
+function waitForServerReady(
   child: ChildProcessWithoutNullStreams,
-  onLog: ((line: string) => void) | undefined,
-  timeoutMs: number,
-): Promise<void> {
-  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
-    throw new RangeError("startupTimeoutMs must be a positive integer");
-  }
-
-  const output = readline.createInterface({
-    input: child.stdout,
-  });
-  const errors = readline.createInterface({
-    input: child.stderr,
-  });
-
-  await new Promise<void>((resolve, reject) => {
-    let settled = false;
-    const timeout = setTimeout(() => {
-      finish(() =>
-        reject(
-          new Error(
-            `SoulFire did not finish loading within ${timeoutMs} milliseconds`,
+  output: readline.Interface,
+  errors: readline.Interface,
+): Effect.Effect<void, SoulFireOperationError> {
+  return Effect.async<void, SoulFireOperationError>((resume) => {
+    const cleanup = () => {
+      output.off("line", onLine);
+      errors.off("line", onLine);
+      child.off("error", onError);
+      child.off("exit", onExit);
+    };
+    const finish = (result: Effect.Effect<void, SoulFireOperationError>) => {
+      cleanup();
+      resume(result);
+    };
+    const onLine = (line: string) => {
+      if (line.includes("Finished loading!")) finish(Effect.void);
+    };
+    const onError = (cause: Error) =>
+      finish(Effect.fail(operationError("install.ready", cause)));
+    const onExit = (code: number | null) =>
+      finish(
+        Effect.fail(
+          operationError(
+            "install.ready",
+            new Error(
+              `SoulFire exited before finishing loading (exit code ${code ?? "unknown"})`,
+            ),
           ),
         ),
       );
-    }, timeoutMs);
-
-    const handleLine = (rawLine: string) => {
-      const line = stripAnsi(rawLine).trim();
-      if (!line) {
-        return;
-      }
-      try {
-        onLog?.(line);
-      } catch {
-        // Log consumers must not interrupt process output handling.
-      }
-      if (line.includes("Finished loading!")) {
-        finish(resolve);
-      }
-    };
-    const finish = (callback: () => void) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      clearTimeout(timeout);
-      child.off("error", handleError);
-      child.off("exit", handleExit);
-      callback();
-    };
-    const handleError = (error: Error) => finish(() => reject(error));
-    const handleExit = (code: number | null) =>
-      finish(() =>
-        reject(
-          new Error(
-            `SoulFire exited before finishing loading (exit code ${code ?? "unknown"})`,
-          ),
-        ),
-      );
-
-    output.on("line", handleLine);
-    errors.on("line", handleLine);
-    child.once("error", handleError);
-    child.once("exit", handleExit);
+    output.on("line", onLine);
+    errors.on("line", onLine);
+    child.once("error", onError);
+    child.once("exit", onExit);
+    return Effect.sync(cleanup);
   });
 }
 
-async function stopChild(
-  child: ChildProcessWithoutNullStreams,
-): Promise<void> {
-  if (child.exitCode !== null || child.signalCode !== null) {
-    return;
-  }
-
-  child.kill("SIGTERM");
-  await new Promise<void>((resolve) => {
-    const timeout = setTimeout(() => {
-      child.kill("SIGKILL");
-      resolve();
-    }, 5_000);
-    child.once("exit", () => {
-      clearTimeout(timeout);
-      resolve();
-    });
+function stopChild(child: ChildProcessWithoutNullStreams): Effect.Effect<void> {
+  return Effect.suspend(() => {
+    if (
+      child.pid === undefined ||
+      child.exitCode !== null ||
+      child.signalCode !== null
+    )
+      return Effect.void;
+    return Effect.async<void>((resume) => {
+      const onExit = () => resume(Effect.void);
+      child.once("exit", onExit);
+      child.kill("SIGTERM");
+      return Effect.sync(() => child.off("exit", onExit));
+    }).pipe(
+      Effect.timeoutTo({
+        duration: 5000,
+        onSuccess: () => Effect.void,
+        onTimeout: () =>
+          Effect.async<void>((resume) => {
+            if (child.exitCode !== null || child.signalCode !== null) {
+              resume(Effect.void);
+              return;
+            }
+            const onExit = () => resume(Effect.void);
+            child.once("exit", onExit);
+            child.kill("SIGKILL");
+            return Effect.sync(() => child.off("exit", onExit));
+          }),
+      }),
+      Effect.flatten,
+    );
   });
 }
 
@@ -510,90 +300,6 @@ function createRootApiToken(secretKey: Buffer): string {
   return `${unsignedToken}.${signature}`;
 }
 
-function detectArchitecture(): string {
-  switch (process.arch) {
-    case "arm":
-      return "arm";
-    case "arm64":
-      return "aarch64";
-    case "ia32":
-      return "x32";
-    case "ppc64":
-      return "ppc64";
-    case "riscv64":
-      return "riscv64";
-    case "s390x":
-      return "s390x";
-    case "x64":
-      return "x64";
-    default:
-      throw new Error(`Unsupported architecture: ${process.arch}`);
-  }
-}
-
-function detectOs(): string {
-  switch (process.platform) {
-    case "darwin":
-      return "mac";
-    case "linux":
-      return "linux";
-    case "win32":
-      return "windows";
-    default:
-      throw new Error(`Unsupported operating system: ${process.platform}`);
-  }
-}
-
-function getJavaHome(jvmDirectory: string): string {
-  return process.platform === "darwin"
-    ? path.join(jvmDirectory, "Contents", "Home")
-    : jvmDirectory;
-}
-
-async function findAvailablePort(): Promise<number> {
-  const server = net.createServer();
-  return await new Promise<number>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      if (!address || typeof address === "string") {
-        server.close();
-        reject(new Error("Failed to select an available port"));
-        return;
-      }
-      server.close((error) => {
-        if (error) {
-          reject(error);
-        } else {
-          resolve(address.port);
-        }
-      });
-    });
-  });
-}
-
-function validatePort(port: number): void {
-  if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
-    throw new RangeError("port must be an integer between 1 and 65535");
-  }
-}
-
-function requirePid(pid: number | undefined): number {
-  if (pid === undefined) {
-    throw new Error("SoulFire process did not provide a process ID");
-  }
-  return pid;
-}
-
-async function exists(target: string): Promise<boolean> {
-  try {
-    await stat(target);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function stripAnsi(value: string): string {
-  return value.replace(/\u001B\[[0-9;]*[A-Za-z]/g, "");
+function installIO<A>(operation: string, call: (signal: AbortSignal) => Promise<A>): Effect.Effect<A, SoulFireOperationError> {
+  return Effect.tryPromise({ try: call, catch: (cause) => operationError(operation, cause) }).pipe(Effect.withSpan(operation));
 }

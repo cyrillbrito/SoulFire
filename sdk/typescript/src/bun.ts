@@ -1,21 +1,14 @@
 import * as FetchHttpClient from "@effect/platform/FetchHttpClient";
 import * as HttpClient from "@effect/platform/HttpClient";
-import {
-  Effect,
-  Layer,
-  type Scope,
-} from "effect";
+import { Effect, Layer, type Scope } from "effect";
 
+import { type SoulFireOptions } from "./client.js";
 import {
-  SoulFire as KernelSoulFire,
-  type SoulFireOptions,
-} from "./client.js";
-import {
-  SoulFire as UniversalSoulFire,
   SoulFireClient,
   SoulFireConnectionError,
   SoulFireService,
-} from "./effect-client.js";
+  SoulFire as UniversalSoulFire,
+} from "./index.js";
 import type { SoulFireInstallOptions } from "./install-types.js";
 import { installLocalServer } from "./local-server.js";
 import { makeEffectHttpClientFetch } from "./platform.js";
@@ -24,11 +17,7 @@ export * from "./index.js";
 
 function connect(
   options: SoulFireOptions,
-): Effect.Effect<
-  SoulFireClient,
-  SoulFireConnectionError,
-  Scope.Scope
-> {
+): Effect.Effect<SoulFireClient, SoulFireConnectionError, Scope.Scope> {
   return UniversalSoulFire.connectWithHttpClient(options).pipe(
     Effect.provide(FetchHttpClient.layer),
   );
@@ -44,40 +33,24 @@ function layer(
 
 function install(
   options: SoulFireInstallOptions = {},
-): Effect.Effect<
-  SoulFireClient,
-  SoulFireConnectionError,
-  Scope.Scope
-> {
-  return Effect.flatMap(
-    HttpClient.HttpClient,
-    (httpClient) =>
-      Effect.acquireRelease(
-        Effect.tryPromise({
-          try: async () => {
-            const fetchImplementation =
-              options.fetch ?? makeEffectHttpClientFetch(httpClient);
-            const localServer = await installLocalServer({
-              ...options,
-              fetch: fetchImplementation,
-            });
-            return new SoulFireClient(await KernelSoulFire.connectManaged(
-              connectionOptions(
-                localServer.info.baseUrl,
-                localServer.token,
-                {
-                  ...options,
-                  fetch: fetchImplementation,
-                },
-              ),
-              localServer,
-            ));
-          },
-          catch: (cause) => new SoulFireConnectionError({ cause }),
-        }),
-        (client) => client.close(),
-      ),
-  ).pipe(
+): Effect.Effect<SoulFireClient, SoulFireConnectionError, Scope.Scope> {
+  return Effect.gen(function* () {
+    const httpClient = yield* HttpClient.HttpClient;
+    const fetchImplementation =
+      options.fetch ?? makeEffectHttpClientFetch(httpClient);
+    const localServer = yield* installLocalServer({
+      ...options,
+      fetch: fetchImplementation,
+    });
+    return yield* UniversalSoulFire.connectManaged(
+      connectionOptions(localServer.info.baseUrl, localServer.token, {
+        ...options,
+        fetch: fetchImplementation,
+      }),
+      localServer,
+    );
+  }).pipe(
+    Effect.mapError((cause) => new SoulFireConnectionError({ cause })),
     Effect.provide(FetchHttpClient.layer),
   );
 }

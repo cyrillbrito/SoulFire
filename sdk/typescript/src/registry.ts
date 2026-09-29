@@ -1,8 +1,8 @@
-import type {
-  DescMessage,
-  MessageInitShape,
-} from "@bufbuild/protobuf";
+import type { DescMessage, MessageInitShape } from "@bufbuild/protobuf";
 import type { CallOptions, Client } from "@connectrpc/connect";
+import { Effect } from "effect";
+import { type SoulFireOperationError } from "./errors.js";
+import { rpc, withSignal } from "./transport.js";
 
 import {
   RegistryService,
@@ -27,8 +27,15 @@ export class SoulFireRegistry {
     private readonly client: Client<typeof RegistryService>,
   ) {}
 
-  public identity(options?: CallOptions): Promise<GetRegistryIdentityResponse> {
-    return this.client.getRegistryIdentity(this.scope(), options);
+  public identity(
+    options?: CallOptions,
+  ): Effect.Effect<GetRegistryIdentityResponse, SoulFireOperationError> {
+    return rpc("SoulFireRegistry.identity", (signal) =>
+      this.client.getRegistryIdentity(
+        this.scope(),
+        withSignal(options, signal),
+      ),
+    );
   }
 
   /**
@@ -38,30 +45,36 @@ export class SoulFireRegistry {
   public entries(
     request: RegistryRequest<typeof ListRegistryEntriesRequestSchema>,
     options?: CallOptions,
-  ): Promise<ListRegistryEntriesResponse> {
-    return this.client.listRegistryEntries(
-      { ...request, ...this.scope() },
-      options,
+  ): Effect.Effect<ListRegistryEntriesResponse, SoulFireOperationError> {
+    return rpc("SoulFireRegistry.entries", (signal) =>
+      this.client.listRegistryEntries(
+        { ...request, ...this.scope() },
+        withSignal(options, signal),
+      ),
     );
   }
 
   public entry(
     request: RegistryRequest<typeof GetRegistryEntryRequestSchema>,
     options?: CallOptions,
-  ): Promise<GetRegistryEntryResponse> {
-    return this.client.getRegistryEntry(
-      { ...request, ...this.scope() },
-      options,
+  ): Effect.Effect<GetRegistryEntryResponse, SoulFireOperationError> {
+    return rpc("SoulFireRegistry.entry", (signal) =>
+      this.client.getRegistryEntry(
+        { ...request, ...this.scope() },
+        withSignal(options, signal),
+      ),
     );
   }
 
   public tags(
     request: RegistryRequest<typeof ListRegistryTagsRequestSchema>,
     options?: CallOptions,
-  ): Promise<ListRegistryTagsResponse> {
-    return this.client.listRegistryTags(
-      { ...request, ...this.scope() },
-      options,
+  ): Effect.Effect<ListRegistryTagsResponse, SoulFireOperationError> {
+    return rpc("SoulFireRegistry.tags", (signal) =>
+      this.client.listRegistryTags(
+        { ...request, ...this.scope() },
+        withSignal(options, signal),
+      ),
     );
   }
 

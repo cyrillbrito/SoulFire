@@ -28,6 +28,7 @@ export interface ServerMetadata {
 }
 
 export class SoulFireCompatibilityError extends Error {
+  public readonly _tag = "SoulFireCompatibilityError";
   public constructor(
     message: string,
     public override readonly cause?: unknown,
@@ -38,6 +39,7 @@ export class SoulFireCompatibilityError extends Error {
 }
 
 export class SoulFireCapabilityError extends Error {
+  public readonly _tag = "SoulFireCapabilityError";
   public constructor(public readonly capability: string) {
     super(`SoulFire capability is unavailable: ${capability}`);
     this.name = "SoulFireCapabilityError";

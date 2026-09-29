@@ -4,8 +4,6 @@ import type {
   MessageInitShape,
 } from "@bufbuild/protobuf";
 import {
-  Code,
-  ConnectError,
   createClient,
   type CallOptions,
   type Client,
@@ -16,31 +14,30 @@ import {
   createGrpcWebTransport,
   type GrpcWebTransportOptions,
 } from "@connectrpc/connect-web";
+import * as HttpClient from "@effect/platform/HttpClient";
+import { Context, Effect, Layer, Option, Stream, type Scope } from "effect";
+import {
+  operationError,
+  rpcError,
+  SoulFireConnectionError,
+  type SoulFireOperationError,
+} from "./errors.js";
+import { makeEffectHttpClientFetch } from "./platform.js";
+import { rpc, rpcStream, withSignal } from "./transport.js";
 
+import { requireCompletedAction } from "./actions.js";
+import { SoulFireAdmin } from "./admin.js";
+import { SoulFireCamera } from "./camera.js";
+import { SoulFireChat } from "./chat.js";
 import {
   connectionMetadata,
   SDK_API_VERSION,
   SDK_VERSION,
-  SoulFireCompatibilityError,
   type CapabilitySet,
   type ConnectionMetadata,
   type ServerMetadata,
 } from "./connection.js";
-import {
-  BotDesiredState,
-  BotRuntimeState,
-  BotService,
-  ClickType,
-  type BotGetDialogResponse,
-  type BotInfoResponse,
-  type BotInventoryStateResponse,
-  type BotListEntry,
-  type BotLiveState,
-  type BotRenderPovResponse,
-  type BotSetMovementStateRequestSchema,
-  type BotStatus,
-  type WatchBotStatusesResponse,
-} from "./generated/soulfire/bot_pb.js";
+import { SoulFireFleet } from "./fleet.js";
 import {
   BotEventFilterSchema,
   BotLiveService,
@@ -64,13 +61,13 @@ import {
   type PathfindProgress,
   type PlaceBlockRequestSchema,
   type ReleaseItemRequestSchema,
-  type RespondResourcePackRequestSchema,
   type RespawnRequestSchema,
+  type RespondResourcePackRequestSchema,
   type SetCreativeSlotRequestSchema,
   type SetFlyingRequestSchema,
-  type SleepRequestSchema,
   type SetVehicleControlRequestSchema,
   type SetVehicleControlResponse,
+  type SleepRequestSchema,
   type SwingArmRequestSchema,
   type UpdateSignRequestSchema,
   type UseItemRequestSchema,
@@ -78,10 +75,30 @@ import {
   type WaitForChunksResponse,
   type WriteBookRequestSchema,
 } from "./generated/soulfire/bot_live_pb.js";
+import {
+  BotDesiredState,
+  BotService,
+  ClickType,
+  type BotGetDialogResponse,
+  type BotInfoResponse,
+  type BotInventoryStateResponse,
+  type BotListEntry,
+  type BotLiveState,
+  type BotRenderPovResponse,
+  type BotSetMovementStateRequestSchema,
+  type BotStatus,
+  type WatchBotStatusesResponse,
+} from "./generated/soulfire/bot_pb.js";
+import { ChatService } from "./generated/soulfire/chat_pb.js";
 import type {
   MinecraftAccountProto,
   ProxyProto,
 } from "./generated/soulfire/common_pb.js";
+import {
+  InstanceEventFilterSchema,
+  InstanceLiveService,
+  type InstanceEvent,
+} from "./generated/soulfire/instance_live_pb.js";
 import {
   InstanceService,
   type InstanceInfo,
@@ -89,11 +106,7 @@ import {
   type InstanceUpdateConfigEntryRequestSchema,
   type InstanceUpdateMetaRequestSchema,
 } from "./generated/soulfire/instance_pb.js";
-import {
-  InstanceEventFilterSchema,
-  InstanceLiveService,
-  type InstanceEvent,
-} from "./generated/soulfire/instance_live_pb.js";
+import { InventoryService } from "./generated/soulfire/inventory_pb.js";
 import {
   LoginService,
   type NextAuthFlowResponse,
@@ -104,43 +117,25 @@ import {
   type CredentialsAuthResponse,
   type DeviceCodeAuthRequestSchema,
   type DeviceCodeAuthResponse,
-  type RefreshResponse,
   type RefreshRequestSchema,
+  type RefreshResponse,
 } from "./generated/soulfire/mc-auth_pb.js";
-import {
-  SdkService,
-  type SdkIdentity,
-} from "./generated/soulfire/sdk_pb.js";
-import {
-  BotTaskService,
-} from "./generated/soulfire/task_pb.js";
-import { ChatService } from "./generated/soulfire/chat_pb.js";
-import { InventoryService } from "./generated/soulfire/inventory_pb.js";
 import { PathfinderService } from "./generated/soulfire/pathfinding_pb.js";
 import { BotProtocolService } from "./generated/soulfire/protocol_pb.js";
 import { RecipeService } from "./generated/soulfire/recipe_pb.js";
 import { RegistryService } from "./generated/soulfire/registry_pb.js";
+import { SdkService, type SdkIdentity } from "./generated/soulfire/sdk_pb.js";
+import { BotTaskService } from "./generated/soulfire/task_pb.js";
 import { WorldService } from "./generated/soulfire/world_pb.js";
 import type { LocalSoulFireServer } from "./install-types.js";
-import { PluginCatalog } from "./plugins.js";
-import {
-  BotSession,
-  type BotSessionOptions,
-} from "./session.js";
-import { SoulFireTasks } from "./tasks.js";
-import {
-  SoulFireActionError,
-  requireCompletedAction,
-} from "./actions.js";
-import { SoulFireFleet } from "./fleet.js";
-import { SoulFireCamera } from "./camera.js";
-import { SoulFireAdmin } from "./admin.js";
-import { SoulFireChat } from "./chat.js";
 import { SoulFireInventory } from "./inventory.js";
 import { SoulFirePathfinder } from "./pathfinding.js";
+import { PluginCatalog } from "./plugins.js";
 import { SoulFireProtocol } from "./protocol.js";
 import { SoulFireRecipes } from "./recipes.js";
 import { SoulFireRegistry } from "./registry.js";
+import { BotSession, type BotSessionOptions } from "./session.js";
+import { SoulFireTasks } from "./tasks.js";
 import { SoulFireWorld } from "./world.js";
 
 export { SoulFireActionError } from "./actions.js";
@@ -180,11 +175,11 @@ export interface BotSelection {
 
 export interface LocalServerController {
   readonly info: LocalSoulFireServer;
-  close(): Promise<void>;
+  close(): Effect.Effect<void>;
   isRunning(): boolean;
   logs(): readonly string[];
-  restart(): Promise<void>;
-  stop(): Promise<void>;
+  restart(): Effect.Effect<void, SoulFireOperationError>;
+  stop(): Effect.Effect<void, SoulFireOperationError>;
 }
 
 type ScopedRequest<T extends DescMessage> = Omit<
@@ -197,7 +192,9 @@ type InstanceScopedRequest<T extends DescMessage> = Omit<
   "$typeName" | "id" | "instanceId"
 >;
 
-export type BotMovement = ScopedRequest<typeof BotSetMovementStateRequestSchema>;
+export type BotMovement = ScopedRequest<
+  typeof BotSetMovementStateRequestSchema
+>;
 
 const DEFAULT_EVENT_FILTER: MessageInitShape<typeof BotEventFilterSchema> = {
   includeChat: true,
@@ -237,7 +234,7 @@ function normalizeBaseUrl(baseUrl: string): string {
   return normalized;
 }
 
-export class SoulFire {
+export class SoulFireClient {
   readonly #transport: Transport;
   readonly #instanceClient: Client<typeof InstanceService>;
   readonly #loginClient: Client<typeof LoginService>;
@@ -257,9 +254,7 @@ export class SoulFire {
 
     const authInterceptor: Interceptor = (next) => async (request) => {
       const token =
-        typeof this.#token === "function"
-          ? await this.#token()
-          : this.#token;
+        typeof this.#token === "function" ? await this.#token() : this.#token;
       if (token) {
         request.header.set("Authorization", `Bearer ${token}`);
       }
@@ -293,36 +288,46 @@ export class SoulFire {
    * Connects and checks the server is compatible: its SDK API version,
    * `requiredCapabilities` and `requiredPlugins`.
    */
-  public static async connect(options: SoulFireOptions): Promise<SoulFire> {
-    const client = new SoulFire(options);
-    try {
-      await client.#handshake(options);
-      return client;
-    } catch (error) {
-      await client.close();
-      throw error;
-    }
+  public static connect(
+    options: SoulFireOptions,
+  ): Effect.Effect<SoulFireClient, SoulFireConnectionError, Scope.Scope> {
+    return SoulFireClient.unauthenticated(options).pipe(
+      Effect.flatMap((client) =>
+        client.#handshake(options).pipe(Effect.as(client)),
+      ),
+      Effect.mapError((cause) => new SoulFireConnectionError({ cause })),
+    );
   }
 
   /**
    * A client that skips that check, for example to log in first.
    */
-  public static unauthenticated(options: SoulFireOptions): SoulFire {
-    return new SoulFire(options);
+  public static unauthenticated(
+    options: SoulFireOptions,
+  ): Effect.Effect<SoulFireClient, SoulFireConnectionError, Scope.Scope> {
+    return Effect.acquireRelease(
+      Effect.try({
+        try: () => new SoulFireClient(options),
+        catch: (cause) => new SoulFireConnectionError({ cause }),
+      }),
+      (client) => client.close(),
+    );
   }
 
-  public static async connectManaged(
+  public static connectManaged(
     options: SoulFireOptions,
     localServer: LocalServerController,
-  ): Promise<SoulFire> {
-    try {
-      const client = new SoulFire(options, localServer);
-      await client.#handshake(options);
-      return client;
-    } catch (error) {
-      await localServer.close();
-      throw error;
-    }
+  ): Effect.Effect<SoulFireClient, SoulFireConnectionError, Scope.Scope> {
+    return Effect.acquireRelease(
+      Effect.try({
+        try: () => new SoulFireClient(options, localServer),
+        catch: (cause) => new SoulFireConnectionError({ cause }),
+      }),
+      (client) => client.close(),
+    ).pipe(
+      Effect.tap((client) => client.#handshake(options)),
+      Effect.mapError((cause) => new SoulFireConnectionError({ cause })),
+    );
   }
 
   public setToken(token: string | TokenProvider | undefined): void {
@@ -351,7 +356,9 @@ export class SoulFire {
 
   public get plugins(): PluginCatalog {
     if (this.#plugins === undefined) {
-      throw new Error("SoulFire connection has not completed its SDK handshake");
+      throw new Error(
+        "SoulFire connection has not completed its SDK handshake",
+      );
     }
     return this.#plugins;
   }
@@ -368,12 +375,18 @@ export class SoulFire {
     return this.#localServer?.isRunning() ?? false;
   }
 
-  public async restartLocalServer(): Promise<void> {
-    await this.#requireLocalServer().restart();
+  public restartLocalServer(): Effect.Effect<void, SoulFireOperationError> {
+    return Effect.try({
+      try: () => this.#requireLocalServer(),
+      catch: (cause) => operationError("SoulFire.restartLocalServer", cause),
+    }).pipe(Effect.flatMap((server) => server.restart()));
   }
 
-  public async stopLocalServer(): Promise<void> {
-    await this.#requireLocalServer().stop();
+  public stopLocalServer(): Effect.Effect<void, SoulFireOperationError> {
+    return Effect.try({
+      try: () => this.#requireLocalServer(),
+      catch: (cause) => operationError("SoulFire.stopLocalServer", cause),
+    }).pipe(Effect.flatMap((server) => server.stop()));
   }
 
   public service<T extends DescService>(service: T): Client<T> {
@@ -403,54 +416,70 @@ export class SoulFire {
     );
   }
 
-  public async instances(
+  public instances(
     options?: CallOptions,
-  ): Promise<InstanceListResponse_Instance[]> {
-    const response = await this.#instanceClient.listInstances({}, options);
-    return response.instances;
+  ): Effect.Effect<InstanceListResponse_Instance[], SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const response = yield* rpc("SoulFire.instances", (signal) =>
+        this.#instanceClient.listInstances({}, withSignal(options, signal)),
+      );
+      return response.instances;
+    });
   }
 
-  public async createInstance(
+  public createInstance(
     friendlyName: string,
     options?: CallOptions,
-  ): Promise<SoulFireInstance> {
-    const response = await this.#instanceClient.createInstance(
-      { friendlyName },
-      options,
-    );
-    return this.instance(response.id);
+  ): Effect.Effect<SoulFireInstance, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const response = yield* rpc("SoulFire.createInstance", (signal) =>
+        this.#instanceClient.createInstance(
+          { friendlyName },
+          withSignal(options, signal),
+        ),
+      );
+      return this.instance(response.id);
+    });
   }
 
   public beginLogin(
     email: string,
     options?: CallOptions,
-  ): Promise<NextAuthFlowResponse> {
-    return this.#loginClient.login({ email }, options);
+  ): Effect.Effect<NextAuthFlowResponse, SoulFireOperationError> {
+    return rpc("SoulFire.beginLogin", (signal) =>
+      this.#loginClient.login({ email }, withSignal(options, signal)),
+    );
   }
 
-  public async completeLogin(
+  public completeLogin(
     authFlowToken: string,
     code: string,
     options?: CallOptions,
-  ): Promise<NextAuthFlowResponse> {
-    const response = await this.#loginClient.emailCode(
-      { authFlowToken, code },
-      options,
-    );
-    if (response.next.case === "success") {
-      this.setToken(response.next.value.token);
-      await this.#handshake({
-        baseUrl: "",
-        token: response.next.value.token,
-      });
-    }
-    return response;
+  ): Effect.Effect<NextAuthFlowResponse, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const response = yield* rpc("SoulFire.completeLogin", (signal) =>
+        this.#loginClient.emailCode(
+          { authFlowToken, code },
+          withSignal(options, signal),
+        ),
+      );
+      if (response.next.case === "success") {
+        this.setToken(response.next.value.token);
+        yield* this.#handshake({
+          baseUrl: "",
+          token: response.next.value.token,
+        });
+      }
+      return response;
+    });
   }
 
-  public async close(): Promise<void> {
-    const localServer = this.#localServer;
-    this.#localServer = undefined;
-    await localServer?.close();
+  public close(): Effect.Effect<void> {
+    return Effect.suspend(() => {
+      const localServer = this.#localServer;
+      this.#localServer = undefined;
+      return localServer === undefined ? Effect.void : localServer.close();
+    });
   }
 
   #requireLocalServer(): LocalServerController {
@@ -462,40 +491,44 @@ export class SoulFire {
 
   #requireConnection(): ConnectionMetadata {
     if (this.#connection === undefined) {
-      throw new Error("SoulFire connection has not completed its SDK handshake");
+      throw new Error(
+        "SoulFire connection has not completed its SDK handshake",
+      );
     }
     return this.#connection;
   }
 
-  async #handshake(options: SoulFireOptions): Promise<void> {
-    try {
-      const response = await this.#sdkClient.handshake({
-        sdkName: "@soulfiremc/sdk",
-        sdkVersion: SDK_VERSION,
-        minimumApiVersion: SDK_API_VERSION,
-        maximumApiVersion: SDK_API_VERSION,
-        requiredCapabilities: [...(options.requiredCapabilities ?? [])],
-        requiredPlugins: (options.requiredPlugins ?? []).map((plugin) => ({
-          pluginId: plugin.pluginId,
-          ...(plugin.versionRange === undefined
-            ? {}
-            : { versionRange: plugin.versionRange }),
-        })),
+  #handshake(
+    options: SoulFireOptions,
+  ): Effect.Effect<void, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const response = yield* rpc("SoulFire.handshake", (signal) =>
+        this.#sdkClient.handshake(
+          {
+            sdkName: "@soulfiremc/sdk",
+            sdkVersion: SDK_VERSION,
+            minimumApiVersion: SDK_API_VERSION,
+            maximumApiVersion: SDK_API_VERSION,
+            requiredCapabilities: [...(options.requiredCapabilities ?? [])],
+            requiredPlugins: (options.requiredPlugins ?? []).map((plugin) => ({
+              pluginId: plugin.pluginId,
+              ...(plugin.versionRange === undefined
+                ? {}
+                : { versionRange: plugin.versionRange }),
+            })),
+          },
+          { signal },
+        ),
+      );
+      this.#connection = yield* Effect.try({
+        try: () => connectionMetadata(response),
+        catch: (cause) => operationError("SoulFire.handshake", cause),
       });
-      this.#connection = connectionMetadata(response);
       this.#plugins = new PluginCatalog(
         this.#transport,
         this.#connection.plugins,
       );
-    } catch (error) {
-      if (
-        error instanceof ConnectError
-        && error.code === Code.FailedPrecondition
-      ) {
-        throw new SoulFireCompatibilityError(error.rawMessage, error);
-      }
-      throw error;
-    }
+    });
   }
 }
 
@@ -513,9 +546,7 @@ export class SoulFireInstance {
   readonly #worldClient: Client<typeof WorldService> | undefined;
   readonly #protocolClient: Client<typeof BotProtocolService> | undefined;
   readonly #capabilities: CapabilitySet | undefined;
-  readonly #instanceLiveClient:
-    | Client<typeof InstanceLiveService>
-    | undefined;
+  readonly #instanceLiveClient: Client<typeof InstanceLiveService> | undefined;
 
   public constructor(
     public readonly id: string,
@@ -571,33 +602,61 @@ export class SoulFireInstance {
     );
   }
 
-  public async info(options?: CallOptions): Promise<InstanceInfo> {
-    const response = await this.#instanceClient.getInstanceInfo(
-      { id: this.id },
-      options,
-    );
-    if (response.result.case !== "info") {
-      throw new Error(`SoulFire did not return instance ${this.id}`);
-    }
-    return response.result.value;
+  public info(
+    options?: CallOptions,
+  ): Effect.Effect<InstanceInfo, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const response = yield* rpc("SoulFireInstance.info", (signal) =>
+        this.#instanceClient.getInstanceInfo(
+          { id: this.id },
+          withSignal(options, signal),
+        ),
+      );
+      if (response.result.case !== "info") {
+        return yield* Effect.fail(
+          operationError(
+            "SoulFireInstance.info",
+            new Error(`SoulFire did not return instance ${this.id}`),
+          ),
+        );
+      }
+      return response.result.value;
+    });
   }
 
   /**
    * Deletes the instance and its data for good. Its bots are stopped first.
    */
-  public delete(options?: CallOptions): Promise<void> {
-    return this.#instanceClient
-      .deleteInstance({ id: this.id }, options)
-      .then(() => undefined);
+  /**
+   * Deletes the instance and its data for good. Its bots are stopped first.
+   */
+  public delete(
+    options?: CallOptions,
+  ): Effect.Effect<void, SoulFireOperationError> {
+    return Effect.map(
+      rpc("SoulFireInstance.delete", (signal) =>
+        this.#instanceClient.deleteInstance(
+          { id: this.id },
+          withSignal(options, signal),
+        ),
+      ),
+      () => undefined,
+    );
   }
 
   public updateMetadata(
     request: InstanceScopedRequest<typeof InstanceUpdateMetaRequestSchema>,
     options?: CallOptions,
-  ): Promise<void> {
-    return this.#instanceClient
-      .updateInstanceMeta({ ...request, id: this.id }, options)
-      .then(() => undefined);
+  ): Effect.Effect<void, SoulFireOperationError> {
+    return Effect.map(
+      rpc("SoulFireInstance.updateMetadata", (signal) =>
+        this.#instanceClient.updateInstanceMeta(
+          { ...request, id: this.id },
+          withSignal(options, signal),
+        ),
+      ),
+      () => undefined,
+    );
   }
 
   public setConfigEntry(
@@ -605,87 +664,119 @@ export class SoulFireInstance {
       typeof InstanceUpdateConfigEntryRequestSchema
     >,
     options?: CallOptions,
-  ): Promise<void> {
-    return this.#instanceClient
-      .updateInstanceConfigEntry({ ...request, id: this.id }, options)
-      .then(() => undefined);
+  ): Effect.Effect<void, SoulFireOperationError> {
+    return Effect.map(
+      rpc("SoulFireInstance.setConfigEntry", (signal) =>
+        this.#instanceClient.updateInstanceConfigEntry(
+          { ...request, id: this.id },
+          withSignal(options, signal),
+        ),
+      ),
+      () => undefined,
+    );
   }
 
   public addAccounts(
     accounts: readonly MinecraftAccountProto[],
     options?: CallOptions,
-  ): Promise<void> {
-    return this.#instanceClient
-      .addInstanceAccountsBatch(
-        { id: this.id, accounts: [...accounts] },
-        options,
-      )
-      .then(() => undefined);
+  ): Effect.Effect<void, SoulFireOperationError> {
+    return Effect.map(
+      rpc("SoulFireInstance.addAccounts", (signal) =>
+        this.#instanceClient.addInstanceAccountsBatch(
+          { id: this.id, accounts: [...accounts] },
+          withSignal(options, signal),
+        ),
+      ),
+      () => undefined,
+    );
   }
 
   public removeAccounts(
     profileIds: readonly string[],
     options?: CallOptions,
-  ): Promise<void> {
-    return this.#instanceClient
-      .removeInstanceAccountsBatch(
-        { id: this.id, profileIds: [...new Set(profileIds)] },
-        options,
-      )
-      .then(() => undefined);
+  ): Effect.Effect<void, SoulFireOperationError> {
+    return Effect.map(
+      rpc("SoulFireInstance.removeAccounts", (signal) =>
+        this.#instanceClient.removeInstanceAccountsBatch(
+          { id: this.id, profileIds: [...new Set(profileIds)] },
+          withSignal(options, signal),
+        ),
+      ),
+      () => undefined,
+    );
   }
 
   public addProxies(
     proxies: readonly ProxyProto[],
     options?: CallOptions,
-  ): Promise<void> {
-    return this.#instanceClient
-      .addInstanceProxiesBatch(
-        { id: this.id, proxies: [...proxies] },
-        options,
-      )
-      .then(() => undefined);
+  ): Effect.Effect<void, SoulFireOperationError> {
+    return Effect.map(
+      rpc("SoulFireInstance.addProxies", (signal) =>
+        this.#instanceClient.addInstanceProxiesBatch(
+          { id: this.id, proxies: [...proxies] },
+          withSignal(options, signal),
+        ),
+      ),
+      () => undefined,
+    );
   }
 
   public removeProxies(
     addresses: readonly string[],
     options?: CallOptions,
-  ): Promise<void> {
-    return this.#instanceClient
-      .removeInstanceProxiesBatch(
-        { id: this.id, addresses: [...new Set(addresses)] },
-        options,
-      )
-      .then(() => undefined);
+  ): Effect.Effect<void, SoulFireOperationError> {
+    return Effect.map(
+      rpc("SoulFireInstance.removeProxies", (signal) =>
+        this.#instanceClient.removeInstanceProxiesBatch(
+          { id: this.id, addresses: [...new Set(addresses)] },
+          withSignal(options, signal),
+        ),
+      ),
+      () => undefined,
+    );
   }
 
   public loginCredentials(
     request: InstanceScopedRequest<typeof CredentialsAuthRequestSchema>,
     options?: CallOptions,
-  ): AsyncIterable<CredentialsAuthResponse> {
-    return this.#requireMcAuthClient().loginCredentials(
-      { ...request, instanceId: this.id },
-      options,
+  ): Stream.Stream<CredentialsAuthResponse, SoulFireOperationError> {
+    return Stream.unwrap(
+      Effect.gen(this, function* () {
+        return rpcStream("SoulFireInstance.loginCredentials", (signal) =>
+          this.#requireMcAuthClient().loginCredentials(
+            { ...request, instanceId: this.id },
+            withSignal(options, signal),
+          ),
+        );
+      }),
     );
   }
 
   public loginDeviceCode(
     request: InstanceScopedRequest<typeof DeviceCodeAuthRequestSchema>,
     options?: CallOptions,
-  ): AsyncIterable<DeviceCodeAuthResponse> {
-    return this.#requireMcAuthClient().loginDeviceCode(
-      { ...request, instanceId: this.id },
-      options,
+  ): Stream.Stream<DeviceCodeAuthResponse, SoulFireOperationError> {
+    return Stream.unwrap(
+      Effect.gen(this, function* () {
+        return rpcStream("SoulFireInstance.loginDeviceCode", (signal) =>
+          this.#requireMcAuthClient().loginDeviceCode(
+            { ...request, instanceId: this.id },
+            withSignal(options, signal),
+          ),
+        );
+      }),
     );
   }
 
   public refreshAccount(
     request: InstanceScopedRequest<typeof RefreshRequestSchema>,
     options?: CallOptions,
-  ): Promise<RefreshResponse> {
-    return this.#requireMcAuthClient().refresh(
-      { ...request, instanceId: this.id },
-      options,
+  ): Effect.Effect<RefreshResponse, SoulFireOperationError> {
+    return rpc("SoulFireInstance.refreshAccount", (signal) =>
+      this.#requireMcAuthClient().refresh(
+        { ...request, instanceId: this.id },
+        withSignal(options, signal),
+      ),
     );
   }
 
@@ -693,12 +784,18 @@ export class SoulFireInstance {
    * Every bot of the instance, online or not. Online ones come with their live
    * state, without the inventory.
    */
-  public async bots(options?: CallOptions): Promise<BotListEntry[]> {
-    const response = await this.#botClient.getBotList(
-      { instanceId: this.id },
-      options,
-    );
-    return response.bots;
+  public bots(
+    options?: CallOptions,
+  ): Effect.Effect<BotListEntry[], SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const response = yield* rpc("SoulFireInstance.bots", (signal) =>
+        this.#botClient.getBotList(
+          { instanceId: this.id },
+          withSignal(options, signal),
+        ),
+      );
+      return response.bots;
+    });
   }
 
   /**
@@ -706,10 +803,16 @@ export class SoulFireInstance {
    */
   public watchBotStatuses(
     options?: CallOptions,
-  ): AsyncIterable<WatchBotStatusesResponse> {
-    return this.#botClient.watchBotStatuses(
-      { instanceId: this.id },
-      options,
+  ): Stream.Stream<WatchBotStatusesResponse, SoulFireOperationError> {
+    return Stream.unwrap(
+      Effect.gen(this, function* () {
+        return rpcStream("SoulFireInstance.watchBotStatuses", (signal) =>
+          this.#botClient.watchBotStatuses(
+            { instanceId: this.id },
+            withSignal(options, signal),
+          ),
+        );
+      }),
     );
   }
 
@@ -719,19 +822,32 @@ export class SoulFireInstance {
    * leaving high-volume sounds and particles opt-in.
    */
   public events(
-    filter: MessageInitShape<typeof InstanceEventFilterSchema> =
-      DEFAULT_INSTANCE_EVENT_FILTER,
+    filter: MessageInitShape<
+      typeof InstanceEventFilterSchema
+    > = DEFAULT_INSTANCE_EVENT_FILTER,
     options?: CallOptions,
-  ): AsyncIterable<InstanceEvent> {
-    if (this.#instanceLiveClient === undefined) {
-      throw new Error("The instance live service is unavailable");
-    }
-    return this.#instanceLiveClient.watchInstanceEvents(
-      {
-        instanceId: this.id,
-        filter,
-      },
-      options,
+  ): Stream.Stream<InstanceEvent, SoulFireOperationError> {
+    return Stream.unwrap(
+      Effect.gen(this, function* () {
+        if (this.#instanceLiveClient === undefined) {
+          return yield* Effect.fail(
+            operationError(
+              "SoulFireInstance.events",
+              new Error("The instance live service is unavailable"),
+            ),
+          );
+        }
+        const client = this.#instanceLiveClient;
+        return rpcStream("SoulFireInstance.events", (signal) =>
+          client.watchInstanceEvents(
+            {
+              instanceId: this.id,
+              filter,
+            },
+            withSignal(options, signal),
+          ),
+        );
+      }),
     );
   }
 
@@ -739,123 +855,150 @@ export class SoulFireInstance {
    * Marks bots to run; they connect in the background. `selection` defaults to
    * every bot not marked to run.
    */
-  public async start(
+  public start(
     selection?: BotSelection,
     options?: CallOptions,
-  ): Promise<BotStatus[]> {
-    const botIds = await this.#selectBotIds(
-      selection,
-      (bot) => bot.status?.desiredState !== BotDesiredState.RUNNING,
-      options,
-    );
-    if (botIds.length === 0) {
-      return [];
-    }
-    const response = await this.#botClient.setBotsDesiredState(
-      {
-        instanceId: this.id,
-        botIds,
-        desiredState: BotDesiredState.RUNNING,
-      },
-      options,
-    );
-    return response.bots;
+  ): Effect.Effect<BotStatus[], SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const botIds = yield* this.#selectBotIds(
+        selection,
+        (bot) => bot.status?.desiredState !== BotDesiredState.RUNNING,
+        options,
+      );
+      if (botIds.length === 0) {
+        return [];
+      }
+      const response = yield* rpc("SoulFireInstance.start", (signal) =>
+        this.#botClient.setBotsDesiredState(
+          {
+            instanceId: this.id,
+            botIds,
+            desiredState: BotDesiredState.RUNNING,
+          },
+          withSignal(options, signal),
+        ),
+      );
+      return response.bots;
+    });
   }
 
   /**
    * Marks bots as stopped; they disconnect in the background. `selection`
    * defaults to every bot marked to run.
    */
-  public async stop(
+  public stop(
     selection?: BotSelection,
     options?: CallOptions,
-  ): Promise<BotStatus[]> {
-    const botIds = await this.#selectBotIds(
-      selection,
-      (bot) => bot.status?.desiredState === BotDesiredState.RUNNING,
-      options,
-    );
-    if (botIds.length === 0) {
-      return [];
-    }
-    const response = await this.#botClient.setBotsDesiredState(
-      {
-        instanceId: this.id,
-        botIds,
-        desiredState: BotDesiredState.STOPPED,
-      },
-      options,
-    );
-    return response.bots;
+  ): Effect.Effect<BotStatus[], SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const botIds = yield* this.#selectBotIds(
+        selection,
+        (bot) => bot.status?.desiredState === BotDesiredState.RUNNING,
+        options,
+      );
+      if (botIds.length === 0) {
+        return [];
+      }
+      const response = yield* rpc("SoulFireInstance.stop", (signal) =>
+        this.#botClient.setBotsDesiredState(
+          {
+            instanceId: this.id,
+            botIds,
+            desiredState: BotDesiredState.STOPPED,
+          },
+          withSignal(options, signal),
+        ),
+      );
+      return response.bots;
+    });
   }
 
   /**
    * Gives bots a fresh connection. `selection` defaults to every bot marked to
    * run.
    */
-  public async restart(
+  public restart(
     selection?: BotSelection,
     options?: CallOptions,
-  ): Promise<BotStatus[]> {
-    const botIds = await this.#selectBotIds(
-      selection,
-      (bot) => bot.status?.desiredState === BotDesiredState.RUNNING,
-      options,
-    );
-    if (botIds.length === 0) {
-      return [];
-    }
-    const response = await this.#botClient.restartBots(
-      { instanceId: this.id, botIds },
-      options,
-    );
-    return response.bots;
+  ): Effect.Effect<BotStatus[], SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const botIds = yield* this.#selectBotIds(
+        selection,
+        (bot) => bot.status?.desiredState === BotDesiredState.RUNNING,
+        options,
+      );
+      if (botIds.length === 0) {
+        return [];
+      }
+      const response = yield* rpc("SoulFireInstance.restart", (signal) =>
+        this.#botClient.restartBots(
+          { instanceId: this.id, botIds },
+          withSignal(options, signal),
+        ),
+      );
+      return response.bots;
+    });
   }
 
-  async #selectBotIds(
+  #selectBotIds(
     selection: BotSelection | undefined,
     countFilter: (bot: BotListEntry) => boolean,
     options: CallOptions | undefined,
-  ): Promise<string[]> {
-    if (selection?.botIds !== undefined && selection.count !== undefined) {
-      throw new TypeError("Use either botIds or count, not both");
-    }
-    if (selection?.botIds !== undefined) {
-      return [...new Set(selection.botIds)];
-    }
-
-    const bots = await this.bots(options);
-    const candidates = bots.filter(countFilter);
-    if (selection?.count === undefined) {
-      return candidates.map((bot) => bot.profileId);
-    }
-
-    const count = normalizeCount(selection.count);
-    if (count === 0) {
-      return [];
-    }
-    if (await this.#shuffleAccountsEnabled(options)) {
-      shuffle(candidates);
-    }
-    return candidates.slice(0, count).map((bot) => bot.profileId);
+  ): Effect.Effect<string[], SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      if (selection?.botIds !== undefined && selection.count !== undefined) {
+        return yield* Effect.fail(
+          operationError(
+            "SoulFireInstance.selectBotIds",
+            new TypeError("Use either botIds or count, not both"),
+          ),
+        );
+      }
+      if (selection?.botIds !== undefined) {
+        return [...new Set(selection.botIds)];
+      }
+      const bots = yield* this.bots(options);
+      const candidates = bots.filter(countFilter);
+      if (selection?.count === undefined) {
+        return candidates.map((bot) => bot.profileId);
+      }
+      const count = normalizeCount(selection.count);
+      if (count === 0) {
+        return [];
+      }
+      if (yield* this.#shuffleAccountsEnabled(options)) {
+        shuffle(candidates);
+      }
+      return candidates.slice(0, count).map((bot) => bot.profileId);
+    });
   }
 
-  async #shuffleAccountsEnabled(options?: CallOptions): Promise<boolean> {
-    const response = await this.#instanceClient.getInstanceInfo(
-      { id: this.id },
-      options,
-    );
-    if (response.result.case !== "info") {
-      return false;
-    }
-    const accountSettings = response.result.value.config?.settings.find(
-      (namespace) => namespace.namespace === "account",
-    );
-    const shuffleSetting = accountSettings?.entries.find(
-      (entry) => entry.key === "shuffle-accounts",
-    );
-    return shuffleSetting?.value?.kind.case === "boolValue"
-      && shuffleSetting.value.kind.value;
+  #shuffleAccountsEnabled(
+    options?: CallOptions,
+  ): Effect.Effect<boolean, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const response = yield* rpc(
+        "SoulFireInstance.shuffleAccountsEnabled",
+        (signal) =>
+          this.#instanceClient.getInstanceInfo(
+            { id: this.id },
+            withSignal(options, signal),
+          ),
+      );
+      if (response.result.case !== "info") {
+        return false;
+      }
+      const accountSettings = response.result.value.config?.settings.find(
+        (namespace) => namespace.namespace === "account",
+      );
+      const shuffleSetting = accountSettings?.entries.find(
+        (entry) => entry.key === "shuffle-accounts",
+      );
+      return (
+        shuffleSetting?.value?.kind.case === "boolValue" &&
+        shuffleSetting.value.kind.value
+      );
+    });
   }
 
   #requireMcAuthClient(): Client<typeof MCAuthService> {
@@ -954,11 +1097,7 @@ export class SoulFireBot {
   }
 
   public get camera(): SoulFireCamera {
-    return new SoulFireCamera(
-      this.instanceId,
-      this.id,
-      this.botClient,
-    );
+    return new SoulFireCamera(this.instanceId, this.id, this.botClient);
   }
 
   public get protocol(): SoulFireProtocol {
@@ -972,101 +1111,160 @@ export class SoulFireBot {
   /**
    * Marks the bot to run; it connects in the background (see `waitForOnline`).
    */
-  public async start(options?: CallOptions): Promise<BotStatus> {
-    const response = await this.botClient.setBotsDesiredState(
-      {
-        instanceId: this.instanceId,
-        botIds: [this.id],
-        desiredState: BotDesiredState.RUNNING,
-      },
-      options,
-    );
-    return requiredBotStatus(response.bots, this.id);
+  /**
+   * Marks the bot to run; it connects in the background (see `waitForOnline`).
+   */
+  public start(
+    options?: CallOptions,
+  ): Effect.Effect<BotStatus, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const response = yield* rpc("SoulFireBot.start", (signal) =>
+        this.botClient.setBotsDesiredState(
+          {
+            instanceId: this.instanceId,
+            botIds: [this.id],
+            desiredState: BotDesiredState.RUNNING,
+          },
+          withSignal(options, signal),
+        ),
+      );
+      return yield* Effect.try({
+        try: () => requiredBotStatus(response.bots, this.id),
+        catch: (cause) => operationError("SoulFireBot.start", cause),
+      });
+    });
   }
 
   /**
    * Marks the bot as stopped; it disconnects in the background.
    */
-  public async stop(options?: CallOptions): Promise<BotStatus> {
-    const response = await this.botClient.setBotsDesiredState(
-      {
-        instanceId: this.instanceId,
-        botIds: [this.id],
-        desiredState: BotDesiredState.STOPPED,
-      },
-      options,
-    );
-    return requiredBotStatus(response.bots, this.id);
+  public stop(
+    options?: CallOptions,
+  ): Effect.Effect<BotStatus, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const response = yield* rpc("SoulFireBot.stop", (signal) =>
+        this.botClient.setBotsDesiredState(
+          {
+            instanceId: this.instanceId,
+            botIds: [this.id],
+            desiredState: BotDesiredState.STOPPED,
+          },
+          withSignal(options, signal),
+        ),
+      );
+      return yield* Effect.try({
+        try: () => requiredBotStatus(response.bots, this.id),
+        catch: (cause) => operationError("SoulFireBot.stop", cause),
+      });
+    });
   }
 
   /**
    * Gives the bot a fresh connection.
    */
-  public async restart(options?: CallOptions): Promise<BotStatus> {
-    const response = await this.botClient.restartBots(
-      { instanceId: this.instanceId, botIds: [this.id] },
-      options,
-    );
-    return requiredBotStatus(response.bots, this.id);
+  public restart(
+    options?: CallOptions,
+  ): Effect.Effect<BotStatus, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const response = yield* rpc("SoulFireBot.restart", (signal) =>
+        this.botClient.restartBots(
+          { instanceId: this.instanceId, botIds: [this.id] },
+          withSignal(options, signal),
+        ),
+      );
+      return yield* Effect.try({
+        try: () => requiredBotStatus(response.bots, this.id),
+        catch: (cause) => operationError("SoulFireBot.restart", cause),
+      });
+    });
   }
 
-  public async status(options?: CallOptions): Promise<BotStatus> {
-    const response = await this.info(options);
-    if (response.status === undefined) {
-      throw new Error(`SoulFire did not return status for bot ${this.id}`);
-    }
-    return response.status;
+  public status(
+    options?: CallOptions,
+  ): Effect.Effect<BotStatus, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const response = yield* this.info(options);
+      if (response.status === undefined) {
+        return yield* Effect.fail(
+          operationError(
+            "SoulFireBot.status",
+            new Error(`SoulFire did not return status for bot ${this.id}`),
+          ),
+        );
+      }
+      return response.status;
+    });
   }
 
   /**
    * Status, and while online the live state with the full inventory.
    */
-  public info(options?: CallOptions): Promise<BotInfoResponse> {
-    return this.botClient.getBotInfo(
-      { instanceId: this.instanceId, botId: this.id },
-      options,
+  public info(
+    options?: CallOptions,
+  ): Effect.Effect<BotInfoResponse, SoulFireOperationError> {
+    return rpc("SoulFireBot.info", (signal) =>
+      this.botClient.getBotInfo(
+        { instanceId: this.instanceId, botId: this.id },
+        withSignal(options, signal),
+      ),
     );
   }
 
   /**
    * Throws if the bot is offline.
    */
-  public async liveState(options?: CallOptions): Promise<BotLiveState> {
-    const response = await this.info(options);
-    if (response.liveState === undefined) {
-      throw new Error(`Bot ${this.id} is not online`);
-    }
-    return response.liveState;
+  public liveState(
+    options?: CallOptions,
+  ): Effect.Effect<BotLiveState, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const response = yield* this.info(options);
+      if (response.liveState === undefined) {
+        return yield* Effect.fail(
+          operationError(
+            "SoulFireBot.liveState",
+            new Error(`Bot ${this.id} is not online`),
+          ),
+        );
+      }
+      return response.liveState;
+    });
   }
 
   /**
    * Resolves once the bot is online, at once if it already is.
    */
-  public async waitForOnline(options?: {
+  public waitForOnline(options?: {
     call?: CallOptions;
-    signal?: AbortSignal;
-  }): Promise<BotStatus> {
-    const current = await this.info(options?.call);
-    const currentStatus = current.status;
-    if (currentStatus === undefined) {
-      throw new Error(`SoulFire did not return status for bot ${this.id}`);
-    }
-    if (current.liveState !== undefined) {
-      return currentStatus;
-    }
-    const callOptions = options?.signal === undefined
-      ? options?.call
-      : { ...options.call, signal: options.signal };
-    let latestStatus = currentStatus;
-    for await (const event of this.events(undefined, callOptions)) {
-      if (event.event.case === "status") {
-        latestStatus = event.event.value;
-      }
-      if (event.event.case === "snapshot") {
-        return latestStatus;
-      }
-    }
-    throw new Error(`Bot ${this.id} event stream ended before it came online`);
+  }): Effect.Effect<BotStatus, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const current = yield* this.info(options?.call);
+      if (current.status === undefined)
+        return yield* Effect.fail(
+          rpcError(
+            "bot.waitForOnline",
+            new Error("SoulFire did not return bot status"),
+          ),
+        );
+      if (current.liveState !== undefined) return current.status;
+      let latestStatus = current.status;
+      const snapshot = yield* this.events(undefined, options?.call).pipe(
+        Stream.tap((event) =>
+          Effect.sync(() => {
+            if (event.event.case === "status") latestStatus = event.event.value;
+          }),
+        ),
+        Stream.filter((event) => event.event.case === "snapshot"),
+        Stream.runHead,
+      );
+      if (Option.isNone(snapshot))
+        return yield* Effect.fail(
+          rpcError(
+            "bot.waitForOnline",
+            new Error("Bot event stream ended before it came online"),
+          ),
+        );
+      return latestStatus;
+    });
   }
 
   /**
@@ -1075,34 +1273,48 @@ export class SoulFireBot {
    * takes state changes, chat, lifecycle, inventory, damage, resource packs and
    * titles.
    */
+  /**
+   * The bot's live events. The first is its status; the stream stays open while
+   * the bot is stopped and follows it across reconnects. The default filter
+   * takes state changes, chat, lifecycle, inventory, damage, resource packs and
+   * titles.
+   */
   public events(
-    filter: MessageInitShape<typeof BotEventFilterSchema> =
-      DEFAULT_EVENT_FILTER,
+    filter: MessageInitShape<
+      typeof BotEventFilterSchema
+    > = DEFAULT_EVENT_FILTER,
     options?: CallOptions,
-  ): AsyncIterable<BotEvent> {
-    return this.liveClient.watchBotEvents(
-      {
-        instanceId: this.instanceId,
-        botId: this.id,
-        filter,
-      },
-      options,
+  ): Stream.Stream<BotEvent, SoulFireOperationError> {
+    return Stream.unwrap(
+      Effect.gen(this, function* () {
+        return rpcStream("SoulFireBot.events", (signal) =>
+          this.liveClient.watchBotEvents(
+            {
+              instanceId: this.instanceId,
+              botId: this.id,
+              filter,
+            },
+            withSignal(options, signal),
+          ),
+        );
+      }),
     );
   }
 
   /**
    * Opens a `BotSession`: the event stream and the state it adds up to.
    */
-  public observe(options?: BotSessionOptions): Promise<BotSession> {
+  public observe(
+    options?: BotSessionOptions,
+  ): Effect.Effect<BotSession, SoulFireOperationError, Scope.Scope> {
     return BotSession.open(
-      (request, callOptions) => this.liveClient.watchBotEvents(
-        {
-          ...request,
-          instanceId: this.instanceId,
-          botId: this.id,
-        },
-        callOptions,
-      ),
+      (request, options) =>
+        rpcStream("bot.observe", (signal) =>
+          this.liveClient.watchBotEvents(
+            { ...request, instanceId: this.instanceId, botId: this.id },
+            withSignal(options, signal),
+          ),
+        ),
       options,
     );
   }
@@ -1110,19 +1322,29 @@ export class SoulFireBot {
   /**
    * A chat message, or a command if it starts with `/`.
    */
-  public async sendChat(
+  /**
+   * A chat message, or a command if it starts with `/`.
+   */
+  public sendChat(
     message: string,
     options?: CallOptions,
-  ): Promise<BotActionResult> {
-    const response = await this.liveClient.sendChat(
-      {
-        instanceId: this.instanceId,
-        botId: this.id,
-        message,
-      },
-      this.#actionOptions(options),
-    );
-    return requireCompletedAction(response.result);
+  ): Effect.Effect<BotActionResult, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const response = yield* rpc("SoulFireBot.sendChat", (signal) =>
+        this.liveClient.sendChat(
+          {
+            instanceId: this.instanceId,
+            botId: this.id,
+            message,
+          },
+          withSignal(this.#actionOptions(options), signal),
+        ),
+      );
+      return yield* Effect.try({
+        try: () => requireCompletedAction(response.result),
+        catch: (cause) => operationError("SoulFireBot.sendChat", cause),
+      });
+    });
   }
 
   /**
@@ -1131,14 +1353,16 @@ export class SoulFireBot {
   public getBlock(
     request: ScopedRequest<typeof GetBlockRequestSchema>,
     options?: CallOptions,
-  ): Promise<GetBlockResponse> {
-    return this.liveClient.getBlock(
-      {
-        ...request,
-        instanceId: this.instanceId,
-        botId: this.id,
-      },
-      options,
+  ): Effect.Effect<GetBlockResponse, SoulFireOperationError> {
+    return rpc("SoulFireBot.getBlock", (signal) =>
+      this.liveClient.getBlock(
+        {
+          ...request,
+          instanceId: this.instanceId,
+          botId: this.id,
+        },
+        withSignal(options, signal),
+      ),
     );
   }
 
@@ -1149,14 +1373,16 @@ export class SoulFireBot {
   public findBlocks(
     request: ScopedRequest<typeof FindBlocksRequestSchema>,
     options?: CallOptions,
-  ): Promise<FindBlocksResponse> {
-    return this.liveClient.findBlocks(
-      {
-        ...request,
-        instanceId: this.instanceId,
-        botId: this.id,
-      },
-      options,
+  ): Effect.Effect<FindBlocksResponse, SoulFireOperationError> {
+    return rpc("SoulFireBot.findBlocks", (signal) =>
+      this.liveClient.findBlocks(
+        {
+          ...request,
+          instanceId: this.instanceId,
+          botId: this.id,
+        },
+        withSignal(options, signal),
+      ),
     );
   }
 
@@ -1167,14 +1393,16 @@ export class SoulFireBot {
   public listNearbyEntities(
     request: ScopedRequest<typeof ListNearbyEntitiesRequestSchema>,
     options?: CallOptions,
-  ): Promise<ListNearbyEntitiesResponse> {
-    return this.liveClient.listNearbyEntities(
-      {
-        ...request,
-        instanceId: this.instanceId,
-        botId: this.id,
-      },
-      options,
+  ): Effect.Effect<ListNearbyEntitiesResponse, SoulFireOperationError> {
+    return rpc("SoulFireBot.listNearbyEntities", (signal) =>
+      this.liveClient.listNearbyEntities(
+        {
+          ...request,
+          instanceId: this.instanceId,
+          botId: this.id,
+        },
+        withSignal(options, signal),
+      ),
     );
   }
 
@@ -1186,15 +1414,24 @@ export class SoulFireBot {
   public digBlock(
     request: ScopedRequest<typeof DigBlockRequestSchema>,
     options?: CallOptions,
-  ): Promise<BotActionResult> {
-    return this.liveClient.digBlock(
-      {
-        ...request,
-        instanceId: this.instanceId,
-        botId: this.id,
-      },
-      this.#actionOptions(options),
-    ).then((response) => requireCompletedAction(response.result));
+  ): Effect.Effect<BotActionResult, SoulFireOperationError> {
+    return Effect.flatMap(
+      rpc("SoulFireBot.digBlock", (signal) =>
+        this.liveClient.digBlock(
+          {
+            ...request,
+            instanceId: this.instanceId,
+            botId: this.id,
+          },
+          withSignal(this.#actionOptions(options), signal),
+        ),
+      ),
+      (response) =>
+        Effect.try({
+          try: () => requireCompletedAction(response.result),
+          catch: (cause) => operationError("SoulFireBot.digBlock", cause),
+        }),
+    );
   }
 
   /**
@@ -1204,15 +1441,24 @@ export class SoulFireBot {
   public placeBlock(
     request: ScopedRequest<typeof PlaceBlockRequestSchema>,
     options?: CallOptions,
-  ): Promise<BotActionResult> {
-    return this.liveClient.placeBlock(
-      {
-        ...request,
-        instanceId: this.instanceId,
-        botId: this.id,
-      },
-      this.#actionOptions(options),
-    ).then((response) => requireCompletedAction(response.result));
+  ): Effect.Effect<BotActionResult, SoulFireOperationError> {
+    return Effect.flatMap(
+      rpc("SoulFireBot.placeBlock", (signal) =>
+        this.liveClient.placeBlock(
+          {
+            ...request,
+            instanceId: this.instanceId,
+            botId: this.id,
+          },
+          withSignal(this.#actionOptions(options), signal),
+        ),
+      ),
+      (response) =>
+        Effect.try({
+          try: () => requireCompletedAction(response.result),
+          catch: (cause) => operationError("SoulFireBot.placeBlock", cause),
+        }),
+    );
   }
 
   /**
@@ -1222,15 +1468,24 @@ export class SoulFireBot {
   public interactBlock(
     request: ScopedRequest<typeof InteractBlockRequestSchema>,
     options?: CallOptions,
-  ): Promise<BotActionResult> {
-    return this.liveClient.interactBlock(
-      {
-        ...request,
-        instanceId: this.instanceId,
-        botId: this.id,
-      },
-      this.#actionOptions(options),
-    ).then((response) => requireCompletedAction(response.result));
+  ): Effect.Effect<BotActionResult, SoulFireOperationError> {
+    return Effect.flatMap(
+      rpc("SoulFireBot.interactBlock", (signal) =>
+        this.liveClient.interactBlock(
+          {
+            ...request,
+            instanceId: this.instanceId,
+            botId: this.id,
+          },
+          withSignal(this.#actionOptions(options), signal),
+        ),
+      ),
+      (response) =>
+        Effect.try({
+          try: () => requireCompletedAction(response.result),
+          catch: (cause) => operationError("SoulFireBot.interactBlock", cause),
+        }),
+    );
   }
 
   /**
@@ -1240,15 +1495,24 @@ export class SoulFireBot {
   public useItem(
     request: ScopedRequest<typeof UseItemRequestSchema>,
     options?: CallOptions,
-  ): Promise<BotActionResult> {
-    return this.liveClient.useItem(
-      {
-        ...request,
-        instanceId: this.instanceId,
-        botId: this.id,
-      },
-      this.#actionOptions(options),
-    ).then((response) => requireCompletedAction(response.result));
+  ): Effect.Effect<BotActionResult, SoulFireOperationError> {
+    return Effect.flatMap(
+      rpc("SoulFireBot.useItem", (signal) =>
+        this.liveClient.useItem(
+          {
+            ...request,
+            instanceId: this.instanceId,
+            botId: this.id,
+          },
+          withSignal(this.#actionOptions(options), signal),
+        ),
+      ),
+      (response) =>
+        Effect.try({
+          try: () => requireCompletedAction(response.result),
+          catch: (cause) => operationError("SoulFireBot.useItem", cause),
+        }),
+    );
   }
 
   /**
@@ -1257,15 +1521,24 @@ export class SoulFireBot {
   public releaseItem(
     request: ScopedRequest<typeof ReleaseItemRequestSchema> = {},
     options?: CallOptions,
-  ): Promise<BotActionResult> {
-    return this.liveClient.releaseItem(
-      {
-        ...request,
-        instanceId: this.instanceId,
-        botId: this.id,
-      },
-      this.#actionOptions(options),
-    ).then((response) => requireCompletedAction(response.result));
+  ): Effect.Effect<BotActionResult, SoulFireOperationError> {
+    return Effect.flatMap(
+      rpc("SoulFireBot.releaseItem", (signal) =>
+        this.liveClient.releaseItem(
+          {
+            ...request,
+            instanceId: this.instanceId,
+            botId: this.id,
+          },
+          withSignal(this.#actionOptions(options), signal),
+        ),
+      ),
+      (response) =>
+        Effect.try({
+          try: () => requireCompletedAction(response.result),
+          catch: (cause) => operationError("SoulFireBot.releaseItem", cause),
+        }),
+    );
   }
 
   /**
@@ -1274,15 +1547,24 @@ export class SoulFireBot {
   public attackEntity(
     request: ScopedRequest<typeof AttackEntityRequestSchema>,
     options?: CallOptions,
-  ): Promise<BotActionResult> {
-    return this.liveClient.attackEntity(
-      {
-        ...request,
-        instanceId: this.instanceId,
-        botId: this.id,
-      },
-      this.#actionOptions(options),
-    ).then((response) => requireCompletedAction(response.result));
+  ): Effect.Effect<BotActionResult, SoulFireOperationError> {
+    return Effect.flatMap(
+      rpc("SoulFireBot.attackEntity", (signal) =>
+        this.liveClient.attackEntity(
+          {
+            ...request,
+            instanceId: this.instanceId,
+            botId: this.id,
+          },
+          withSignal(this.#actionOptions(options), signal),
+        ),
+      ),
+      (response) =>
+        Effect.try({
+          try: () => requireCompletedAction(response.result),
+          catch: (cause) => operationError("SoulFireBot.attackEntity", cause),
+        }),
+    );
   }
 
   /**
@@ -1291,15 +1573,24 @@ export class SoulFireBot {
   public interactEntity(
     request: ScopedRequest<typeof InteractEntityRequestSchema>,
     options?: CallOptions,
-  ): Promise<BotActionResult> {
-    return this.liveClient.interactEntity(
-      {
-        ...request,
-        instanceId: this.instanceId,
-        botId: this.id,
-      },
-      this.#actionOptions(options),
-    ).then((response) => requireCompletedAction(response.result));
+  ): Effect.Effect<BotActionResult, SoulFireOperationError> {
+    return Effect.flatMap(
+      rpc("SoulFireBot.interactEntity", (signal) =>
+        this.liveClient.interactEntity(
+          {
+            ...request,
+            instanceId: this.instanceId,
+            botId: this.id,
+          },
+          withSignal(this.#actionOptions(options), signal),
+        ),
+      ),
+      (response) =>
+        Effect.try({
+          try: () => requireCompletedAction(response.result),
+          catch: (cause) => operationError("SoulFireBot.interactEntity", cause),
+        }),
+    );
   }
 
   /**
@@ -1308,15 +1599,24 @@ export class SoulFireBot {
   public swingArm(
     request: ScopedRequest<typeof SwingArmRequestSchema>,
     options?: CallOptions,
-  ): Promise<BotActionResult> {
-    return this.liveClient.swingArm(
-      {
-        ...request,
-        instanceId: this.instanceId,
-        botId: this.id,
-      },
-      this.#actionOptions(options),
-    ).then((response) => requireCompletedAction(response.result));
+  ): Effect.Effect<BotActionResult, SoulFireOperationError> {
+    return Effect.flatMap(
+      rpc("SoulFireBot.swingArm", (signal) =>
+        this.liveClient.swingArm(
+          {
+            ...request,
+            instanceId: this.instanceId,
+            botId: this.id,
+          },
+          withSignal(this.#actionOptions(options), signal),
+        ),
+      ),
+      (response) =>
+        Effect.try({
+          try: () => requireCompletedAction(response.result),
+          catch: (cause) => operationError("SoulFireBot.swingArm", cause),
+        }),
+    );
   }
 
   /**
@@ -1325,15 +1625,24 @@ export class SoulFireBot {
   public respawn(
     request: ScopedRequest<typeof RespawnRequestSchema> = {},
     options?: CallOptions,
-  ): Promise<BotActionResult> {
-    return this.liveClient.respawn(
-      {
-        ...request,
-        instanceId: this.instanceId,
-        botId: this.id,
-      },
-      this.#actionOptions(options),
-    ).then((response) => requireCompletedAction(response.result));
+  ): Effect.Effect<BotActionResult, SoulFireOperationError> {
+    return Effect.flatMap(
+      rpc("SoulFireBot.respawn", (signal) =>
+        this.liveClient.respawn(
+          {
+            ...request,
+            instanceId: this.instanceId,
+            botId: this.id,
+          },
+          withSignal(this.#actionOptions(options), signal),
+        ),
+      ),
+      (response) =>
+        Effect.try({
+          try: () => requireCompletedAction(response.result),
+          catch: (cause) => operationError("SoulFireBot.respawn", cause),
+        }),
+    );
   }
 
   /**
@@ -1343,78 +1652,122 @@ export class SoulFireBot {
   public sleep(
     request: ScopedRequest<typeof SleepRequestSchema>,
     options?: CallOptions,
-  ): Promise<BotActionResult> {
-    return this.liveClient.sleep(
-      {
-        ...request,
-        instanceId: this.instanceId,
-        botId: this.id,
-      },
-      this.#actionOptions(options),
-    ).then((response) => requireCompletedAction(response.result));
+  ): Effect.Effect<BotActionResult, SoulFireOperationError> {
+    return Effect.flatMap(
+      rpc("SoulFireBot.sleep", (signal) =>
+        this.liveClient.sleep(
+          {
+            ...request,
+            instanceId: this.instanceId,
+            botId: this.id,
+          },
+          withSignal(this.#actionOptions(options), signal),
+        ),
+      ),
+      (response) =>
+        Effect.try({
+          try: () => requireCompletedAction(response.result),
+          catch: (cause) => operationError("SoulFireBot.sleep", cause),
+        }),
+    );
   }
 
-  public wake(options?: CallOptions): Promise<BotActionResult> {
-    return this.liveClient.wake(
-      {
-        instanceId: this.instanceId,
-        botId: this.id,
-      },
-      this.#actionOptions(options),
-    ).then((response) => requireCompletedAction(response.result));
+  public wake(
+    options?: CallOptions,
+  ): Effect.Effect<BotActionResult, SoulFireOperationError> {
+    return Effect.flatMap(
+      rpc("SoulFireBot.wake", (signal) =>
+        this.liveClient.wake(
+          {
+            instanceId: this.instanceId,
+            botId: this.id,
+          },
+          withSignal(this.#actionOptions(options), signal),
+        ),
+      ),
+      (response) =>
+        Effect.try({
+          try: () => requireCompletedAction(response.result),
+          catch: (cause) => operationError("SoulFireBot.wake", cause),
+        }),
+    );
   }
 
   /**
    * Rides an entity and resolves once the server confirms it.
    */
-  public async mount(
+  public mount(
     request: ScopedRequest<typeof MountEntityRequestSchema>,
     options?: CallOptions,
-  ): Promise<MountEntityResponse> {
-    const response = await this.liveClient.mountEntity(
-      {
-        ...request,
-        instanceId: this.instanceId,
-        botId: this.id,
-      },
-      this.#actionOptions(options),
-    );
-    requireCompletedAction(response.result);
-    return response;
+  ): Effect.Effect<MountEntityResponse, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const response = yield* rpc("SoulFireBot.mount", (signal) =>
+        this.liveClient.mountEntity(
+          {
+            ...request,
+            instanceId: this.instanceId,
+            botId: this.id,
+          },
+          withSignal(this.#actionOptions(options), signal),
+        ),
+      );
+      yield* Effect.try({
+        try: () => requireCompletedAction(response.result),
+        catch: (cause) => operationError("SoulFireBot.mount", cause),
+      });
+      return response;
+    });
   }
 
   public dismount(
     request: ScopedRequest<typeof DismountRequestSchema> = {},
     options?: CallOptions,
-  ): Promise<BotActionResult> {
-    return this.liveClient.dismount(
-      {
-        ...request,
-        instanceId: this.instanceId,
-        botId: this.id,
-      },
-      this.#actionOptions(options),
-    ).then((response) => requireCompletedAction(response.result));
+  ): Effect.Effect<BotActionResult, SoulFireOperationError> {
+    return Effect.flatMap(
+      rpc("SoulFireBot.dismount", (signal) =>
+        this.liveClient.dismount(
+          {
+            ...request,
+            instanceId: this.instanceId,
+            botId: this.id,
+          },
+          withSignal(this.#actionOptions(options), signal),
+        ),
+      ),
+      (response) =>
+        Effect.try({
+          try: () => requireCompletedAction(response.result),
+          catch: (cause) => operationError("SoulFireBot.dismount", cause),
+        }),
+    );
   }
 
   /**
    * Movement input while controlling a vehicle. It stays until changed; unset
    * fields keep theirs.
    */
-  public async setVehicleControl(
+  public setVehicleControl(
     request: ScopedRequest<typeof SetVehicleControlRequestSchema>,
     options?: CallOptions,
-  ): Promise<SetVehicleControlResponse> {
-    const response = await this.liveClient.setVehicleControl(
-      {
-        ...request,
-        instanceId: this.instanceId,
-        botId: this.id,
-      },
-      this.#actionOptions(options),
-    );
-    requireCompletedAction(response.result);
-    return response;
+  ): Effect.Effect<SetVehicleControlResponse, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const response = yield* rpc("SoulFireBot.setVehicleControl", (signal) =>
+        this.liveClient.setVehicleControl(
+          {
+            ...request,
+            instanceId: this.instanceId,
+            botId: this.id,
+          },
+          withSignal(this.#actionOptions(options), signal),
+        ),
+      );
+      yield* Effect.try({
+        try: () => requireCompletedAction(response.result),
+        catch: (cause) =>
+          operationError("SoulFireBot.setVehicleControl", cause),
+      });
+      return response;
+    });
   }
 
   /**
@@ -1424,15 +1777,24 @@ export class SoulFireBot {
   public updateSign(
     request: ScopedRequest<typeof UpdateSignRequestSchema>,
     options?: CallOptions,
-  ): Promise<BotActionResult> {
-    return this.liveClient.updateSign(
-      {
-        ...request,
-        instanceId: this.instanceId,
-        botId: this.id,
-      },
-      this.#actionOptions(options),
-    ).then((response) => requireCompletedAction(response.result));
+  ): Effect.Effect<BotActionResult, SoulFireOperationError> {
+    return Effect.flatMap(
+      rpc("SoulFireBot.updateSign", (signal) =>
+        this.liveClient.updateSign(
+          {
+            ...request,
+            instanceId: this.instanceId,
+            botId: this.id,
+          },
+          withSignal(this.#actionOptions(options), signal),
+        ),
+      ),
+      (response) =>
+        Effect.try({
+          try: () => requireCompletedAction(response.result),
+          catch: (cause) => operationError("SoulFireBot.updateSign", cause),
+        }),
+    );
   }
 
   /**
@@ -1442,43 +1804,71 @@ export class SoulFireBot {
   public writeBook(
     request: ScopedRequest<typeof WriteBookRequestSchema>,
     options?: CallOptions,
-  ): Promise<BotActionResult> {
-    return this.liveClient.writeBook(
-      {
-        ...request,
-        instanceId: this.instanceId,
-        botId: this.id,
-      },
-      this.#actionOptions(options),
-    ).then((response) => requireCompletedAction(response.result));
+  ): Effect.Effect<BotActionResult, SoulFireOperationError> {
+    return Effect.flatMap(
+      rpc("SoulFireBot.writeBook", (signal) =>
+        this.liveClient.writeBook(
+          {
+            ...request,
+            instanceId: this.instanceId,
+            botId: this.id,
+          },
+          withSignal(this.#actionOptions(options), signal),
+        ),
+      ),
+      (response) =>
+        Effect.try({
+          try: () => requireCompletedAction(response.result),
+          catch: (cause) => operationError("SoulFireBot.writeBook", cause),
+        }),
+    );
   }
 
   public respondResourcePack(
     request: ScopedRequest<typeof RespondResourcePackRequestSchema>,
     options?: CallOptions,
-  ): Promise<BotActionResult> {
-    return this.liveClient.respondResourcePack(
-      {
-        ...request,
-        instanceId: this.instanceId,
-        botId: this.id,
-      },
-      this.#actionOptions(options),
-    ).then((response) => requireCompletedAction(response.result));
+  ): Effect.Effect<BotActionResult, SoulFireOperationError> {
+    return Effect.flatMap(
+      rpc("SoulFireBot.respondResourcePack", (signal) =>
+        this.liveClient.respondResourcePack(
+          {
+            ...request,
+            instanceId: this.instanceId,
+            botId: this.id,
+          },
+          withSignal(this.#actionOptions(options), signal),
+        ),
+      ),
+      (response) =>
+        Effect.try({
+          try: () => requireCompletedAction(response.result),
+          catch: (cause) =>
+            operationError("SoulFireBot.respondResourcePack", cause),
+        }),
+    );
   }
 
   public setFlying(
     request: ScopedRequest<typeof SetFlyingRequestSchema>,
     options?: CallOptions,
-  ): Promise<BotActionResult> {
-    return this.liveClient.setFlying(
-      {
-        ...request,
-        instanceId: this.instanceId,
-        botId: this.id,
-      },
-      this.#actionOptions(options),
-    ).then((response) => requireCompletedAction(response.result));
+  ): Effect.Effect<BotActionResult, SoulFireOperationError> {
+    return Effect.flatMap(
+      rpc("SoulFireBot.setFlying", (signal) =>
+        this.liveClient.setFlying(
+          {
+            ...request,
+            instanceId: this.instanceId,
+            botId: this.id,
+          },
+          withSignal(this.#actionOptions(options), signal),
+        ),
+      ),
+      (response) =>
+        Effect.try({
+          try: () => requireCompletedAction(response.result),
+          catch: (cause) => operationError("SoulFireBot.setFlying", cause),
+        }),
+    );
   }
 
   /**
@@ -1486,14 +1876,24 @@ export class SoulFireBot {
    */
   public startElytraFlight(
     options?: CallOptions,
-  ): Promise<BotActionResult> {
-    return this.liveClient.startElytraFlight(
-      {
-        instanceId: this.instanceId,
-        botId: this.id,
-      },
-      this.#actionOptions(options),
-    ).then((response) => requireCompletedAction(response.result));
+  ): Effect.Effect<BotActionResult, SoulFireOperationError> {
+    return Effect.flatMap(
+      rpc("SoulFireBot.startElytraFlight", (signal) =>
+        this.liveClient.startElytraFlight(
+          {
+            instanceId: this.instanceId,
+            botId: this.id,
+          },
+          withSignal(this.#actionOptions(options), signal),
+        ),
+      ),
+      (response) =>
+        Effect.try({
+          try: () => requireCompletedAction(response.result),
+          catch: (cause) =>
+            operationError("SoulFireBot.startElytraFlight", cause),
+        }),
+    );
   }
 
   /**
@@ -1502,15 +1902,25 @@ export class SoulFireBot {
   public setCreativeSlot(
     request: ScopedRequest<typeof SetCreativeSlotRequestSchema>,
     options?: CallOptions,
-  ): Promise<BotActionResult> {
-    return this.liveClient.setCreativeSlot(
-      {
-        ...request,
-        instanceId: this.instanceId,
-        botId: this.id,
-      },
-      this.#actionOptions(options),
-    ).then((response) => requireCompletedAction(response.result));
+  ): Effect.Effect<BotActionResult, SoulFireOperationError> {
+    return Effect.flatMap(
+      rpc("SoulFireBot.setCreativeSlot", (signal) =>
+        this.liveClient.setCreativeSlot(
+          {
+            ...request,
+            instanceId: this.instanceId,
+            botId: this.id,
+          },
+          withSignal(this.#actionOptions(options), signal),
+        ),
+      ),
+      (response) =>
+        Effect.try({
+          try: () => requireCompletedAction(response.result),
+          catch: (cause) =>
+            operationError("SoulFireBot.setCreativeSlot", cause),
+        }),
+    );
   }
 
   /**
@@ -1521,14 +1931,16 @@ export class SoulFireBot {
   public waitForChunks(
     request: ScopedRequest<typeof WaitForChunksRequestSchema> = {},
     options?: CallOptions,
-  ): Promise<WaitForChunksResponse> {
-    return this.liveClient.waitForChunks(
-      {
-        ...request,
-        instanceId: this.instanceId,
-        botId: this.id,
-      },
-      options,
+  ): Effect.Effect<WaitForChunksResponse, SoulFireOperationError> {
+    return rpc("SoulFireBot.waitForChunks", (signal) =>
+      this.liveClient.waitForChunks(
+        {
+          ...request,
+          instanceId: this.instanceId,
+          botId: this.id,
+        },
+        withSignal(options, signal),
+      ),
     );
   }
 
@@ -1540,30 +1952,41 @@ export class SoulFireBot {
   public goTo(
     request: ScopedRequest<typeof GoToRequestSchema>,
     options?: CallOptions,
-  ): AsyncIterable<PathfindProgress> {
-    return this.liveClient.goTo(
-      {
-        ...request,
-        instanceId: this.instanceId,
-        botId: this.id,
-      },
-      this.#actionOptions(options),
+  ): Stream.Stream<PathfindProgress, SoulFireOperationError> {
+    return Stream.unwrap(
+      Effect.gen(this, function* () {
+        return rpcStream("SoulFireBot.goTo", (signal) =>
+          this.liveClient.goTo(
+            {
+              ...request,
+              instanceId: this.instanceId,
+              botId: this.id,
+            },
+            withSignal(this.#actionOptions(options), signal),
+          ),
+        );
+      }),
     );
   }
 
   /**
    * Cancels the `goTo` in progress.
    */
-  public stopPathfinding(options?: CallOptions): Promise<void> {
-    return this.liveClient
-      .stopPathfinding(
-        {
-          instanceId: this.instanceId,
-          botId: this.id,
-        },
-        this.#actionOptions(options),
-      )
-      .then(() => undefined);
+  public stopPathfinding(
+    options?: CallOptions,
+  ): Effect.Effect<void, SoulFireOperationError> {
+    return Effect.map(
+      rpc("SoulFireBot.stopPathfinding", (signal) =>
+        this.liveClient.stopPathfinding(
+          {
+            instanceId: this.instanceId,
+            botId: this.id,
+          },
+          withSignal(this.#actionOptions(options), signal),
+        ),
+      ),
+      () => undefined,
+    );
   }
 
   /**
@@ -1572,10 +1995,12 @@ export class SoulFireBot {
    */
   public inventoryState(
     options?: CallOptions,
-  ): Promise<BotInventoryStateResponse> {
-    return this.botClient.getInventoryState(
-      { instanceId: this.instanceId, botId: this.id },
-      options,
+  ): Effect.Effect<BotInventoryStateResponse, SoulFireOperationError> {
+    return rpc("SoulFireBot.inventoryState", (signal) =>
+      this.botClient.getInventoryState(
+        { instanceId: this.instanceId, botId: this.id },
+        withSignal(options, signal),
+      ),
     );
   }
 
@@ -1584,23 +2009,30 @@ export class SoulFireBot {
    * dropping what the cursor holds. `clickType` defaults to LEFT_CLICK.
    * `hotbarSlot` (0-8) is the slot SWAP_HOTBAR swaps with, and defaults to 0.
    */
-  public async clickInventory(
+  public clickInventory(
     slot: number,
     clickType: ClickType = ClickType.LEFT_CLICK,
     hotbarSlot = 0,
     options?: CallOptions,
-  ): Promise<void> {
-    const response = await this.botClient.clickInventorySlot(
-      {
-        instanceId: this.instanceId,
-        botId: this.id,
-        slot,
-        clickType,
-        hotbarSlot,
-      },
-      this.#actionOptions(options),
-    );
-    requireSuccess(response, "Inventory click failed");
+  ): Effect.Effect<void, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const response = yield* rpc("SoulFireBot.clickInventory", (signal) =>
+        this.botClient.clickInventorySlot(
+          {
+            instanceId: this.instanceId,
+            botId: this.id,
+            slot,
+            clickType,
+            hotbarSlot,
+          },
+          withSignal(this.#actionOptions(options), signal),
+        ),
+      );
+      yield* Effect.try({
+        try: () => requireSuccess(response, "Inventory click failed"),
+        catch: (cause) => operationError("SoulFireBot.clickInventory", cause),
+      });
+    });
   }
 
   /**
@@ -1609,13 +2041,8 @@ export class SoulFireBot {
   public transferInventorySlot(
     slot: number,
     options?: CallOptions,
-  ): Promise<void> {
-    return this.clickInventory(
-      slot,
-      ClickType.SHIFT_LEFT_CLICK,
-      0,
-      options,
-    );
+  ): Effect.Effect<void, SoulFireOperationError> {
+    return this.clickInventory(slot, ClickType.SHIFT_LEFT_CLICK, 0, options);
   }
 
   /**
@@ -1626,7 +2053,7 @@ export class SoulFireBot {
     slot: number,
     all = true,
     options?: CallOptions,
-  ): Promise<void> {
+  ): Effect.Effect<void, SoulFireOperationError> {
     return this.clickInventory(
       slot,
       all ? ClickType.DROP_ALL : ClickType.DROP_ONE,
@@ -1639,31 +2066,40 @@ export class SoulFireBot {
    * Picks up the stack in `fromSlot` and puts it in `toSlot`; what stays on the
    * cursor goes back.
    */
-  public async moveInventoryStack(
+  public moveInventoryStack(
     fromSlot: number,
     toSlot: number,
     options?: CallOptions,
-  ): Promise<void> {
-    await this.clickInventory(fromSlot, ClickType.LEFT_CLICK, 0, options);
-    await this.clickInventory(toSlot, ClickType.LEFT_CLICK, 0, options);
-    const state = await this.inventoryState(options);
-    if (state.carriedItem !== undefined && state.carriedItem.count > 0) {
-      await this.clickInventory(fromSlot, ClickType.LEFT_CLICK, 0, options);
-    }
+  ): Effect.Effect<void, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      yield* this.clickInventory(fromSlot, ClickType.LEFT_CLICK, 0, options);
+      yield* this.clickInventory(toSlot, ClickType.LEFT_CLICK, 0, options);
+      const state = yield* this.inventoryState(options);
+      if (state.carriedItem !== undefined && state.carriedItem.count > 0) {
+        yield* this.clickInventory(fromSlot, ClickType.LEFT_CLICK, 0, options);
+      }
+    });
   }
 
   /**
    * Selects hotbar slot `slot`, from 0 to 8.
    */
-  public async selectHotbar(
+  public selectHotbar(
     slot: number,
     options?: CallOptions,
-  ): Promise<void> {
-    const response = await this.botClient.setHotbarSlot(
-      { instanceId: this.instanceId, botId: this.id, slot },
-      this.#actionOptions(options),
-    );
-    requireSuccess(response, "Selecting a hotbar slot failed");
+  ): Effect.Effect<void, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const response = yield* rpc("SoulFireBot.selectHotbar", (signal) =>
+        this.botClient.setHotbarSlot(
+          { instanceId: this.instanceId, botId: this.id, slot },
+          withSignal(this.#actionOptions(options), signal),
+        ),
+      );
+      yield* Effect.try({
+        try: () => requireSuccess(response, "Selecting a hotbar slot failed"),
+        catch: (cause) => operationError("SoulFireBot.selectHotbar", cause),
+      });
+    });
   }
 
   /**
@@ -1671,71 +2107,116 @@ export class SoulFireBot {
    * pressed key stays pressed until changed or `resetMovement`. Sprinting needs
    * `forward` and a food level of 6 or more.
    */
-  public async setMovement(
+  public setMovement(
     movement: BotMovement,
     options?: CallOptions,
-  ): Promise<void> {
-    const response = await this.botClient.setMovementState(
-      {
-        ...movement,
-        instanceId: this.instanceId,
-        botId: this.id,
-      },
-      this.#actionOptions(options),
-    );
-    requireSuccess(response, "Updating movement failed");
+  ): Effect.Effect<void, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const response = yield* rpc("SoulFireBot.setMovement", (signal) =>
+        this.botClient.setMovementState(
+          {
+            ...movement,
+            instanceId: this.instanceId,
+            botId: this.id,
+          },
+          withSignal(this.#actionOptions(options), signal),
+        ),
+      );
+      yield* Effect.try({
+        try: () => requireSuccess(response, "Updating movement failed"),
+        catch: (cause) => operationError("SoulFireBot.setMovement", cause),
+      });
+    });
   }
 
   /**
    * Releases every movement key.
    */
-  public async resetMovement(options?: CallOptions): Promise<void> {
-    const response = await this.botClient.resetMovement(
-      { instanceId: this.instanceId, botId: this.id },
-      this.#actionOptions(options),
-    );
-    requireSuccess(response, "Resetting movement failed");
+  public resetMovement(
+    options?: CallOptions,
+  ): Effect.Effect<void, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const response = yield* rpc("SoulFireBot.resetMovement", (signal) =>
+        this.botClient.resetMovement(
+          { instanceId: this.instanceId, botId: this.id },
+          withSignal(this.#actionOptions(options), signal),
+        ),
+      );
+      yield* Effect.try({
+        try: () => requireSuccess(response, "Resetting movement failed"),
+        catch: (cause) => operationError("SoulFireBot.resetMovement", cause),
+      });
+    });
   }
 
   /**
    * Turns the bot. `yaw` is in degrees: 0 south, 90 west, -90 east, 180 north.
    * `pitch` too: -90 up, 0 level, 90 down.
    */
-  public async look(
+  public look(
     yaw: number,
     pitch: number,
     options?: CallOptions,
-  ): Promise<void> {
-    const response = await this.botClient.setRotation(
-      { instanceId: this.instanceId, botId: this.id, yaw, pitch },
-      this.#actionOptions(options),
-    );
-    requireSuccess(response, "Updating rotation failed");
+  ): Effect.Effect<void, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const response = yield* rpc("SoulFireBot.look", (signal) =>
+        this.botClient.setRotation(
+          { instanceId: this.instanceId, botId: this.id, yaw, pitch },
+          withSignal(this.#actionOptions(options), signal),
+        ),
+      );
+      yield* Effect.try({
+        try: () => requireSuccess(response, "Updating rotation failed"),
+        catch: (cause) => operationError("SoulFireBot.look", cause),
+      });
+    });
   }
 
-  public async openInventory(options?: CallOptions): Promise<void> {
-    const response = await this.botClient.openInventory(
-      { instanceId: this.instanceId, botId: this.id },
-      this.#actionOptions(options),
-    );
-    requireSuccess(response, "Opening inventory failed");
+  public openInventory(
+    options?: CallOptions,
+  ): Effect.Effect<void, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const response = yield* rpc("SoulFireBot.openInventory", (signal) =>
+        this.botClient.openInventory(
+          { instanceId: this.instanceId, botId: this.id },
+          withSignal(this.#actionOptions(options), signal),
+        ),
+      );
+      yield* Effect.try({
+        try: () => requireSuccess(response, "Opening inventory failed"),
+        catch: (cause) => operationError("SoulFireBot.openInventory", cause),
+      });
+    });
   }
 
-  public async closeContainer(options?: CallOptions): Promise<void> {
-    const response = await this.botClient.closeContainer(
-      { instanceId: this.instanceId, botId: this.id },
-      this.#actionOptions(options),
-    );
-    requireSuccess(response, "Closing container failed");
+  public closeContainer(
+    options?: CallOptions,
+  ): Effect.Effect<void, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const response = yield* rpc("SoulFireBot.closeContainer", (signal) =>
+        this.botClient.closeContainer(
+          { instanceId: this.instanceId, botId: this.id },
+          withSignal(this.#actionOptions(options), signal),
+        ),
+      );
+      yield* Effect.try({
+        try: () => requireSuccess(response, "Closing container failed"),
+        catch: (cause) => operationError("SoulFireBot.closeContainer", cause),
+      });
+    });
   }
 
   /**
    * The server dialog on screen (Minecraft 1.21.6+), if any.
    */
-  public dialog(options?: CallOptions): Promise<BotGetDialogResponse> {
-    return this.botClient.getDialog(
-      { instanceId: this.instanceId, botId: this.id },
-      options,
+  public dialog(
+    options?: CallOptions,
+  ): Effect.Effect<BotGetDialogResponse, SoulFireOperationError> {
+    return rpc("SoulFireBot.dialog", (signal) =>
+      this.botClient.getDialog(
+        { instanceId: this.instanceId, botId: this.id },
+        withSignal(options, signal),
+      ),
     );
   }
 
@@ -1758,31 +2239,39 @@ export class SoulFireBot {
       includeDebugTrace?: boolean;
     } = {},
     options?: CallOptions,
-  ): Promise<BotRenderPovResponse> {
-    return this.botClient.renderBotPov(
-      {
-        instanceId: this.instanceId,
-        botId: this.id,
-        width: request.width ?? 0,
-        height: request.height ?? 0,
-        ...(request.maxDistance === undefined
-          ? {}
-          : { maxDistance: request.maxDistance }),
-        ...(request.fov === undefined ? {} : { fov: request.fov }),
-        ...(request.cameraX === undefined ? {} : { cameraX: request.cameraX }),
-        ...(request.cameraY === undefined ? {} : { cameraY: request.cameraY }),
-        ...(request.cameraZ === undefined ? {} : { cameraZ: request.cameraZ }),
-        ...(request.yRot === undefined ? {} : { yRot: request.yRot }),
-        ...(request.xRot === undefined ? {} : { xRot: request.xRot }),
-        ...(request.includeHud === undefined
-          ? {}
-          : { includeHud: request.includeHud }),
-        ...(request.includeHands === undefined
-          ? {}
-          : { includeHands: request.includeHands }),
-        includeDebugTrace: request.includeDebugTrace ?? false,
-      },
-      options,
+  ): Effect.Effect<BotRenderPovResponse, SoulFireOperationError> {
+    return rpc("SoulFireBot.renderPov", (signal) =>
+      this.botClient.renderBotPov(
+        {
+          instanceId: this.instanceId,
+          botId: this.id,
+          width: request.width ?? 0,
+          height: request.height ?? 0,
+          ...(request.maxDistance === undefined
+            ? {}
+            : { maxDistance: request.maxDistance }),
+          ...(request.fov === undefined ? {} : { fov: request.fov }),
+          ...(request.cameraX === undefined
+            ? {}
+            : { cameraX: request.cameraX }),
+          ...(request.cameraY === undefined
+            ? {}
+            : { cameraY: request.cameraY }),
+          ...(request.cameraZ === undefined
+            ? {}
+            : { cameraZ: request.cameraZ }),
+          ...(request.yRot === undefined ? {} : { yRot: request.yRot }),
+          ...(request.xRot === undefined ? {} : { xRot: request.xRot }),
+          ...(request.includeHud === undefined
+            ? {}
+            : { includeHud: request.includeHud }),
+          ...(request.includeHands === undefined
+            ? {}
+            : { includeHands: request.includeHands }),
+          includeDebugTrace: request.includeDebugTrace ?? false,
+        },
+        withSignal(options, signal),
+      ),
     );
   }
 
@@ -1791,64 +2280,107 @@ export class SoulFireBot {
    * the bot. Renew it before it runs out. `ttlSeconds` defaults to 30, from 5
    * to 300.
    */
-  public async acquireControl(
+  public acquireControl(
     ttlSeconds = 30,
     options?: CallOptions,
-  ): Promise<SoulFireBotControlLease> {
-    if (this.#controlToken !== undefined) {
-      throw new Error(`Bot ${this.id} control is already leased by this client`);
-    }
-    const response = await this.liveClient.acquireBotControl(
-      {
-        instanceId: this.instanceId,
-        botId: this.id,
-        ttlSeconds,
-      },
-      options,
-    );
-    if (response.lease === undefined) {
-      throw new Error("SoulFire did not return the acquired control lease");
-    }
-    this.#controlToken = response.lease.token;
-    return new SoulFireBotControlLease(this, response.lease);
+  ): Effect.Effect<SoulFireBotControlLease, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      if (this.#controlToken !== undefined) {
+        return yield* Effect.fail(
+          operationError(
+            "SoulFireBot.acquireControl",
+            new Error(
+              `Bot ${this.id} control is already leased by this client`,
+            ),
+          ),
+        );
+      }
+      const response = yield* rpc("SoulFireBot.acquireControl", (signal) =>
+        this.liveClient.acquireBotControl(
+          {
+            instanceId: this.instanceId,
+            botId: this.id,
+            ttlSeconds,
+          },
+          withSignal(options, signal),
+        ),
+      );
+      if (response.lease === undefined) {
+        return yield* Effect.fail(
+          operationError(
+            "SoulFireBot.acquireControl",
+            new Error("SoulFire did not return the acquired control lease"),
+          ),
+        );
+      }
+      this.#controlToken = response.lease.token;
+      return new SoulFireBotControlLease(this, response.lease);
+    });
   }
 
-  async renewControl(
+  public acquireControlScoped(
+    ttlSeconds = 30,
+    options?: CallOptions,
+  ): Effect.Effect<
+    SoulFireBotControlLease,
+    SoulFireOperationError,
+    Scope.Scope
+  > {
+    return Effect.acquireRelease(
+      this.acquireControl(ttlSeconds, options),
+      (lease) => lease.release().pipe(Effect.orDie),
+    );
+  }
+
+  renewControl(
     lease: BotControlLease,
     ttlSeconds: number,
     options?: CallOptions,
-  ): Promise<BotControlLease> {
-    const response = await this.liveClient.renewBotControl(
-      {
-        instanceId: this.instanceId,
-        botId: this.id,
-        token: lease.token,
-        ttlSeconds,
-      },
-      options,
-    );
-    if (response.lease === undefined) {
-      throw new Error("SoulFire did not return the renewed control lease");
-    }
-    this.#controlToken = response.lease.token;
-    return response.lease;
+  ): Effect.Effect<BotControlLease, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const response = yield* rpc("SoulFireBot.renewControl", (signal) =>
+        this.liveClient.renewBotControl(
+          {
+            instanceId: this.instanceId,
+            botId: this.id,
+            token: lease.token,
+            ttlSeconds,
+          },
+          withSignal(options, signal),
+        ),
+      );
+      if (response.lease === undefined) {
+        return yield* Effect.fail(
+          operationError(
+            "SoulFireBot.renewControl",
+            new Error("SoulFire did not return the renewed control lease"),
+          ),
+        );
+      }
+      this.#controlToken = response.lease.token;
+      return response.lease;
+    });
   }
 
-  async releaseControl(
+  releaseControl(
     lease: BotControlLease,
     options?: CallOptions,
-  ): Promise<void> {
-    await this.liveClient.releaseBotControl(
-      {
-        instanceId: this.instanceId,
-        botId: this.id,
-        token: lease.token,
-      },
-      options,
-    );
-    if (this.#controlToken === lease.token) {
-      this.#controlToken = undefined;
-    }
+  ): Effect.Effect<void, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      yield* rpc("SoulFireBot.releaseControl", (signal) =>
+        this.liveClient.releaseBotControl(
+          {
+            instanceId: this.instanceId,
+            botId: this.id,
+            token: lease.token,
+          },
+          withSignal(options, signal),
+        ),
+      );
+      if (this.#controlToken === lease.token) {
+        this.#controlToken = undefined;
+      }
+    });
   }
 
   #actionOptions(options?: CallOptions): CallOptions | undefined {
@@ -1860,10 +2392,7 @@ export class SoulFireBot {
     return { ...options, headers };
   }
 
-  #requiredClient<T>(
-    client: T | undefined,
-    service: string,
-  ): T {
+  #requiredClient<T>(client: T | undefined, service: string): T {
     if (client === undefined) {
       throw new Error(`The ${service} service is unavailable`);
     }
@@ -1894,30 +2423,35 @@ export class SoulFireBotControlLease {
   /**
    * `ttlSeconds` defaults to 30, from 5 to 300.
    */
-  public async renew(
+  /**
+   * `ttlSeconds` defaults to 30, from 5 to 300.
+   */
+  public renew(
     ttlSeconds = 30,
     options?: CallOptions,
-  ): Promise<BotControlLease> {
-    const lease = await this.bot.renewControl(
-      this.value,
-      ttlSeconds,
-      options,
-    );
-    this.#lease = lease;
-    return lease;
+  ): Effect.Effect<BotControlLease, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const lease = yield* this.bot.renewControl(
+        this.value,
+        ttlSeconds,
+        options,
+      );
+      this.#lease = lease;
+      return lease;
+    });
   }
 
-  public async release(options?: CallOptions): Promise<void> {
-    const lease = this.#lease;
-    if (lease === undefined) {
-      return;
-    }
-    await this.bot.releaseControl(lease, options);
-    this.#lease = undefined;
-  }
-
-  public [Symbol.asyncDispose](): Promise<void> {
-    return this.release();
+  public release(
+    options?: CallOptions,
+  ): Effect.Effect<void, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const lease = this.#lease;
+      if (lease === undefined) {
+        return;
+      }
+      yield* this.bot.releaseControl(lease, options);
+      this.#lease = undefined;
+    });
   }
 }
 
@@ -1957,3 +2491,27 @@ function requireSuccess(
     throw new Error(response.error ?? fallback);
   }
 }
+
+export class SoulFireService extends Context.Tag(
+  "@soulfiremc/sdk/SoulFireService",
+)<SoulFireService, SoulFireClient>() {}
+
+export const SoulFire = {
+  connect: SoulFireClient.connect,
+  unauthenticated: SoulFireClient.unauthenticated,
+  connectManaged: SoulFireClient.connectManaged,
+  connectWithHttpClient(options: SoulFireOptions) {
+    return Effect.flatMap(HttpClient.HttpClient, (client) =>
+      SoulFireClient.connect({
+        ...options,
+        fetch: makeEffectHttpClientFetch(client),
+      }),
+    );
+  },
+  layer(options: SoulFireOptions) {
+    return Layer.scoped(SoulFireService, SoulFireClient.connect(options));
+  },
+  layerWithHttpClient(options: SoulFireOptions) {
+    return Layer.scoped(SoulFireService, this.connectWithHttpClient(options));
+  },
+};

@@ -21,8 +21,8 @@ import { createRequire } from "node:module";
 import { dirname, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 
-import type { PluginApiDescriptor } from "./generated/soulfire/plugin_api_pb.js";
 import { SDK_VERSION } from "./connection.js";
+import type { PluginApiDescriptor } from "./generated/soulfire/plugin_api_pb.js";
 
 const executeFile = promisify(execFile);
 const require = createRequire(import.meta.url);
@@ -166,19 +166,14 @@ export async function generatePluginSdk(
 ): Promise<string> {
   const model = generationModel(options);
   const defaultDirectory = `${model.pythonPackageName}-${options.language}`;
-  const outputDirectory = resolve(
-    options.outputDirectory ?? defaultDirectory,
-  );
+  const outputDirectory = resolve(options.outputDirectory ?? defaultDirectory);
   const parent = dirname(outputDirectory);
   await mkdir(parent, { recursive: true });
   const outputState = await inspectOutput(outputDirectory);
   const staging = await mkdtemp(join(parent, ".soulfire-sdk-"));
 
   try {
-    await writeFile(
-      join(staging, "plugin-api.binpb"),
-      options.descriptorSet,
-    );
+    await writeFile(join(staging, "plugin-api.binpb"), options.descriptorSet);
     await writeFile(
       join(staging, "soulfire-plugin.json"),
       `${JSON.stringify(model.metadata, null, 2)}\n`,
@@ -219,8 +214,8 @@ function generationModel(options: GeneratePluginSdkOptions): GenerationModel {
     );
   }
   if (
-    supplied !== undefined
-    && supplied.descriptorSha256.toLowerCase() !== descriptorSha256
+    supplied !== undefined &&
+    supplied.descriptorSha256.toLowerCase() !== descriptorSha256
   ) {
     throw new Error(
       `Descriptor hash mismatch: expected ${supplied.descriptorSha256}, received ${descriptorSha256}`,
@@ -232,15 +227,18 @@ function generationModel(options: GeneratePluginSdkOptions): GenerationModel {
   const metadata: PluginSdkMetadata = {
     ...(supplied ?? inferred),
     pluginId,
-    pluginVersion: options.pluginVersion
-      ?? supplied?.pluginVersion
-      ?? inferred.pluginVersion,
-    apiMajorVersion: options.apiMajorVersion
-      ?? supplied?.apiMajorVersion
-      ?? inferred.apiMajorVersion,
-    requiredSoulFireVersion: options.requiredSoulFireVersion
-      ?? supplied?.requiredSoulFireVersion
-      ?? inferred.requiredSoulFireVersion,
+    pluginVersion:
+      options.pluginVersion ??
+      supplied?.pluginVersion ??
+      inferred.pluginVersion,
+    apiMajorVersion:
+      options.apiMajorVersion ??
+      supplied?.apiMajorVersion ??
+      inferred.apiMajorVersion,
+    requiredSoulFireVersion:
+      options.requiredSoulFireVersion ??
+      supplied?.requiredSoulFireVersion ??
+      inferred.requiredSoulFireVersion,
     descriptorSha256,
     serviceNames,
     taskTypes: supplied?.taskTypes ?? inferred.taskTypes,
@@ -250,36 +248,33 @@ function generationModel(options: GeneratePluginSdkOptions): GenerationModel {
   const events = eventModels(messageTypes, metadata.eventTypeUrls);
   const tasks = taskModels(messageTypes, metadata.taskTypes);
   if (
-    services.length === 0
-    && events.length === 0
-    && tasks.length === 0
-    && metadata.taskTypeUrls.length === 0
+    services.length === 0 &&
+    events.length === 0 &&
+    tasks.length === 0 &&
+    metadata.taskTypeUrls.length === 0
   ) {
     throw new Error(
       "The descriptor set does not contain a plugin RPC service, event, or task",
     );
   }
-  const sourceFiles = sourceClosure(
-    descriptorSet.file,
-    [
-      ...services.map((service) => service.fileName),
-      ...events.map((event) => event.messageType.fileName),
-      ...tasks.flatMap((task) => [
-        task.inputType.fileName,
-        task.resultType.fileName,
-        ...(task.progressType === undefined
-          ? []
-          : [task.progressType.fileName]),
-      ]),
-    ],
-  );
+  const sourceFiles = sourceClosure(descriptorSet.file, [
+    ...services.map((service) => service.fileName),
+    ...events.map((event) => event.messageType.fileName),
+    ...tasks.flatMap((task) => [
+      task.inputType.fileName,
+      task.resultType.fileName,
+      ...(task.progressType === undefined ? [] : [task.progressType.fileName]),
+    ]),
+  ]);
   const safeId = packageSegment(pluginId);
-  const typescriptPackageName = options.packageName
-    ?? metadata.typescriptPackage
-    ?? `soulfire-plugin-${safeId}`;
-  const pythonPackageName = options.packageName
-    ?? metadata.pythonPackage
-    ?? `soulfire-plugin-${safeId}`;
+  const typescriptPackageName =
+    options.packageName ??
+    metadata.typescriptPackage ??
+    `soulfire-plugin-${safeId}`;
+  const pythonPackageName =
+    options.packageName ??
+    metadata.pythonPackage ??
+    `soulfire-plugin-${safeId}`;
 
   return {
     descriptorSet,
@@ -302,14 +297,15 @@ function inferMetadata(
     file.service.map((service) => ({
       file,
       fullName: qualify(file.package, service.name),
-    }))
+    })),
   );
   const first = services[0];
   const packageParts = first?.file.package.split(".") ?? [];
   const pluginIndex = packageParts.indexOf("plugin");
-  const pluginId = pluginIndex >= 0
-    ? (packageParts[pluginIndex + 1] ?? "")
-    : (packageParts.at(-2) ?? packageParts.at(-1) ?? "");
+  const pluginId =
+    pluginIndex >= 0
+      ? (packageParts[pluginIndex + 1] ?? "")
+      : (packageParts.at(-2) ?? packageParts.at(-1) ?? "");
   const versionPart = packageParts.findLast((part) => /^v\d+$/.test(part));
 
   return {
@@ -319,9 +315,8 @@ function inferMetadata(
     author: "",
     license: "LicenseRef-Proprietary",
     requiredSoulFireVersion: "*",
-    apiMajorVersion: versionPart === undefined
-      ? 1
-      : Number.parseInt(versionPart.slice(1), 10),
+    apiMajorVersion:
+      versionPart === undefined ? 1 : Number.parseInt(versionPart.slice(1), 10),
     descriptorSha256,
     serviceNames: services.map(({ fullName }) => fullName),
     eventTypeUrls: [],
@@ -342,22 +337,24 @@ function serviceModels(
       if (!allowed.has(fullName)) {
         return [];
       }
-      return [{
-        name: service.name,
-        fullName,
-        localName: lowerCamel(service.name),
-        pythonName: snakeCase(service.name),
-        fileName: file.name,
-        methods: service.method.map((method) => ({
-          name: method.name,
-          localName: lowerCamel(method.name),
-          pythonName: snakeCase(method.name),
-          inputType: requirePythonType(messageTypes, method.inputType),
-          outputType: requirePythonType(messageTypes, method.outputType),
-          serverStreaming: method.serverStreaming,
-        })),
-      }];
-    })
+      return [
+        {
+          name: service.name,
+          fullName,
+          localName: lowerCamel(service.name),
+          pythonName: snakeCase(service.name),
+          fileName: file.name,
+          methods: service.method.map((method) => ({
+            name: method.name,
+            localName: lowerCamel(method.name),
+            pythonName: snakeCase(method.name),
+            inputType: requirePythonType(messageTypes, method.inputType),
+            outputType: requirePythonType(messageTypes, method.outputType),
+            serverStreaming: method.serverStreaming,
+          })),
+        },
+      ];
+    }),
   );
 }
 
@@ -373,16 +370,13 @@ function indexPythonTypes(
     ): void => {
       for (const message of messages) {
         const names = [...parentNames, message.name];
-        result.set(
-          `.${qualify(file.package, names.join("."))}`,
-          {
-            fileName: file.name,
-            moduleName,
-            importName: names[0] ?? message.name,
-            expression: names.join("."),
-            typescriptSchemaName: `${names.join("_")}Schema`,
-          },
-        );
+        result.set(`.${qualify(file.package, names.join("."))}`, {
+          fileName: file.name,
+          moduleName,
+          importName: names[0] ?? message.name,
+          expression: names.join("."),
+          typescriptSchemaName: `${names.join("_")}Schema`,
+        });
         visit(message.nestedType, names);
       }
     };
@@ -423,15 +417,16 @@ function taskModels(
       messageTypes,
       `.${typeNameFromUrl(task.resultTypeUrl)}`,
     );
-    const inputName = typeNameFromUrl(task.inputTypeUrl).split(".").at(-1)
-      ?? "PluginTask";
+    const inputName =
+      typeNameFromUrl(task.inputTypeUrl).split(".").at(-1) ?? "PluginTask";
     const methodName = inputName.replace(/Task$/, "") || inputName;
-    const progressType = task.progressTypeUrl === undefined
-      ? undefined
-      : requirePythonType(
-        messageTypes,
-        `.${typeNameFromUrl(task.progressTypeUrl)}`,
-      );
+    const progressType =
+      task.progressTypeUrl === undefined
+        ? undefined
+        : requirePythonType(
+            messageTypes,
+            `.${typeNameFromUrl(task.progressTypeUrl)}`,
+          );
     return {
       inputTypeUrl: task.inputTypeUrl,
       resultTypeUrl: task.resultTypeUrl,
@@ -459,7 +454,9 @@ function requirePythonType(
 ): PythonType {
   const type = types.get(fullName);
   if (type === undefined) {
-    throw new Error(`RPC message type is missing from descriptor set: ${fullName}`);
+    throw new Error(
+      `RPC message type is missing from descriptor set: ${fullName}`,
+    );
   }
   return type;
 }
@@ -503,10 +500,6 @@ async function generateTypeScript(
       ".": {
         types: "./dist/index.d.ts",
         import: "./dist/index.js",
-      },
-      "./promise": {
-        types: "./dist/promise.d.ts",
-        import: "./dist/promise.js",
       },
       "./generated/*": {
         types: "./dist/generated/*.d.ts",
@@ -575,27 +568,20 @@ async function generateTypeScript(
     "utf8",
   );
   await writeFile(
-    join(outputDirectory, "src", "promise.ts"),
-    typeScriptPromiseSource(model),
-    "utf8",
-  );
-  await writeFile(
     join(outputDirectory, "README.md"),
     typeScriptReadme(model),
     "utf8",
   );
-  await runBufGenerate(
-    outputDirectory,
-    model.sourceFiles,
-    {
-      version: "v2",
-      plugins: [{
+  await runBufGenerate(outputDirectory, model.sourceFiles, {
+    version: "v2",
+    plugins: [
+      {
         remote: "buf.build/bufbuild/es:v2.13.0",
         out: "src/generated",
         opt: ["target=ts", "import_extension=js"],
-      }],
-    },
-  );
+      },
+    ],
+  });
   await rewriteTypeScriptSharedImports(outputDirectory);
 }
 
@@ -656,11 +642,7 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
     pythonInitSource(model),
     "utf8",
   );
-  await writeFile(
-    join(moduleDirectory, "py.typed"),
-    "",
-    "utf8",
-  );
+  await writeFile(join(moduleDirectory, "py.typed"), "", "utf8");
   await writeFile(
     join(moduleDirectory, "plugin-api.binpb"),
     await readFile(join(outputDirectory, "plugin-api.binpb")),
@@ -674,28 +656,24 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
     pythonReadme(model),
     "utf8",
   );
-  await runBufGenerate(
-    outputDirectory,
-    model.sourceFiles,
-    {
-      version: "v2",
-      plugins: [
-        {
-          remote: "buf.build/protocolbuffers/python:v31.1",
-          out: "src",
-        },
-        {
-          remote: "buf.build/protocolbuffers/pyi:v31.1",
-          out: "src",
-        },
-        {
-          remote: "buf.build/connectrpc/py:v0.11.1",
-          out: "src",
-          opt: ["protobuf=google"],
-        },
-      ],
-    },
-  );
+  await runBufGenerate(outputDirectory, model.sourceFiles, {
+    version: "v2",
+    plugins: [
+      {
+        remote: "buf.build/protocolbuffers/python:v31.1",
+        out: "src",
+      },
+      {
+        remote: "buf.build/protocolbuffers/pyi:v31.1",
+        out: "src",
+      },
+      {
+        remote: "buf.build/connectrpc/py:v0.11.1",
+        out: "src",
+        opt: ["protobuf=google"],
+      },
+    ],
+  });
 }
 
 async function runBufGenerate(
@@ -758,47 +736,60 @@ function resolveBufExecutable(): string {
 function typeScriptEffectSource(model: GenerationModel): string {
   const imports = typeScriptImports(model);
   const clients = model.services.map(effectServiceSource).join("\n\n");
-  const fields = model.services.map((service) =>
-    `    private readonly ${service.localName}: ${service.name}Client,`
-  ).join("\n");
-  const constructors = model.services.map((service) =>
-    `new ${service.name}Client(
-  Effect.runSync(catalog.service(PLUGIN_ID, ${service.name})),
-),`
-  ).join("\n");
+  const fields = model.services
+    .map(
+      (service) =>
+        `    private readonly ${service.localName}: ${service.name}Client,`,
+    )
+    .join("\n");
+  const constructors = model.services
+    .map(
+      (service) =>
+        `new ${service.name}Client(
+  catalog.service(PLUGIN_ID, ${service.name}),
+),`,
+    )
+    .join("\n");
   const extensionMethods = [
     extensionMethodSources(model.services),
     eventMethodSources(model.events),
     taskMethodSources(model.tasks),
-  ].filter((source) => source.length > 0).join("\n\n");
-  const compatibilityChecks = [
-    ...model.services.map((service) =>
-      `descriptor.services.some((service) =>
+  ]
+    .filter((source) => source.length > 0)
+    .join("\n\n");
+  const compatibilityChecks =
+    [
+      ...model.services.map(
+        (service) =>
+          `descriptor.services.some((service) =>
       service.fullName === ${JSON.stringify(service.fullName)}
-    )`
-    ),
-    ...model.events.map((event) =>
-      `descriptor.eventTypeUrls.includes(${JSON.stringify(event.typeUrl)})`
-    ),
-    ...model.tasks.map((task) =>
-      `descriptor.taskTypes.some((task) =>
+    )`,
+      ),
+      ...model.events.map(
+        (event) =>
+          `descriptor.eventTypeUrls.includes(${JSON.stringify(event.typeUrl)})`,
+      ),
+      ...model.tasks.map(
+        (task) =>
+          `descriptor.taskTypes.some((task) =>
       task.inputTypeUrl === ${JSON.stringify(task.inputTypeUrl)}
       && task.resultTypeUrl === ${JSON.stringify(task.resultTypeUrl)}
-    )`
-    ),
-  ].join("\n    && ") || "true";
+    )`,
+      ),
+    ].join("\n    && ") || "true";
 
   return `import type { MessageInitShape } from "@bufbuild/protobuf";
 import type { Client } from "@connectrpc/connect";
 import { Effect, Stream } from "effect";
 import {
-  type EffectPluginCatalog,
-  type EffectSoulFireTask,
-  type EffectSoulFireTasks,
+  type PluginCatalog,
+  type SoulFireTask,
+  type SoulFireTasks,
   defineSoulFirePlugin,
   SoulFireExtensionTypeId,
   type SoulFirePluginModule,
   SoulFirePluginError,
+  rpcStream,
   type SoulFireRpcError,
   type SoulFireTaskFailed,
   type TaskStartOptions,
@@ -818,7 +809,7 @@ export class ${pascalCase(model.metadata.pluginId)}PluginClient {
   public readonly [SoulFireExtensionTypeId] = true;
 
   public constructor(
-    private readonly catalog: EffectPluginCatalog,
+    private readonly catalog: PluginCatalog,
 ${fields}
   ) {}
 
@@ -830,7 +821,7 @@ export const plugin: SoulFirePluginModule<${pascalCase(model.metadata.pluginId)}
   isCompatible: (descriptor) =>
     descriptor.apiMajorVersion === API_MAJOR_VERSION
     && ${compatibilityChecks},
-  create(catalog: EffectPluginCatalog) {
+  create(catalog: PluginCatalog) {
     return new ${pascalCase(model.metadata.pluginId)}PluginClient(
       catalog,
 ${indent(constructors, 6)}
@@ -873,22 +864,23 @@ function typeScriptImports(model: GenerationModel): string {
   }
   return [...groups.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([fileName, names]) =>
-      `import { ${[...names].sort().join(", ")} } from "./generated/${
-        protoTypeScriptModule(fileName)
-      }";`
+    .map(
+      ([fileName, names]) =>
+        `import { ${[...names].sort().join(", ")} } from "./generated/${protoTypeScriptModule(fileName)}";`,
     )
     .join("\n");
 }
 
 function taskMethodSources(tasks: readonly TaskModel[]): string {
-  return tasks.map((task) =>
-    `  public ${task.localName}(
-    tasks: EffectSoulFireTasks,
+  return tasks
+    .map(
+      (task) =>
+        `  public ${task.localName}(
+    tasks: SoulFireTasks,
     input: MessageInitShape<typeof ${task.inputType.typescriptSchemaName}>,
     options: TaskStartOptions = {},
   ): Effect.Effect<
-    EffectSoulFireTask<typeof ${task.resultType.typescriptSchemaName}>,
+    SoulFireTask<typeof ${task.resultType.typescriptSchemaName}>,
     SoulFireRpcError | SoulFireTaskFailed
   > {
     return tasks.start(
@@ -897,13 +889,16 @@ function taskMethodSources(tasks: readonly TaskModel[]): string {
       ${task.resultType.typescriptSchemaName},
       options,
     );
-  }`
-  ).join("\n\n");
+  }`,
+    )
+    .join("\n\n");
 }
 
 function eventMethodSources(events: readonly EventModel[]): string {
-  return events.map((event) =>
-    `  public ${event.localName}(
+  return events
+    .map(
+      (event) =>
+        `  public ${event.localName}(
     options: Omit<WatchPluginEventOptions, "pluginIds" | "typeUrls"> = {},
   ): Stream.Stream<
     TypedPluginEvent<typeof ${event.messageType.typescriptSchemaName}>,
@@ -913,39 +908,41 @@ function eventMethodSources(events: readonly EventModel[]): string {
       PLUGIN_ID,
       ${event.messageType.typescriptSchemaName},
       options,
-    );
-  }`
-  ).join("\n\n");
+    ).pipe(Stream.mapError((cause) => new SoulFirePluginError({ pluginId: PLUGIN_ID, cause })));
+  }`,
+    )
+    .join("\n\n");
 }
 
 function effectServiceSource(service: ServiceModel): string {
-  const methods = service.methods.map((method) => {
-    const request = `Parameters<Client<typeof ${service.name}>[${JSON.stringify(method.localName)}]>[0]`;
-    if (method.serverStreaming) {
-      return `  public ${method.localName}(
+  const methods = service.methods
+    .map((method) => {
+      const request = `Parameters<Client<typeof ${service.name}>[${JSON.stringify(method.localName)}]>[0]`;
+      if (method.serverStreaming) {
+        return `  public ${method.localName}(
     request: ${request},
   ): Stream.Stream<
     StreamValue<ReturnType<Client<typeof ${service.name}>[${JSON.stringify(method.localName)}]>>,
     SoulFirePluginError
   > {
-    return Stream.fromAsyncIterable(
-      this.client.${method.localName}(request),
-      (cause) => new SoulFirePluginError({ pluginId: PLUGIN_ID, cause }),
-    );
+    return rpcStream(PLUGIN_ID + ".${method.localName}", (signal) =>
+      this.client.${method.localName}(request, { signal }),
+    ).pipe(Stream.mapError((cause) => new SoulFirePluginError({ pluginId: PLUGIN_ID, cause })));
   }`;
-    }
-    return `  public ${method.localName}(
+      }
+      return `  public ${method.localName}(
     request: ${request},
   ): Effect.Effect<
     Awaited<ReturnType<Client<typeof ${service.name}>[${JSON.stringify(method.localName)}]>>,
     SoulFirePluginError
   > {
     return Effect.tryPromise({
-      try: () => this.client.${method.localName}(request),
+      try: (signal) => this.client.${method.localName}(request, { signal }),
       catch: (cause) => new SoulFirePluginError({ pluginId: PLUGIN_ID, cause }),
     });
   }`;
-  }).join("\n\n");
+    })
+    .join("\n\n");
   return `export class ${service.name}Client {
   public constructor(
     private readonly client: Client<typeof ${service.name}>,
@@ -953,14 +950,6 @@ function effectServiceSource(service: ServiceModel): string {
 
 ${methods}
 }`;
-}
-
-function typeScriptPromiseSource(model: GenerationModel): string {
-  void model;
-  return `// Promise clients use the same plugin module. The official SDK maps every
-// Effect and Stream method on the extension to Promise and AsyncIterable.
-export { plugin } from "./index.js";
-`;
 }
 
 function pythonSdkSource(model: GenerationModel): string {
@@ -977,7 +966,9 @@ function pythonSdkSource(model: GenerationModel): string {
     syncClass,
     `def _is_compatible(descriptor: PluginApiDescriptor) -> bool:
 ${compatibility}`,
-  ].filter((value) => value.length > 0).join("\n\n\n");
+  ]
+    .filter((value) => value.length > 0)
+    .join("\n\n\n");
 
   return `from __future__ import annotations
 
@@ -1034,16 +1025,18 @@ function pythonPluginClientClass(
 ): string {
   const catalog = asynchronous ? "AsyncPluginCatalog" : "PluginCatalog";
   const prefix = asynchronous ? "Async" : "";
-  const fields = model.services.map((service) =>
-    pythonPluginClientField(service, asynchronous)
-  ).join("\n");
+  const fields = model.services
+    .map((service) => pythonPluginClientField(service, asynchronous))
+    .join("\n");
   const constructor = `    def __init__(self, catalog: ${catalog}) -> None:
         self._catalog = catalog${fields.length === 0 ? "" : `\n${fields}`}`;
   const sections = [
     constructor,
     pythonEventMethods(model.events, asynchronous),
     pythonTaskMethods(model.tasks, asynchronous),
-  ].filter((value) => value.length > 0).join("\n\n");
+  ]
+    .filter((value) => value.length > 0)
+    .join("\n\n");
   return `class ${prefix}${className}:
     __slots__ = (${pythonSlots(model.services)})
 
@@ -1061,9 +1054,10 @@ function pythonPluginClientField(
     ? `${service.name}Client`
     : `${service.name}ClientSync`;
   const invocation = `${type}(catalog.service(${client}))`;
-  const value = invocation.length <= 88
-    ? invocation
-    : `${type}(
+  const value =
+    invocation.length <= 88
+      ? invocation
+      : `${type}(
                 catalog.service(${client})
             )`;
   return `        self.${service.pythonName}: ${type} = (
@@ -1076,10 +1070,10 @@ function pythonCompatibilityReturn(model: GenerationModel): string {
     | { readonly kind: "service"; readonly value: string }
     | { readonly kind: "event"; readonly value: string }
     | {
-      readonly input: string;
-      readonly kind: "task";
-      readonly result: string;
-    }
+        readonly input: string;
+        readonly kind: "task";
+        readonly result: string;
+      }
   > = [
     ...model.services.map((service) => ({
       kind: "service" as const,
@@ -1095,21 +1089,16 @@ function pythonCompatibilityReturn(model: GenerationModel): string {
       result: task.resultTypeUrl,
     })),
   ];
-  const apiVersion =
-    "descriptor.api_major_version == API_MAJOR_VERSION";
+  const apiVersion = "descriptor.api_major_version == API_MAJOR_VERSION";
   if (predicates.length === 0) {
     return `    return ${apiVersion}`;
   }
   if (predicates.length === 1) {
-    return `    return ${apiVersion} and ${
-      pythonCompatibilityPredicate(predicates[0]!, 4)
-    }`;
+    return `    return ${apiVersion} and ${pythonCompatibilityPredicate(predicates[0]!, 4)}`;
   }
   return `    return (
         ${apiVersion}
-${predicates.map((predicate) =>
-    `        and ${pythonCompatibilityPredicate(predicate, 8)}`
-  ).join("\n")}
+${predicates.map((predicate) => `        and ${pythonCompatibilityPredicate(predicate, 8)}`).join("\n")}
     )`;
 }
 
@@ -1118,16 +1107,14 @@ function pythonCompatibilityPredicate(
     | { readonly kind: "service"; readonly value: string }
     | { readonly kind: "event"; readonly value: string }
     | {
-      readonly input: string;
-      readonly kind: "task";
-      readonly result: string;
-    },
+        readonly input: string;
+        readonly kind: "task";
+        readonly result: string;
+      },
   indentation: number,
 ): string {
   if (predicate.kind === "event") {
-    return `${
-      JSON.stringify(predicate.value)
-    } in descriptor.event_type_urls`;
+    return `${JSON.stringify(predicate.value)} in descriptor.event_type_urls`;
   }
   const indent = " ".repeat(indentation);
   const body = " ".repeat(indentation + 4);
@@ -1145,41 +1132,44 @@ ${indent})`;
 }
 
 function pythonRuntimeImports(model: GenerationModel): string {
-  const hasIterators = model.events.length > 0
-    || model.services.some((service) =>
-      service.methods.some((method) => method.serverStreaming)
+  const hasIterators =
+    model.events.length > 0 ||
+    model.services.some((service) =>
+      service.methods.some((method) => method.serverStreaming),
     );
   const collectionImports = hasIterators
     ? "from collections.abc import AsyncIterator, Iterator"
     : "";
-  const typingImports = model.tasks.length > 0
-    ? "from typing import Unpack"
-    : "";
-  const pluginImports = model.events.length > 0
-    ? `from soulfire.plugins import (
+  const typingImports =
+    model.tasks.length > 0 ? "from typing import Unpack" : "";
+  const pluginImports =
+    model.events.length > 0
+      ? `from soulfire.plugins import (
     AsyncPluginCatalog,
     PluginCatalog,
     TypedPluginEvent,
 )`
-    : "from soulfire.plugins import AsyncPluginCatalog, PluginCatalog";
-  const taskImports = model.tasks.length > 0
-    ? `from soulfire.tasks import (
+      : "from soulfire.plugins import AsyncPluginCatalog, PluginCatalog";
+  const taskImports =
+    model.tasks.length > 0
+      ? `from soulfire.tasks import (
     AsyncSoulFireTask,
     AsyncSoulFireTasks,
     SoulFireTask,
     SoulFireTasks,
     TaskStartOptions,
 )`
-    : "";
-  const standardLibrary = [
-    collectionImports,
-    typingImports,
-  ].filter((value) => value.length > 0).join("\n");
+      : "";
+  const standardLibrary = [collectionImports, typingImports]
+    .filter((value) => value.length > 0)
+    .join("\n");
   const soulfire = [
     "from soulfire.plugin_api_pb2 import PluginApiDescriptor",
     pluginImports,
     taskImports,
-  ].filter((value) => value.length > 0).join("\n");
+  ]
+    .filter((value) => value.length > 0)
+    .join("\n");
   return [standardLibrary, soulfire]
     .filter((value) => value.length > 0)
     .join("\n\n");
@@ -1233,14 +1223,13 @@ function pythonImports(model: GenerationModel): string {
       );
     }
   }
-  return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b))
+  return [...groups.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
     .map(([module, names]) => {
       const sorted = [...names].sort();
       return sorted.length === 1
         ? `from ${module} import ${sorted[0]}`
-        : `from ${module} import (\n${
-          sorted.map((name) => `    ${name},`).join("\n")
-        }\n)`;
+        : `from ${module} import (\n${sorted.map((name) => `    ${name},`).join("\n")}\n)`;
     })
     .join("\n");
 }
@@ -1256,13 +1245,14 @@ function addImport(
 }
 
 function pythonServiceSource(service: ServiceModel): string {
-  const asyncMethods = service.methods.map((method) => {
-    const returnType = method.serverStreaming
-      ? `AsyncIterator[${method.outputType.expression}]`
-      : method.outputType.expression;
-    const prefix = method.serverStreaming ? "def" : "async def";
-    const await_ = method.serverStreaming ? "" : "await ";
-    return `    ${prefix} ${method.pythonName}(
+  const asyncMethods = service.methods
+    .map((method) => {
+      const returnType = method.serverStreaming
+        ? `AsyncIterator[${method.outputType.expression}]`
+        : method.outputType.expression;
+      const prefix = method.serverStreaming ? "def" : "async def";
+      const await_ = method.serverStreaming ? "" : "await ";
+      return `    ${prefix} ${method.pythonName}(
         self,
         request: ${method.inputType.expression},
         *,
@@ -1272,12 +1262,14 @@ function pythonServiceSource(service: ServiceModel): string {
             request,
             timeout_ms=timeout_ms,
         )`;
-  }).join("\n\n");
-  const syncMethods = service.methods.map((method) => {
-    const returnType = method.serverStreaming
-      ? `Iterator[${method.outputType.expression}]`
-      : method.outputType.expression;
-    return `    def ${method.pythonName}(
+    })
+    .join("\n\n");
+  const syncMethods = service.methods
+    .map((method) => {
+      const returnType = method.serverStreaming
+        ? `Iterator[${method.outputType.expression}]`
+        : method.outputType.expression;
+      return `    def ${method.pythonName}(
         self,
         request: ${method.inputType.expression},
         *,
@@ -1287,7 +1279,8 @@ function pythonServiceSource(service: ServiceModel): string {
             request,
             timeout_ms=timeout_ms,
         )`;
-  }).join("\n\n");
+    })
+    .join("\n\n");
   return `class Async${service.name}Client:
     __slots__ = ("_client",)
 
@@ -1311,8 +1304,10 @@ function pythonEventMethods(
   asynchronous: boolean,
 ): string {
   const iterator = asynchronous ? "AsyncIterator" : "Iterator";
-  return events.map((event) =>
-    `    def ${event.pythonName}(
+  return events
+    .map(
+      (event) =>
+        `    def ${event.pythonName}(
         self,
         *,
         instance_id: str | None = None,
@@ -1329,8 +1324,9 @@ function pythonEventMethods(
             task_id=task_id,
             after_sequence=after_sequence,
             timeout_ms=timeout_ms,
-        )`
-  ).join("\n\n");
+        )`,
+    )
+    .join("\n\n");
 }
 
 function pythonTaskMethods(
@@ -1341,8 +1337,10 @@ function pythonTaskMethods(
   const taskType = asynchronous ? "AsyncSoulFireTask" : "SoulFireTask";
   const prefix = asynchronous ? "async def" : "def";
   const await_ = asynchronous ? "await " : "";
-  return tasks.map((task) =>
-    `    ${prefix} ${task.pythonName}(
+  return tasks
+    .map(
+      (task) =>
+        `    ${prefix} ${task.pythonName}(
         self,
         tasks: ${tasksType},
         task_input: ${task.inputType.expression},
@@ -1352,8 +1350,9 @@ function pythonTaskMethods(
             task_input,
             ${task.resultType.expression},
             **options,
-        )`
-  ).join("\n\n");
+        )`,
+    )
+    .join("\n\n");
 }
 
 function pythonInitSource(model: GenerationModel): string {
@@ -1383,7 +1382,7 @@ function typeScriptReadme(model: GenerationModel): string {
 
 Typed TypeScript companion SDK for the SoulFire \`${model.metadata.pluginId}\` plugin.
 
-The default entry point is Effect-first. Import \`${model.typescriptPackageName}/promise\` when an application uses Promises and async iterables.
+The companion API returns Effect operations and streams. Run a scoped workflow with \`Effect.runPromise\` from an async application.
 
 \`\`\`ts
 import { Effect } from "effect";
@@ -1442,8 +1441,7 @@ async function inspectOutput(
 }
 
 function isSharedSchema(name: string): boolean {
-  return name.startsWith("google/")
-    || /^soulfire\/[^/]+\.proto$/.test(name);
+  return name.startsWith("google/") || /^soulfire\/[^/]+\.proto$/.test(name);
 }
 
 function qualify(packageName: string, name: string): string {
@@ -1478,11 +1476,13 @@ function snakeCase(value: string): string {
 }
 
 function pascalCase(value: string): string {
-  return value
-    .split(/[^a-zA-Z0-9]+/)
-    .filter((part) => part.length > 0)
-    .map((part) => `${part[0]?.toUpperCase()}${part.slice(1)}`)
-    .join("") || "SoulFire";
+  return (
+    value
+      .split(/[^a-zA-Z0-9]+/)
+      .filter((part) => part.length > 0)
+      .map((part) => `${part[0]?.toUpperCase()}${part.slice(1)}`)
+      .join("") || "SoulFire"
+  );
 }
 
 function packageSegment(value: string): string {
@@ -1518,43 +1518,44 @@ function pythonSlots(services: readonly ServiceModel[]): string {
 
 function indent(value: string, spaces: number): string {
   const prefix = " ".repeat(spaces);
-  return value.split("\n").map((line) => `${prefix}${line}`).join("\n");
+  return value
+    .split("\n")
+    .map((line) => `${prefix}${line}`)
+    .join("\n");
 }
 
-function extensionMethodSources(
-  services: readonly ServiceModel[],
-): string {
+function extensionMethodSources(services: readonly ServiceModel[]): string {
   const counts = new Map<string, number>();
   for (const service of services) {
     for (const method of service.methods) {
       counts.set(method.localName, (counts.get(method.localName) ?? 0) + 1);
     }
   }
-  return services.flatMap((service) =>
-    service.methods.map((method) => {
-      const publicName = counts.get(method.localName) === 1
-        ? method.localName
-        : `${service.localName}${pascalCase(method.name)}`;
-      return `  public ${publicName}(
+  return services
+    .flatMap((service) =>
+      service.methods.map((method) => {
+        const publicName =
+          counts.get(method.localName) === 1
+            ? method.localName
+            : `${service.localName}${pascalCase(method.name)}`;
+        return `  public ${publicName}(
     request: Parameters<${service.name}Client[${JSON.stringify(method.localName)}]>[0],
   ): ReturnType<${service.name}Client[${JSON.stringify(method.localName)}]> {
     return this.${service.localName}.${method.localName}(request);
   }`;
-    })
-  ).join("\n\n");
+      }),
+    )
+    .join("\n\n");
 }
 
-function pythonImportModule(
-  model: GenerationModel,
-  fullName: string,
-): string {
+function pythonImportModule(model: GenerationModel, fullName: string): string {
   const prefix = `${model.pythonModuleName}.`;
   if (fullName.startsWith(prefix)) {
     return `.${fullName.slice(prefix.length)}`;
   }
   if (
-    fullName.startsWith("soulfire.")
-    || fullName.startsWith("google.protobuf.")
+    fullName.startsWith("soulfire.") ||
+    fullName.startsWith("google.protobuf.")
   ) {
     return fullName;
   }
@@ -1575,7 +1576,10 @@ async function rewriteTypeScriptSharedImports(
     const rewritten = source.replace(
       /from "(\.[^"]+_pb\.js)"/g,
       (match, specifier: string) => {
-        const target = resolve(dirname(file), specifier.replace(/\.js$/, ".ts"));
+        const target = resolve(
+          dirname(file),
+          specifier.replace(/\.js$/, ".ts"),
+        );
         if (existingFiles.has(target)) {
           return match;
         }

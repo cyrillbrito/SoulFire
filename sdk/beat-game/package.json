@@ -27,10 +27,6 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
-    "./promise": {
-      "types": "./dist/promise.d.ts",
-      "import": "./dist/promise.js"
-    },
     "./node": {
       "types": "./dist/node.d.ts",
       "import": "./dist/node.js"

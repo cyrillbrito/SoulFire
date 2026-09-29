@@ -1,9 +1,10 @@
+import { Effect, Fiber, Stream } from "effect";
 import { mkdir } from "node:fs/promises";
 import process from "node:process";
 
-import { beatGame, beatGameTeam } from "@soulfiremc/beat-game/promise";
+import { beatGame, beatGameTeam } from "@soulfiremc/beat-game";
 import { JsonFileBeatGameCheckpointStore } from "@soulfiremc/beat-game/node";
-import { SoulFire } from "@soulfiremc/sdk/node/promise";
+import { SoulFire } from "@soulfiremc/sdk/node";
 
 const configuration = {
   baseUrl: requiredEnvironment("SOULFIRE_SMOKE_BASE_URL"),
@@ -24,66 +25,89 @@ const configuration = {
 
 await mkdir(configuration.checkpointDirectory, { recursive: true });
 
-await using soulfire = await SoulFire.connect({
-  baseUrl: configuration.baseUrl,
-  token: configuration.token,
-});
+await Effect.runPromise(
+  Effect.scoped(
+    Effect.gen(function* () {
+      const soulfire = yield* SoulFire.connect({
+        baseUrl: configuration.baseUrl,
+        token: configuration.token,
+      });
 
-const bots = configuration.botIds.map((botId) =>
-  soulfire.instance(configuration.instanceId).bot(botId)
-);
-if (configuration.startBots) {
-  await Promise.all(bots.map((bot) => bot.start()));
-}
+      const bots = configuration.botIds.map((botId) =>
+        soulfire.instance(configuration.instanceId).bot(botId),
+      );
+      if (configuration.startBots) {
+        yield* Effect.forEach(bots, (bot) => bot.start(), {
+          concurrency: "unbounded",
+          discard: true,
+        });
+      }
 
-const checkpointStore = new JsonFileBeatGameCheckpointStore(
-  configuration.checkpointDirectory,
-);
-const run = bots.length === 1
-  ? await beatGame(bots[0], {
-    runId: configuration.runId,
-    checkpointStore,
-    team: { teamId: configuration.teamId },
-  })
-  : await beatGameTeam(bots, {
-    teamId: configuration.teamId,
-    checkpointStore,
-  });
-const memberRuns = "runs" in run ? run.runs : [run];
-let savedCheckpoints = 0;
+      const checkpointStore = new JsonFileBeatGameCheckpointStore(
+        configuration.checkpointDirectory,
+      );
+      const run =
+        bots.length === 1
+          ? yield* beatGame(bots[0], {
+              runId: configuration.runId,
+              checkpointStore,
+              team: { teamId: configuration.teamId },
+            })
+          : yield* beatGameTeam(bots, {
+              teamId: configuration.teamId,
+              checkpointStore,
+            });
+      const memberRuns = "runs" in run ? run.runs : [run];
+      let savedCheckpoints = 0;
 
-const eventConsumers = memberRuns.map(async (memberRun) => {
-  for await (const event of memberRun.events) {
-    process.stdout.write(`${jsonLine({
-      kind: "beat-game-event",
-      memberRunId: memberRun.id,
-      event,
-    })}\n`);
-    if (event.type !== "checkpoint-saved") {
-      continue;
-    }
-    savedCheckpoints += 1;
-    if (
-      configuration.crashAfterCheckpoints !== undefined
-      && savedCheckpoints >= configuration.crashAfterCheckpoints
-    ) {
-      process.stderr.write(
+      const eventConsumers = yield* Effect.forEach(memberRuns, (memberRun) =>
+        Effect.forkScoped(
+          memberRun.events.pipe(
+            Stream.runForEach((event) =>
+              Effect.sync(() => {
+                process.stdout.write(
+                  `${jsonLine({
+                    kind: "beat-game-event",
+                    memberRunId: memberRun.id,
+                    event,
+                  })}\n`,
+                );
+                if (event.type !== "checkpoint-saved") {
+                  return;
+                }
+                savedCheckpoints += 1;
+                if (
+                  configuration.crashAfterCheckpoints !== undefined &&
+                  savedCheckpoints >= configuration.crashAfterCheckpoints
+                ) {
+                  process.stderr.write(
+                    `${jsonLine({
+                      kind: "intentional-hard-crash",
+                      savedCheckpoints,
+                    })}\n`,
+                  );
+                  process.exit(75);
+                }
+              }),
+            ),
+          ),
+        ),
+      );
+
+      const result = yield* run.awaitCompletion;
+      yield* Effect.forEach(eventConsumers, Fiber.join, {
+        concurrency: "unbounded",
+        discard: true,
+      });
+      process.stdout.write(
         `${jsonLine({
-          kind: "intentional-hard-crash",
-          savedCheckpoints,
+          kind: "beat-game-completed",
+          result,
         })}\n`,
       );
-      process.exit(75);
-    }
-  }
-});
-
-const result = await run.awaitCompletion();
-await Promise.all(eventConsumers);
-process.stdout.write(`${jsonLine({
-  kind: "beat-game-completed",
-  result,
-})}\n`);
+    }),
+  ),
+);
 
 function requiredEnvironment(name) {
   const value = process.env[name]?.trim();
@@ -137,6 +161,6 @@ function optionalPositiveIntegerEnvironment(name) {
 
 function jsonLine(value) {
   return JSON.stringify(value, (_, nestedValue) =>
-    typeof nestedValue === "bigint" ? nestedValue.toString() : nestedValue
+    typeof nestedValue === "bigint" ? nestedValue.toString() : nestedValue,
   );
 }

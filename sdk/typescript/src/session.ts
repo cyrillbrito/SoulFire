@@ -1,12 +1,17 @@
 import { create, type MessageInitShape } from "@bufbuild/protobuf";
 import type { CallOptions } from "@connectrpc/connect";
-
 import {
-  BotLiveStateSchema,
-  type BotInventoryStateResponse,
-  type BotLiveState,
-  type BotStatus,
-} from "./generated/soulfire/bot_pb.js";
+  Cause,
+  Deferred,
+  Effect,
+  Exit,
+  Option,
+  PubSub,
+  Scope,
+  Stream,
+} from "effect";
+import { operationError, SoulFireTimeoutError, type SoulFireOperationError } from "./errors.js";
+
 import {
   BossBarEventKind,
   BotEventFilterSchema,
@@ -28,6 +33,12 @@ import {
   type PlayerListEntrySnapshot,
   type WatchBotEventsRequestSchema,
 } from "./generated/soulfire/bot_live_pb.js";
+import {
+  BotLiveStateSchema,
+  type BotInventoryStateResponse,
+  type BotLiveState,
+  type BotStatus,
+} from "./generated/soulfire/bot_pb.js";
 import type {
   BlockSnapshot,
   EntitySnapshot,
@@ -128,10 +139,6 @@ export interface BotSessionOptions {
    * Defaults to 15, from 5 to 60.
    */
   readonly heartbeatIntervalSeconds?: number;
-  /**
-   * Closes the session when aborted.
-   */
-  readonly signal?: AbortSignal;
 }
 
 type StreamRequest = Omit<
@@ -142,193 +149,135 @@ type StreamRequest = Omit<
 export type BotEventStreamFactory = (
   request: StreamRequest,
   options: CallOptions,
-) => AsyncIterable<BotEvent>;
+) => Stream.Stream<BotEvent, SoulFireOperationError>;
 
 /**
  * A bot's event stream and the state it adds up to. After an error it
- * reconnects and resumes where it left off. `await using` closes it.
+ * reconnects and resumes where it left off. Its Effect scope closes it.
  */
-export class BotSession implements AsyncDisposable {
-  readonly #abortController = new AbortController();
-  readonly #events = new Set<AsyncQueue<BotEvent>>();
-  readonly #stream: BotEventStreamFactory;
-  readonly #options: BotSessionOptions;
-  #closed = false;
-  #ready: Promise<void>;
-  #resolveReady: (() => void) | undefined;
-  #rejectReady: ((reason: unknown) => void) | undefined;
-  #run: Promise<void>;
+export class BotSession {
   #state: BotSessionState = emptyBotSessionState();
 
   private constructor(
-    stream: BotEventStreamFactory,
-    options: BotSessionOptions,
-  ) {
-    this.#stream = stream;
-    this.#options = options;
-    this.#ready = new Promise<void>((resolve, reject) => {
-      this.#resolveReady = resolve;
-      this.#rejectReady = reject;
-    });
-    this.#run = this.#consume();
-    options.signal?.addEventListener("abort", () => this.close(), {
-      once: true,
-    });
-  }
+    private readonly eventsHub: PubSub.PubSub<BotEvent>,
+    private readonly ready: Deferred.Deferred<void, SoulFireOperationError>,
+    private readonly scope: Scope.CloseableScope,
+  ) {}
 
-  /**
-   * Resolves once the first event has arrived.
-   */
-  public static async open(
+  public static open(
     stream: BotEventStreamFactory,
     options: BotSessionOptions = {},
-  ): Promise<BotSession> {
-    const session = new BotSession(stream, options);
-    await session.#ready;
-    return session;
+  ): Effect.Effect<BotSession, SoulFireOperationError, Scope.Scope> {
+    return Effect.gen(function* () {
+      const scope = yield* Scope.make();
+      yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
+      const events = yield* PubSub.sliding<BotEvent>(SUBSCRIBER_BUFFER_SIZE);
+      const ready = yield* Deferred.make<void, SoulFireOperationError>();
+      const session = new BotSession(events, ready, scope);
+      yield* Scope.addFinalizer(scope, PubSub.shutdown(events));
+      yield* session.consume(stream, options).pipe(
+        Effect.onExit((exit) =>
+          Exit.isFailure(exit)
+            ? Deferred.failCause(ready, exit.cause).pipe(Effect.asVoid)
+            : Effect.void,
+        ),
+        Effect.forkIn(scope),
+      );
+      yield* Deferred.await(ready).pipe(
+        Effect.onExit((exit) =>
+          Exit.isFailure(exit) ? Scope.close(scope, exit) : Effect.void,
+        ),
+      );
+      return session;
+    });
   }
 
-  /**
-   * Updated before each event is handed to readers.
-   */
   public get state(): BotSessionState {
     return this.#state;
   }
 
-  /**
-   * Events from now on. A reader more than 1024 events behind loses the oldest.
-   */
-  public events(): AsyncIterable<BotEvent> {
-    const queue = new AsyncQueue<BotEvent>(SUBSCRIBER_BUFFER_SIZE);
-    this.#events.add(queue);
-    const events = this.#events;
-    return {
-      async *[Symbol.asyncIterator]() {
-        try {
-          yield* queue;
-        } finally {
-          events.delete(queue);
-          queue.close();
-        }
-      },
-    };
+  /** Subscribes lazily; slow readers lose the oldest buffered events. */
+  public events(): Stream.Stream<BotEvent> {
+    return Stream.fromPubSub(this.eventsHub);
   }
 
-  /**
-   * The next event for which `predicate` is true; it gets the state including
-   * that event. No timeout unless `timeoutMs` is set.
-   */
-  public async waitFor(
+  public waitFor(
     predicate: (event: BotEvent, state: BotSessionState) => boolean,
-    options: { readonly signal?: AbortSignal; readonly timeoutMs?: number } = {},
-  ): Promise<BotEvent> {
-    const abortController = new AbortController();
-    const onAbort = () => abortController.abort(options.signal?.reason);
-    options.signal?.addEventListener("abort", onAbort, { once: true });
-    const timeout = options.timeoutMs === undefined
-      ? undefined
-      : setTimeout(
-        () => abortController.abort(new Error("Timed out waiting for a bot event")),
-        options.timeoutMs,
-      );
-    try {
-      for await (const event of abortable(this.events(), abortController.signal)) {
-        if (predicate(event, this.#state)) {
-          return event;
-        }
-      }
-      throw abortController.signal.reason
-        ?? new Error("Bot session closed before the expected event");
-    } finally {
-      if (timeout !== undefined) {
-        clearTimeout(timeout);
-      }
-      options.signal?.removeEventListener("abort", onAbort);
-    }
+    options: { readonly timeoutMs?: number } = {},
+  ): Effect.Effect<BotEvent, SoulFireOperationError> {
+    const next = this.events().pipe(
+      Stream.filter((event) => predicate(event, this.#state)),
+      Stream.runHead,
+      Effect.flatMap((event) =>
+        Option.isSome(event)
+          ? Effect.succeed(event.value)
+          : Effect.fail(
+              operationError(
+                "session.waitFor",
+                new Error("Bot session closed before the expected event"),
+              ),
+            ),
+      ),
+    );
+    return options.timeoutMs === undefined
+      ? next
+      : next.pipe(
+          Effect.timeoutFail({
+            duration: options.timeoutMs,
+            onTimeout: () =>
+              operationError(
+                "session.waitFor",
+                new Error("Timed out waiting for a bot event"),
+              ),
+          }),
+        );
   }
 
-  /**
-   * The next event of one kind, e.g. `"chat"` or `"damage"`.
-   */
   public once(
     eventCase: BotEvent["event"]["case"],
-    options?: { readonly signal?: AbortSignal; readonly timeoutMs?: number },
-  ): Promise<BotEvent> {
-    return this.waitFor(
-      (event) => event.event.case === eventCase,
-      options,
-    );
+    options?: { readonly timeoutMs?: number },
+  ): Effect.Effect<BotEvent, SoulFireOperationError> {
+    return this.waitFor((event) => event.event.case === eventCase, options);
   }
 
-  public async close(): Promise<void> {
-    if (this.#closed) {
-      return;
-    }
-    this.#closed = true;
-    this.#abortController.abort();
-    await this.#run;
-    for (const queue of this.#events) {
-      queue.close();
-    }
-    this.#events.clear();
+  public close(): Effect.Effect<void> {
+    return Scope.close(this.scope, Exit.void);
   }
 
-  public [Symbol.asyncDispose](): Promise<void> {
-    return this.close();
-  }
-
-  async #consume(): Promise<void> {
-    let reconnectDelay = DEFAULT_RECONNECT_DELAY_MS;
-    while (!this.#closed) {
-      try {
-        const cursor = this.#state.epoch === undefined
-          ? {}
-          : {
-            afterSequence: this.#state.sequence,
-            streamEpoch: this.#state.epoch,
-          };
-        const request: StreamRequest = {
-          ...cursor,
-          filter: this.#options.filter ?? defaultFilter(),
-          heartbeatIntervalSeconds:
-            this.#options.heartbeatIntervalSeconds ?? 15,
+  private consume(
+    stream: BotEventStreamFactory,
+    options: BotSessionOptions,
+  ): Effect.Effect<void> {
+    return Effect.gen(this, function* () {
+      let receivedEvent = false;
+      let delay = DEFAULT_RECONNECT_DELAY_MS;
+      while (true) {
+        const cursor = this.#state.epoch === undefined ? {} : {
+          afterSequence: this.#state.sequence, streamEpoch: this.#state.epoch,
         };
-        for await (
-          const event of this.#stream(request, {
-            signal: this.#abortController.signal,
-          })
-        ) {
-          this.#state = reduceBotSessionState(this.#state, event);
-          this.#resolveReady?.();
-          this.#resolveReady = undefined;
-          this.#rejectReady = undefined;
-          for (const queue of this.#events) {
-            queue.push(event);
-          }
-          reconnectDelay = DEFAULT_RECONNECT_DELAY_MS;
-        }
-        if (!this.#closed) {
-          await sleep(reconnectDelay, this.#abortController.signal);
-        }
-      } catch (error) {
-        if (this.#closed || this.#abortController.signal.aborted) {
-          break;
-        }
-        if (this.#resolveReady !== undefined) {
-          this.#rejectReady?.(error);
-          this.#resolveReady = undefined;
-          this.#rejectReady = undefined;
-          break;
-        }
-        await sleep(reconnectDelay, this.#abortController.signal);
-        reconnectDelay = Math.min(
-          reconnectDelay * 2,
-          MAX_RECONNECT_DELAY_MS,
+        const exit = yield* stream({ ...cursor, filter: options.filter ?? defaultFilter(), heartbeatIntervalSeconds: options.heartbeatIntervalSeconds ?? 15 }, {}).pipe(
+          Stream.runForEach((event) => Effect.gen(this, function* () {
+            this.#state = reduceBotSessionState(this.#state, event);
+            receivedEvent = true;
+            delay = DEFAULT_RECONNECT_DELAY_MS;
+            yield* Deferred.succeed(this.ready, undefined);
+            yield* PubSub.publish(this.eventsHub, event);
+          })),
+          Effect.exit,
         );
+        if (Exit.isFailure(exit)) {
+          const failure = Cause.failureOption(exit.cause);
+          if (!receivedEvent || Option.isNone(failure) || failure.value._tag !== "SoulFireRpcError" || !failure.value.retryable) {
+            yield* Deferred.failCause(this.ready, exit.cause);
+            yield* PubSub.shutdown(this.eventsHub);
+            return yield* Effect.failCause(exit.cause);
+          }
+        }
+        yield* Effect.sleep(delay);
+        if (Exit.isFailure(exit)) delay = Math.min(delay * 2, MAX_RECONNECT_DELAY_MS);
       }
-    }
+    }).pipe(Effect.orDie);
   }
-
 }
 
 export function emptyBotSessionState(): BotSessionState {
@@ -360,18 +309,17 @@ export function reduceBotSessionState(
 ): BotSessionState {
   const envelope = event.envelope;
   const discontinuity =
-    envelope !== undefined
-    && state.epoch !== undefined
-    && (
-      envelope.streamEpoch !== state.epoch
-      || envelope.sequence !== state.sequence + 1n
-    );
-  const current = discontinuity || event.event.case === "resyncRequired"
-    ? {
-      ...emptyBotSessionState(),
-      ...(state.status === undefined ? {} : { status: state.status }),
-    }
-    : state;
+    envelope !== undefined &&
+    state.epoch !== undefined &&
+    (envelope.streamEpoch !== state.epoch ||
+      envelope.sequence !== state.sequence + 1n);
+  const current =
+    discontinuity || event.event.case === "resyncRequired"
+      ? {
+          ...emptyBotSessionState(),
+          ...(state.status === undefined ? {} : { status: state.status }),
+        }
+      : state;
   let player = current.player;
   let inventory = current.inventory;
   let status = current.status;
@@ -403,10 +351,7 @@ export function reduceBotSessionState(
     case "entityEvent": {
       const entity = event.event.value.entity;
       if (entity !== undefined) {
-        if (
-          event.event.value.kind
-          === EntityEventKind.ENTITY_EVENT_DESPAWN
-        ) {
+        if (event.event.value.kind === EntityEventKind.ENTITY_EVENT_DESPAWN) {
           entities.delete(entity.entityId);
           entitySnapshots.delete(entity.entityId);
         } else {
@@ -436,10 +381,7 @@ export function reduceBotSessionState(
       break;
     }
     case "environment":
-      environment = reduceEnvironmentState(
-        environment,
-        event.event.value,
-      );
+      environment = reduceEnvironmentState(environment, event.event.value);
       break;
     case "playerList":
       reducePlayerListState(playerList, event.event.value);
@@ -473,8 +415,8 @@ export function reduceBotSessionState(
     ...(event.envelope === undefined
       ? {}
       : {
-        epoch: event.envelope.streamEpoch,
-      }),
+          epoch: event.envelope.streamEpoch,
+        }),
     ...(inventory === undefined ? {} : { inventory }),
     ...(player === undefined ? {} : { player }),
     ...(status === undefined ? {} : { status }),
@@ -561,28 +503,27 @@ function reducePlayerListState(
       state.set(entry.profileId, entry);
       continue;
     }
-    state.set(entry.profileId, create(PlayerListEntrySnapshotSchema, {
-      ...previous,
-      changedFields: entry.changedFields,
-      ...(changed.has("update_display_name")
-        ? { displayName: entry.displayName }
-        : {}),
-      ...(changed.has("update_game_mode")
-        ? { gameMode: entry.gameMode }
-        : {}),
-      ...(changed.has("update_hat")
-        ? { showHat: entry.showHat }
-        : {}),
-      ...(changed.has("update_latency")
-        ? { latencyMs: entry.latencyMs }
-        : {}),
-      ...(changed.has("update_list_order")
-        ? { listOrder: entry.listOrder }
-        : {}),
-      ...(changed.has("update_listed")
-        ? { listed: entry.listed }
-        : {}),
-    }));
+    state.set(
+      entry.profileId,
+      create(PlayerListEntrySnapshotSchema, {
+        ...previous,
+        changedFields: entry.changedFields,
+        ...(changed.has("update_display_name")
+          ? { displayName: entry.displayName }
+          : {}),
+        ...(changed.has("update_game_mode")
+          ? { gameMode: entry.gameMode }
+          : {}),
+        ...(changed.has("update_hat") ? { showHat: entry.showHat } : {}),
+        ...(changed.has("update_latency")
+          ? { latencyMs: entry.latencyMs }
+          : {}),
+        ...(changed.has("update_list_order")
+          ? { listOrder: entry.listOrder }
+          : {}),
+        ...(changed.has("update_listed") ? { listed: entry.listed } : {}),
+      }),
+    );
   }
 }
 
@@ -608,9 +549,7 @@ function reduceBossBarState(
       : { darkenScreen: event.darkenScreen }),
     ...(event.name === undefined ? {} : { name: event.name }),
     ...(event.overlay === undefined ? {} : { overlay: event.overlay }),
-    ...(event.playMusic === undefined
-      ? {}
-      : { playMusic: event.playMusic }),
+    ...(event.playMusic === undefined ? {} : { playMusic: event.playMusic }),
     ...(event.progress === undefined ? {} : { progress: event.progress }),
   });
 }
@@ -672,9 +611,9 @@ function reduceScoreboardState(
       break;
     case ScoreboardEventKind.SCOREBOARD_EVENT_SCORE_SET:
       if (
-        objectiveName !== undefined
-        && event.owner !== undefined
-        && event.score !== undefined
+        objectiveName !== undefined &&
+        event.owner !== undefined &&
+        event.score !== undefined
       ) {
         scores.set(scoreboardScoreKey(objectiveName, event.owner), {
           objectiveName,
@@ -726,8 +665,8 @@ function reduceScoreboardTeam(
   const previous = teams.get(event.teamName);
   const players = new Set(previous?.players ?? []);
   if (
-    event.kind === ScoreboardEventKind.SCOREBOARD_EVENT_TEAM_ADD
-    || event.kind === ScoreboardEventKind.SCOREBOARD_EVENT_TEAM_UPDATE
+    event.kind === ScoreboardEventKind.SCOREBOARD_EVENT_TEAM_ADD ||
+    event.kind === ScoreboardEventKind.SCOREBOARD_EVENT_TEAM_UPDATE
   ) {
     players.clear();
     event.players.forEach((player) => players.add(player));
@@ -840,102 +779,4 @@ function blockKey(position: {
   readonly z: number;
 }): string {
   return `${position.dimension}:${position.x}:${position.y}:${position.z}`;
-}
-
-async function* abortable<T>(
-  source: AsyncIterable<T>,
-  signal: AbortSignal,
-): AsyncIterable<T> {
-  const iterator = source[Symbol.asyncIterator]();
-  try {
-    while (!signal.aborted) {
-      const result = await Promise.race([
-        iterator.next(),
-        new Promise<never>((_, reject) => {
-          signal.addEventListener(
-            "abort",
-            () => reject(signal.reason),
-            { once: true },
-          );
-        }),
-      ]);
-      if (result.done) {
-        return;
-      }
-      yield result.value;
-    }
-  } finally {
-    await iterator.return?.();
-  }
-}
-
-async function sleep(durationMs: number, signal: AbortSignal): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const timeout = setTimeout(resolve, durationMs);
-    signal.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(timeout);
-        reject(signal.reason);
-      },
-      { once: true },
-    );
-  });
-}
-
-class AsyncQueue<T> implements AsyncIterable<T> {
-  readonly #limit: number;
-  readonly #values: T[] = [];
-  readonly #waiting: Array<(result: IteratorResult<T>) => void> = [];
-  #closed = false;
-
-  public constructor(limit: number) {
-    this.#limit = limit;
-  }
-
-  public push(value: T): void {
-    if (this.#closed) {
-      return;
-    }
-    const waiting = this.#waiting.shift();
-    if (waiting !== undefined) {
-      waiting({ done: false, value });
-      return;
-    }
-    if (this.#values.length === this.#limit) {
-      this.#values.shift();
-    }
-    this.#values.push(value);
-  }
-
-  public close(): void {
-    if (this.#closed) {
-      return;
-    }
-    this.#closed = true;
-    for (const waiting of this.#waiting.splice(0)) {
-      waiting({ done: true, value: undefined });
-    }
-  }
-
-  public async *[Symbol.asyncIterator](): AsyncIterator<T> {
-    while (true) {
-      const result = await this.#next();
-      if (result.done) {
-        return;
-      }
-      yield result.value;
-    }
-  }
-
-  #next(): Promise<IteratorResult<T>> {
-    const value = this.#values.shift();
-    if (value !== undefined) {
-      return Promise.resolve({ done: false, value });
-    }
-    if (this.#closed) {
-      return Promise.resolve({ done: true, value: undefined });
-    }
-    return new Promise((resolve) => this.#waiting.push(resolve));
-  }
 }

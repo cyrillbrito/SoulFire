@@ -1,5 +1,6 @@
 import { create } from "@bufbuild/protobuf";
 import { createClient, createRouterTransport } from "@connectrpc/connect";
+import { Effect, Stream } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { SoulFireChat, matchChat } from "../src/chat.js";
@@ -25,43 +26,47 @@ describe("SoulFireChat", () => {
     expect(matchChat(event, matcher)).toBeDefined();
   });
 
-  it("waits for the first matching chat source", async () => {
-    const client = createClient(
-      ChatService,
-      createRouterTransport(({ service }) => service(ChatService, {})),
-    );
-    const chat = new SoulFireChat(
-      "instance-id",
-      "bot-id",
-      client,
-      (options) => options,
-      async function* () {
-        yield create(BotEventSchema, {
-          event: {
-            case: "chat",
-            value: {
-              plainText: "authentication accepted",
-              source: ChatSource.PLAYER,
-            },
-          },
-        });
-        yield create(BotEventSchema, {
-          event: {
-            case: "chat",
-            value: {
-              plainText: "authentication accepted",
-              source: ChatSource.SYSTEM,
-            },
-          },
-        });
-      },
-    );
-
-    const match = await chat.waitFor("authentication accepted", {
-      sources: [ChatSource.SYSTEM],
-      timeoutMs: 100,
-    });
-
-    expect(match.event.source).toBe(ChatSource.SYSTEM);
-  });
+  it("waits for the first matching chat source", () =>
+    Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const client = createClient(
+            ChatService,
+            createRouterTransport(({ service }) => service(ChatService, {})),
+          );
+          const chat = new SoulFireChat(
+            "instance-id",
+            "bot-id",
+            client,
+            (options) => options,
+            () =>
+              Stream.make(
+                create(BotEventSchema, {
+                  event: {
+                    case: "chat",
+                    value: {
+                      plainText: "authentication accepted",
+                      source: ChatSource.PLAYER,
+                    },
+                  },
+                }),
+                create(BotEventSchema, {
+                  event: {
+                    case: "chat",
+                    value: {
+                      plainText: "authentication accepted",
+                      source: ChatSource.SYSTEM,
+                    },
+                  },
+                }),
+              ),
+          );
+          const match = yield* chat.waitFor("authentication accepted", {
+            sources: [ChatSource.SYSTEM],
+            timeoutMs: 100,
+          });
+          expect(match.event.source).toBe(ChatSource.SYSTEM);
+        }),
+      ),
+    ));
 });

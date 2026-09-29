@@ -1,9 +1,10 @@
-import type {
-  DescMessage,
-  MessageInitShape,
-} from "@bufbuild/protobuf";
+import type { DescMessage, MessageInitShape } from "@bufbuild/protobuf";
 import type { CallOptions, Client } from "@connectrpc/connect";
+import { Effect, type Scope } from "effect";
+import { operationError, type SoulFireOperationError } from "./errors.js";
+import { rpc, withSignal } from "./transport.js";
 
+import { type BlockPositionSchema } from "./generated/soulfire/common_pb.js";
 import {
   InventoryArea,
   InventoryRecommendationKind,
@@ -13,8 +14,8 @@ import {
   type EquipItemRequestSchema,
   type FindInventorySlotsRequestSchema,
   type FindInventorySlotsResponse,
-  type InventoryMutationResponse,
   type InventoryItemRecommendation,
+  type InventoryMutationResponse,
   type MoveInventoryItemRequestSchema,
   type RankInventoryItemsRequestSchema,
   type RankInventoryItemsResponse,
@@ -23,9 +24,6 @@ import {
   type TransferItemsRequestSchema,
   type UnequipItemRequestSchema,
 } from "./generated/soulfire/inventory_pb.js";
-import {
-  type BlockPositionSchema,
-} from "./generated/soulfire/common_pb.js";
 
 type InventoryRequest<T extends DescMessage> = Omit<
   MessageInitShape<T>,
@@ -50,14 +48,15 @@ export type InventoryRankingOptions = Omit<
 /**
  * A block container opened with `inventory.open`. `await using` closes it.
  */
-export class SoulFireContainer implements AsyncDisposable {
+export class SoulFireContainer {
   #closed = false;
 
   public constructor(
     private readonly scope: { instanceId: string; botId: string },
     private readonly client: Client<typeof InventoryService>,
-    private readonly actionOptions: (options?: CallOptions) =>
-      CallOptions | undefined,
+    private readonly actionOptions: (
+      options?: CallOptions,
+    ) => CallOptions | undefined,
     private current: ContainerSnapshot,
   ) {}
 
@@ -73,21 +72,36 @@ export class SoulFireContainer implements AsyncDisposable {
    * Throws `SoulFireContainerClosedError` if the container was closed in the
    * meantime.
    */
-  public async refresh(options?: CallOptions): Promise<ContainerSnapshot> {
-    this.requireOpen();
-    const response = await this.client.getContainerSnapshot(
-      { scope: this.scope },
-      options,
-    );
-    if (
-      response.container === undefined
-      || response.container.containerId !== this.current.containerId
-    ) {
-      this.#closed = true;
-      throw new SoulFireContainerClosedError(this.current.containerId);
-    }
-    this.current = response.container;
-    return this.current;
+
+  public refresh(
+    options?: CallOptions,
+  ): Effect.Effect<ContainerSnapshot, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      yield* Effect.try({
+        try: () => this.requireOpen(),
+        catch: (cause) => operationError("SoulFireContainer.refresh", cause),
+      });
+      const response = yield* rpc("SoulFireContainer.refresh", (signal) =>
+        this.client.getContainerSnapshot(
+          { scope: this.scope },
+          withSignal(options, signal),
+        ),
+      );
+      if (
+        response.container === undefined ||
+        response.container.containerId !== this.current.containerId
+      ) {
+        this.#closed = true;
+        return yield* Effect.fail(
+          operationError(
+            "SoulFireContainer.refresh",
+            new SoulFireContainerClosedError(this.current.containerId),
+          ),
+        );
+      }
+      this.current = response.container;
+      return this.current;
+    });
   }
 
   /**
@@ -98,7 +112,7 @@ export class SoulFireContainer implements AsyncDisposable {
     selector: InventoryRequest<typeof TransferItemsRequestSchema>["selector"],
     count: number,
     options: ContainerMutationOptions = {},
-  ): Promise<ContainerSnapshot> {
+  ): Effect.Effect<ContainerSnapshot, SoulFireOperationError> {
     return this.transfer(
       selector,
       count,
@@ -116,7 +130,7 @@ export class SoulFireContainer implements AsyncDisposable {
     selector: InventoryRequest<typeof TransferItemsRequestSchema>["selector"],
     count: number,
     options: ContainerMutationOptions = {},
-  ): Promise<ContainerSnapshot> {
+  ): Effect.Effect<ContainerSnapshot, SoulFireOperationError> {
     return this.transfer(
       selector,
       count,
@@ -126,55 +140,68 @@ export class SoulFireContainer implements AsyncDisposable {
     );
   }
 
-  public async close(
+  public close(
     options: ContainerMutationOptions = {},
-  ): Promise<ContainerSnapshot> {
-    if (this.#closed) {
+  ): Effect.Effect<ContainerSnapshot, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      if (this.#closed) {
+        return this.current;
+      }
+      const response = yield* rpc("SoulFireContainer.close", (signal) =>
+        this.client.closeSemanticContainer(
+          {
+            scope: this.scope,
+            containerId: this.current.containerId,
+            ...(options.idempotencyKey === undefined
+              ? {}
+              : { idempotencyKey: options.idempotencyKey }),
+          },
+          withSignal(this.actionOptions(options.call), signal),
+        ),
+      );
+      this.#closed = true;
+      this.current = yield* Effect.try({
+        try: () => requireContainer(response),
+        catch: (cause) => operationError("SoulFireContainer.close", cause),
+      });
       return this.current;
-    }
-    const response = await this.client.closeSemanticContainer(
-      {
-        scope: this.scope,
-        containerId: this.current.containerId,
-        ...(options.idempotencyKey === undefined
-          ? {}
-          : { idempotencyKey: options.idempotencyKey }),
-      },
-      this.actionOptions(options.call),
-    );
-    this.#closed = true;
-    this.current = requireContainer(response);
-    return this.current;
+    });
   }
 
-  public async [Symbol.asyncDispose](): Promise<void> {
-    await this.close();
-  }
-
-  private async transfer(
+  private transfer(
     selector: InventoryRequest<typeof TransferItemsRequestSchema>["selector"],
     count: number,
     from: InventoryArea,
     to: InventoryArea,
     options: ContainerMutationOptions,
-  ): Promise<ContainerSnapshot> {
-    this.requireOpen();
-    const response = await this.client.transferItems(
-      {
-        scope: this.scope,
-        selector,
-        count,
-        from,
-        to,
-        expectedRevision: this.current.revision,
-        ...(options.idempotencyKey === undefined
-          ? {}
-          : { idempotencyKey: options.idempotencyKey }),
-      },
-      this.actionOptions(options.call),
-    );
-    this.current = requireContainer(response);
-    return this.current;
+  ): Effect.Effect<ContainerSnapshot, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      yield* Effect.try({
+        try: () => this.requireOpen(),
+        catch: (cause) => operationError("SoulFireContainer.transfer", cause),
+      });
+      const response = yield* rpc("SoulFireContainer.transfer", (signal) =>
+        this.client.transferItems(
+          {
+            scope: this.scope,
+            selector,
+            count,
+            from,
+            to,
+            expectedRevision: this.current.revision,
+            ...(options.idempotencyKey === undefined
+              ? {}
+              : { idempotencyKey: options.idempotencyKey }),
+          },
+          withSignal(this.actionOptions(options.call), signal),
+        ),
+      );
+      this.current = yield* Effect.try({
+        try: () => requireContainer(response),
+        catch: (cause) => operationError("SoulFireContainer.transfer", cause),
+      });
+      return this.current;
+    });
   }
 
   private requireOpen(): void {
@@ -201,38 +228,58 @@ export class SoulFireInventory {
     private readonly instanceId: string,
     private readonly botId: string,
     private readonly client: Client<typeof InventoryService>,
-    private readonly actionOptions: (options?: CallOptions) =>
-      CallOptions | undefined,
+    private readonly actionOptions: (
+      options?: CallOptions,
+    ) => CallOptions | undefined,
   ) {}
 
   /**
    * The open menu (the player's inventory when no container is open), with
    * every slot.
    */
-  public async snapshot(options?: CallOptions): Promise<ContainerSnapshot> {
-    const response = await this.client.getContainerSnapshot(
-      { scope: this.scope() },
-      options,
-    );
-    if (response.container === undefined) {
-      throw new Error("SoulFire did not return a container snapshot");
-    }
-    return response.container;
+  /**
+   * The open menu (the player's inventory when no container is open), with
+   * every slot.
+   */
+  public snapshot(
+    options?: CallOptions,
+  ): Effect.Effect<ContainerSnapshot, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const response = yield* rpc("SoulFireInventory.snapshot", (signal) =>
+        this.client.getContainerSnapshot(
+          { scope: this.scope() },
+          withSignal(options, signal),
+        ),
+      );
+      if (response.container === undefined) {
+        return yield* Effect.fail(
+          operationError(
+            "SoulFireInventory.snapshot",
+            new Error("SoulFire did not return a container snapshot"),
+          ),
+        );
+      }
+      return response.container;
+    });
   }
 
   /**
    * Items matching `selector` in `areas`. No `areas` means container, main,
    * hotbar, armor, offhand and crafting slots.
    */
-  public async count(
+  public count(
     request: InventoryRequest<typeof CountItemsRequestSchema>,
     options?: CallOptions,
-  ): Promise<bigint> {
-    const response = await this.client.countItems(
-      { ...request, scope: this.scope() },
-      options,
-    );
-    return response.count;
+  ): Effect.Effect<bigint, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const response = yield* rpc("SoulFireInventory.count", (signal) =>
+        this.client.countItems(
+          { ...request, scope: this.scope() },
+          withSignal(options, signal),
+        ),
+      );
+      return response.count;
+    });
   }
 
   /**
@@ -242,10 +289,12 @@ export class SoulFireInventory {
   public find(
     request: InventoryRequest<typeof FindInventorySlotsRequestSchema>,
     options?: CallOptions,
-  ): Promise<FindInventorySlotsResponse> {
-    return this.client.findInventorySlots(
-      { ...request, scope: this.scope() },
-      options,
+  ): Effect.Effect<FindInventorySlotsResponse, SoulFireOperationError> {
+    return rpc("SoulFireInventory.find", (signal) =>
+      this.client.findInventorySlots(
+        { ...request, scope: this.scope() },
+        withSignal(options, signal),
+      ),
     );
   }
 
@@ -258,10 +307,12 @@ export class SoulFireInventory {
     kind: InventoryRecommendationKind,
     options: InventoryRankOptions = {},
     call?: CallOptions,
-  ): Promise<RankInventoryItemsResponse> {
-    return this.client.rankInventoryItems(
-      { ...options, kind, scope: this.scope() },
-      call,
+  ): Effect.Effect<RankInventoryItemsResponse, SoulFireOperationError> {
+    return rpc("SoulFireInventory.rank", (signal) =>
+      this.client.rankInventoryItems(
+        { ...options, kind, scope: this.scope() },
+        withSignal(call, signal),
+      ),
     );
   }
 
@@ -272,7 +323,10 @@ export class SoulFireInventory {
     targetBlock: MessageInitShape<typeof BlockPositionSchema>,
     options: InventoryRankingOptions = {},
     call?: CallOptions,
-  ): Promise<InventoryItemRecommendation | undefined> {
+  ): Effect.Effect<
+    InventoryItemRecommendation | undefined,
+    SoulFireOperationError
+  > {
     return this.best(
       InventoryRecommendationKind.TOOL,
       { ...options, targetBlock },
@@ -283,19 +337,21 @@ export class SoulFireInventory {
   public bestWeapon(
     options: InventoryRankingOptions = {},
     call?: CallOptions,
-  ): Promise<InventoryItemRecommendation | undefined> {
-    return this.best(
-      InventoryRecommendationKind.MELEE_WEAPON,
-      options,
-      call,
-    );
+  ): Effect.Effect<
+    InventoryItemRecommendation | undefined,
+    SoulFireOperationError
+  > {
+    return this.best(InventoryRecommendationKind.MELEE_WEAPON, options, call);
   }
 
   public bestArmor(
     equipmentSlot: "head" | "chest" | "legs" | "feet",
     options: InventoryRankingOptions = {},
     call?: CallOptions,
-  ): Promise<InventoryItemRecommendation | undefined> {
+  ): Effect.Effect<
+    InventoryItemRecommendation | undefined,
+    SoulFireOperationError
+  > {
     return this.best(
       InventoryRecommendationKind.ARMOR,
       { ...options, equipmentSlot },
@@ -306,23 +362,21 @@ export class SoulFireInventory {
   public bestFood(
     options: InventoryRankingOptions = {},
     call?: CallOptions,
-  ): Promise<InventoryItemRecommendation | undefined> {
-    return this.best(
-      InventoryRecommendationKind.FOOD,
-      options,
-      call,
-    );
+  ): Effect.Effect<
+    InventoryItemRecommendation | undefined,
+    SoulFireOperationError
+  > {
+    return this.best(InventoryRecommendationKind.FOOD, options, call);
   }
 
   public bestScaffold(
     options: InventoryRankingOptions = {},
     call?: CallOptions,
-  ): Promise<InventoryItemRecommendation | undefined> {
-    return this.best(
-      InventoryRecommendationKind.SCAFFOLD,
-      options,
-      call,
-    );
+  ): Effect.Effect<
+    InventoryItemRecommendation | undefined,
+    SoulFireOperationError
+  > {
+    return this.best(InventoryRecommendationKind.SCAFFOLD, options, call);
   }
 
   /**
@@ -332,10 +386,12 @@ export class SoulFireInventory {
   public move(
     request: InventoryRequest<typeof MoveInventoryItemRequestSchema>,
     options?: CallOptions,
-  ): Promise<InventoryMutationResponse> {
-    return this.client.moveInventoryItem(
-      { ...request, scope: this.scope() },
-      this.actionOptions(options),
+  ): Effect.Effect<InventoryMutationResponse, SoulFireOperationError> {
+    return rpc("SoulFireInventory.move", (signal) =>
+      this.client.moveInventoryItem(
+        { ...request, scope: this.scope() },
+        withSignal(this.actionOptions(options), signal),
+      ),
     );
   }
 
@@ -347,10 +403,12 @@ export class SoulFireInventory {
   public transfer(
     request: InventoryRequest<typeof TransferItemsRequestSchema>,
     options?: CallOptions,
-  ): Promise<InventoryMutationResponse> {
-    return this.client.transferItems(
-      { ...request, scope: this.scope() },
-      this.actionOptions(options),
+  ): Effect.Effect<InventoryMutationResponse, SoulFireOperationError> {
+    return rpc("SoulFireInventory.transfer", (signal) =>
+      this.client.transferItems(
+        { ...request, scope: this.scope() },
+        withSignal(this.actionOptions(options), signal),
+      ),
     );
   }
 
@@ -360,10 +418,12 @@ export class SoulFireInventory {
   public toss(
     request: InventoryRequest<typeof TossItemsRequestSchema>,
     options?: CallOptions,
-  ): Promise<InventoryMutationResponse> {
-    return this.client.tossItems(
-      { ...request, scope: this.scope() },
-      this.actionOptions(options),
+  ): Effect.Effect<InventoryMutationResponse, SoulFireOperationError> {
+    return rpc("SoulFireInventory.toss", (signal) =>
+      this.client.tossItems(
+        { ...request, scope: this.scope() },
+        withSignal(this.actionOptions(options), signal),
+      ),
     );
   }
 
@@ -374,10 +434,12 @@ export class SoulFireInventory {
   public selectHotbar(
     request: InventoryRequest<typeof SelectHotbarItemRequestSchema>,
     options?: CallOptions,
-  ): Promise<InventoryMutationResponse> {
-    return this.client.selectHotbarItem(
-      { ...request, scope: this.scope() },
-      this.actionOptions(options),
+  ): Effect.Effect<InventoryMutationResponse, SoulFireOperationError> {
+    return rpc("SoulFireInventory.selectHotbar", (signal) =>
+      this.client.selectHotbarItem(
+        { ...request, scope: this.scope() },
+        withSignal(this.actionOptions(options), signal),
+      ),
     );
   }
 
@@ -389,10 +451,12 @@ export class SoulFireInventory {
   public equip(
     request: InventoryRequest<typeof EquipItemRequestSchema>,
     options?: CallOptions,
-  ): Promise<InventoryMutationResponse> {
-    return this.client.equipItem(
-      { ...request, scope: this.scope() },
-      this.actionOptions(options),
+  ): Effect.Effect<InventoryMutationResponse, SoulFireOperationError> {
+    return rpc("SoulFireInventory.equip", (signal) =>
+      this.client.equipItem(
+        { ...request, scope: this.scope() },
+        withSignal(this.actionOptions(options), signal),
+      ),
     );
   }
 
@@ -404,61 +468,84 @@ export class SoulFireInventory {
   public unequip(
     request: InventoryRequest<typeof UnequipItemRequestSchema>,
     options?: CallOptions,
-  ): Promise<InventoryMutationResponse> {
-    return this.client.unequipItem(
-      { ...request, scope: this.scope() },
-      this.actionOptions(options),
+  ): Effect.Effect<InventoryMutationResponse, SoulFireOperationError> {
+    return rpc("SoulFireInventory.unequip", (signal) =>
+      this.client.unequipItem(
+        { ...request, scope: this.scope() },
+        withSignal(this.actionOptions(options), signal),
+      ),
     );
   }
 
   /**
    * Opens the container block at `position`. Times out after 10 s.
    */
-  public async open(
+  public open(
     position: MessageInitShape<typeof BlockPositionSchema>,
     options: ContainerMutationOptions = {},
-  ): Promise<SoulFireContainer> {
-    const scope = this.scope();
-    const response = await this.client.openBlockContainer(
-      {
+  ): Effect.Effect<SoulFireContainer, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const scope = this.scope();
+      const response = yield* rpc("SoulFireInventory.open", (signal) =>
+        this.client.openBlockContainer(
+          {
+            scope,
+            position,
+            ...(options.idempotencyKey === undefined
+              ? {}
+              : { idempotencyKey: options.idempotencyKey }),
+          },
+          withSignal(this.actionOptions(options.call), signal),
+        ),
+      );
+      return new SoulFireContainer(
         scope,
-        position,
-        ...(options.idempotencyKey === undefined
-          ? {}
-          : { idempotencyKey: options.idempotencyKey }),
-      },
-      this.actionOptions(options.call),
-    );
-    return new SoulFireContainer(
-      scope,
-      this.client,
-      this.actionOptions,
-      requireContainer(response),
-    );
+        this.client,
+        this.actionOptions,
+        yield* Effect.try({
+          try: () => requireContainer(response),
+          catch: (cause) => operationError("SoulFireInventory.open", cause),
+        }),
+      );
+    });
   }
 
-  private async best(
+  private best(
     kind: InventoryRecommendationKind,
     options: Omit<
       InventoryRequest<typeof RankInventoryItemsRequestSchema>,
       "kind"
     >,
     call?: CallOptions,
-  ): Promise<InventoryItemRecommendation | undefined> {
-    const response = await this.client.rankInventoryItems(
-      {
-        ...options,
-        kind,
-        limit: 1,
-        scope: this.scope(),
-      },
-      call,
-    );
-    return response.recommendations[0];
+  ): Effect.Effect<
+    InventoryItemRecommendation | undefined,
+    SoulFireOperationError
+  > {
+    return Effect.gen(this, function* () {
+      const response = yield* rpc("SoulFireInventory.best", (signal) =>
+        this.client.rankInventoryItems(
+          {
+            ...options,
+            kind,
+            limit: 1,
+            scope: this.scope(),
+          },
+          withSignal(call, signal),
+        ),
+      );
+      return response.recommendations[0];
+    });
   }
 
   private scope(): { instanceId: string; botId: string } {
     return { instanceId: this.instanceId, botId: this.botId };
+  }
+  public openScoped(
+    ...args: Parameters<SoulFireInventory["open"]>
+  ): Effect.Effect<SoulFireContainer, SoulFireOperationError, Scope.Scope> {
+    return Effect.acquireRelease(this.open(...args), (container) =>
+      container.close().pipe(Effect.orDie),
+    );
   }
 }
 

@@ -1,183 +1,6 @@
+export { SoulFireAdmin } from "./admin.js";
 export {
-  SoulFire,
-  SoulFireClient,
-  SoulFireConnectionError,
-  SoulFirePluginError,
-  SoulFireRpcError,
-  SoulFireTaskFailed,
-  SoulFireService,
-  SoulFireExtensionTypeId,
-  EffectPluginCatalog,
-  EffectPluginCatalog as PluginCatalog,
-  defineSoulFirePlugin,
-  type EffectBotSession,
-  type EffectSoulFireBot,
-  type EffectSoulFireBotControlLease,
-  type EffectSoulFireCamera,
-  type EffectSoulFireAdmin,
-  type EffectSoulFireFleet,
-  type EffectSoulFireFleetTaskGroup,
-  type EffectSoulFireChat,
-  type EffectSoulFireContainer,
-  type EffectSoulFireInventory,
-  type EffectSoulFireInstance,
-  type EffectSoulFirePathfinder,
-  type EffectSoulFireProtocol,
-  type EffectSoulFireRecipes,
-  type EffectSoulFireRegistry,
-  type EffectSoulFireTask,
-  type EffectSoulFireTasks,
-  type EffectSoulFireWorld,
-  type EffectReflectivePlugin,
-  type SoulFireExtension,
-  type SoulFirePluginModule,
-  type EffectBotSession as BotSession,
-  type EffectSoulFireBot as SoulFireBot,
-  type EffectSoulFireBotControlLease as SoulFireBotControlLease,
-  type EffectSoulFireCamera as SoulFireCamera,
-  type EffectSoulFireAdmin as SoulFireAdmin,
-  type EffectSoulFireFleet as SoulFireFleet,
-  type EffectSoulFireFleetTaskGroup as SoulFireFleetTaskGroup,
-  type EffectSoulFireChat as SoulFireChat,
-  type EffectSoulFireContainer as SoulFireContainer,
-  type EffectSoulFireInventory as SoulFireInventory,
-  type EffectSoulFireInstance as SoulFireInstance,
-  type EffectSoulFirePathfinder as SoulFirePathfinder,
-  type EffectSoulFireProtocol as SoulFireProtocol,
-  type EffectSoulFireRecipes as SoulFireRecipes,
-  type EffectSoulFireRegistry as SoulFireRegistry,
-  type EffectSoulFireTask as SoulFireTask,
-  type EffectSoulFireTasks as SoulFireTasks,
-  type EffectSoulFireWorld as SoulFireWorld,
-  type EffectReflectivePlugin as ReflectivePlugin,
-} from "./effect-client.js";
-export {
-  CapabilitySet,
-  SDK_API_VERSION,
-  SDK_VERSION,
-  SoulFireCapabilityError,
-  SoulFireCompatibilityError,
-  type ConnectionMetadata,
-  type ServerMetadata,
-} from "./connection.js";
-export {
-  SoulFirePluginCompatibilityError,
-  SoulFirePluginDescriptorError,
-  SoulFirePluginNotFoundError,
-  type ReflectivePluginEvent,
-  type ReflectiveMessage,
-  type TypedPluginEvent,
-  type WatchPluginEventOptions,
-} from "./plugins.js";
-export {
-  ExamplePluginClient,
-  examplePlugin,
-} from "./example-plugin.js";
-export type {
-  BotBossBarState,
-  BotEnvironmentState,
-  BotScoreboardObjective,
-  BotScoreboardScore,
-  BotScoreboardState,
-  BotScoreboardTeam,
-  BotSessionOptions,
-  BotSessionState,
-} from "./session.js";
-export {
-  emptyBotSessionState,
-  reduceBotSessionState,
-} from "./session.js";
-export {
-  SoulFireActionError,
-  type BotMovement,
-  type BotSelection,
-  type RequiredPluginRequirement,
-  type SoulFireOptions,
-  type TokenProvider,
-} from "./client.js";
-export {
-  BotTaskConflictPolicy,
-  BotTaskDisconnectPolicy,
-  BotTaskPriority,
-  BotTaskReconnectPolicy,
-  BotTaskStatus,
-  SoulFireTaskError,
-  isTerminalTaskStatus,
-  type BotTask,
-  type BotTaskEvent,
-  type AttackEntityTarget,
-  type AttackEntityTaskOptions,
-  type AttackEntityTaskResult,
-  type AttackNearestTaskOptions,
-  type AttackNearestTaskResult,
-  type AutoArmorTaskOptions,
-  type AutoArmorTaskResult,
-  type AutoEatTaskOptions,
-  type AutoEatTaskResult,
-  type AutoRespawnTaskOptions,
-  type AutoRespawnTaskResult,
-  type AutoTotemTaskOptions,
-  type AutoTotemTaskResult,
-  type BrewTaskOptions,
-  type BrewTaskResult,
-  type BreedTaskOptions,
-  type BreedTaskResult,
-  type SchematicBlock,
-  type BuildTaskOptions,
-  type BuildTaskResult,
-  type CollectBlocksTaskOptions,
-  type CollectBlocksTaskResult,
-  type ContainerTransferSpec,
-  type ContainerTransferTaskOptions,
-  type ContainerTransferTaskResult,
-  type CraftTaskOptions,
-  type CraftTaskResult,
-  type ExploreTaskOptions,
-  type ExploreTaskResult,
-  type ExcavateTaskOptions,
-  type ExcavateTaskResult,
-  type FarmTaskOptions,
-  type FarmTaskResult,
-  type FishTaskOptions,
-  type FishTaskResult,
-  type FollowEntityTarget,
-  type FollowEntityTaskOptions,
-  type FollowEntityTaskResult,
-  type FleeTaskOptions,
-  type FleeTaskResult,
-  type GuardTaskOptions,
-  type GuardTaskResult,
-  type LoadoutRequirementSpec,
-  type MaintainLoadoutTaskOptions,
-  type MaintainLoadoutTaskResult,
-  type GoToTaskOptions,
-  type GoToTaskResult,
-  type RangedAttackTaskOptions,
-  type RangedAttackTaskResult,
-  type SleepTaskOptions,
-  type SleepTaskResult,
-  type SmeltTaskOptions,
-  type SmeltTaskResult,
-  type TaskListOptions,
-  type TaskStartOptions,
-  type VillagerTradeTaskOptions,
-  type VillagerTradeTaskResult,
-} from "./tasks.js";
-export type {
-  LocalSoulFireServer,
-  SoulFireInstallOptions,
-} from "./install-types.js";
-export { makeEffectHttpClientFetch } from "./platform.js";
-export { toReadableStream } from "./streams.js";
-export {
-  goals,
-  SoulFirePathfinder as PromiseSoulFirePathfinder,
-  type BlockTarget,
-  type EntityTarget,
-  type PlanPathOptions,
-  type WorldTarget,
-} from "./pathfinding.js";
-export {
+  SoulFireBehaviorError,
   attackNearest,
   autoArmor,
   autoEat,
@@ -204,19 +27,26 @@ export {
   type AutoEatOptions,
   type AutoRespawnOptions,
   type AutoTotemOptions,
-  type BotBehavior,
-  type BotPredicate,
   type BehaviorPredicate,
   type BehaviorResult,
   type BehaviorResults,
+  type BotBehavior,
+  type BotPredicate,
   type BuildPlacement,
   type CollectBlocksOptions,
   type ParallelOptions,
   type RepeatOptions,
   type RetryOptions,
   type UntilOptions,
-  SoulFireBehaviorError,
-} from "./effect-behaviors.js";
+} from "./behaviors.js";
+export {
+  SoulFireCamera,
+  decodeCameraImage,
+  type CameraRenderOptions,
+  type CameraStreamOptions,
+  type WorldMapOptions,
+} from "./camera.js";
+export { SoulFireChat, matchChat } from "./chat.js";
 export type {
   ChatMatch,
   ChatMatcher,
@@ -225,15 +55,45 @@ export type {
   WaitForChatOptions,
   WatchChatOptions,
 } from "./chat.js";
-export { matchChat } from "./chat.js";
 export {
-  decodeCameraImage,
-  type CameraRenderOptions,
-  type CameraStreamOptions,
-  type WorldMapOptions,
-} from "./camera.js";
+  SoulFire,
+  SoulFireActionError,
+  SoulFireBot,
+  SoulFireBotControlLease,
+  SoulFireClient,
+  SoulFireInstance,
+  SoulFireService,
+  type BotMovement,
+  type BotSelection,
+  type RequiredPluginRequirement,
+  type SoulFireOptions,
+  type TokenProvider,
+} from "./client.js";
+export {
+  CapabilitySet,
+  SDK_API_VERSION,
+  SDK_VERSION,
+  SoulFireCapabilityError,
+  SoulFireCompatibilityError,
+  type ConnectionMetadata,
+  type ServerMetadata,
+} from "./connection.js";
+export {
+  SoulFireConnectionError,
+  SoulFirePluginError,
+  SoulFireRpcError,
+  SoulFireTaskFailed,
+  SoulFireValidationError,
+  SoulFireStateError,
+  SoulFireInstallError,
+  SoulFireTimeoutError,
+  type SoulFireOperationError,
+} from "./errors.js";
+export { ExamplePluginClient, examplePlugin } from "./example-plugin.js";
 export {
   FleetTaskGroupError,
+  SoulFireFleet,
+  SoulFireFleetTaskGroup,
   type FleetAssignment,
   type FleetBot,
   type FleetDistributionOptions,
@@ -248,16 +108,6 @@ export {
   type FleetTaskStartFailure,
   type FleetTaskStartOptions,
 } from "./fleet.js";
-export type {
-  SendRawPacketOptions,
-  WatchPacketsOptions,
-} from "./protocol.js";
-export {
-  SoulFireContainerClosedError,
-  type ContainerMutationOptions,
-  type InventoryRankingOptions,
-  type InventoryRankOptions,
-} from "./inventory.js";
 export {
   InventoryArea,
   InventoryRecommendationKind,
@@ -265,13 +115,133 @@ export {
   type InventoryItemScoreFactor,
   type RankInventoryItemsResponse,
 } from "./generated/soulfire/inventory_pb.js";
-
+export type {
+  LocalSoulFireServer,
+  SoulFireInstallOptions,
+} from "./install-types.js";
 export {
-  PacketDirection,
-  type BotProtocolInfo,
-  type PacketSchema,
-  type RawPacketEvent,
-} from "./generated/soulfire/protocol_pb.js";
+  SoulFireContainer,
+  SoulFireContainerClosedError,
+  SoulFireInventory,
+  type ContainerMutationOptions,
+  type InventoryRankOptions,
+  type InventoryRankingOptions,
+} from "./inventory.js";
+export {
+  SoulFirePathfinder,
+  goals,
+  type BlockTarget,
+  type EntityTarget,
+  type PlanPathOptions,
+  type WorldTarget,
+} from "./pathfinding.js";
+export { makeEffectHttpClientFetch } from "./platform.js";
+export {
+  PluginCatalog,
+  ReflectivePlugin,
+  SoulFireExtensionTypeId,
+  SoulFirePluginCompatibilityError,
+  SoulFirePluginDescriptorError,
+  SoulFirePluginNotFoundError,
+  defineSoulFirePlugin,
+  type ReflectiveMessage,
+  type ReflectivePluginEvent,
+  type SoulFireExtension,
+  type SoulFirePluginModule,
+  type TypedPluginEvent,
+  type WatchPluginEventOptions,
+} from "./plugins.js";
+export { SoulFireProtocol } from "./protocol.js";
+export type { SendRawPacketOptions, WatchPacketsOptions } from "./protocol.js";
+export { SoulFireRecipes } from "./recipes.js";
+export { SoulFireRegistry } from "./registry.js";
+export {
+  BotSession,
+  emptyBotSessionState,
+  reduceBotSessionState,
+} from "./session.js";
+export type {
+  BotBossBarState,
+  BotEnvironmentState,
+  BotScoreboardObjective,
+  BotScoreboardScore,
+  BotScoreboardState,
+  BotScoreboardTeam,
+  BotSessionOptions,
+  BotSessionState,
+} from "./session.js";
+export {
+  BotTaskConflictPolicy,
+  BotTaskDisconnectPolicy,
+  BotTaskPriority,
+  BotTaskReconnectPolicy,
+  BotTaskStatus,
+  SoulFireTask,
+  SoulFireTaskError,
+  SoulFireTasks,
+  isTerminalTaskStatus,
+  type AttackEntityTarget,
+  type AttackEntityTaskOptions,
+  type AttackEntityTaskResult,
+  type AttackNearestTaskOptions,
+  type AttackNearestTaskResult,
+  type AutoArmorTaskOptions,
+  type AutoArmorTaskResult,
+  type AutoEatTaskOptions,
+  type AutoEatTaskResult,
+  type AutoRespawnTaskOptions,
+  type AutoRespawnTaskResult,
+  type AutoTotemTaskOptions,
+  type AutoTotemTaskResult,
+  type BotTask,
+  type BotTaskEvent,
+  type BreedTaskOptions,
+  type BreedTaskResult,
+  type BrewTaskOptions,
+  type BrewTaskResult,
+  type BuildTaskOptions,
+  type BuildTaskResult,
+  type CollectBlocksTaskOptions,
+  type CollectBlocksTaskResult,
+  type ContainerTransferSpec,
+  type ContainerTransferTaskOptions,
+  type ContainerTransferTaskResult,
+  type CraftTaskOptions,
+  type CraftTaskResult,
+  type ExcavateTaskOptions,
+  type ExcavateTaskResult,
+  type ExploreTaskOptions,
+  type ExploreTaskResult,
+  type FarmTaskOptions,
+  type FarmTaskResult,
+  type FishTaskOptions,
+  type FishTaskResult,
+  type FleeTaskOptions,
+  type FleeTaskResult,
+  type FollowEntityTarget,
+  type FollowEntityTaskOptions,
+  type FollowEntityTaskResult,
+  type GoToTaskOptions,
+  type GoToTaskResult,
+  type GuardTaskOptions,
+  type GuardTaskResult,
+  type LoadoutRequirementSpec,
+  type MaintainLoadoutTaskOptions,
+  type MaintainLoadoutTaskResult,
+  type RangedAttackTaskOptions,
+  type RangedAttackTaskResult,
+  type SchematicBlock,
+  type SleepTaskOptions,
+  type SleepTaskResult,
+  type SmeltTaskOptions,
+  type SmeltTaskResult,
+  type TaskListOptions,
+  type TaskStartOptions,
+  type VillagerTradeTaskOptions,
+  type VillagerTradeTaskResult,
+} from "./tasks.js";
+export { SoulFireWorld } from "./world.js";
+
 export {
   BlockFace,
   BotActionStatus,
@@ -301,7 +271,24 @@ export {
   type WaitForChunksResponse,
 } from "./generated/soulfire/bot_live_pb.js";
 export {
+  BotDesiredState,
+  BotRuntimeState,
+  ClickType,
+  type BotFleetSummary,
+  type BotGetDialogResponse,
+  type BotInfoResponse,
+  type BotInventoryStateResponse,
+  type BotListEntry,
+  type BotLiveState,
+  type BotStatus,
+  type WatchBotStatusesResponse,
+} from "./generated/soulfire/bot_pb.js";
+export {
+  AccountTypeCredentials,
+  AccountTypeDeviceCode,
   type BlockPosition,
+  type MinecraftAccountProto,
+  type ProxyProto,
   type WorldPosition,
 } from "./generated/soulfire/common_pb.js";
 export type {
@@ -314,13 +301,44 @@ export type {
   Vec3,
 } from "./generated/soulfire/domain_pb.js";
 export {
+  InstanceEventFilterSchema,
+  type InstanceEvent,
+  type InstanceEventFilter,
+} from "./generated/soulfire/instance_live_pb.js";
+export type {
+  InstanceInfo,
+  InstanceListResponse_Instance,
+} from "./generated/soulfire/instance_pb.js";
+export {
+  NextAuthFlowResponse_Failure_Reason,
+  type NextAuthFlowResponse,
+} from "./generated/soulfire/login_pb.js";
+export type {
+  CredentialsAuthResponse,
+  DeviceCodeAuthResponse,
+  RefreshResponse,
+} from "./generated/soulfire/mc-auth_pb.js";
+export {
+  PluginPermissionDefault,
+  PluginPermissionRisk,
+  PluginPermissionScope,
+  type PluginPermissionDescriptor,
+} from "./generated/soulfire/plugin_api_pb.js";
+export {
+  PacketDirection,
+  type BotProtocolInfo,
+  type PacketSchema,
+  type RawPacketEvent,
+} from "./generated/soulfire/protocol_pb.js";
+export type { UserPluginPermissionGrant } from "./generated/soulfire/user_pb.js";
+export {
   QuerySort,
   type BlockSelector,
   type BoxRegion,
   type CanSeeBlockResponse,
   type EntitySelector,
-  type EstimateExplosionDamageResponse,
   type EstimateDigTimeResponse,
+  type EstimateExplosionDamageResponse,
   type GetWorldBlockResponse,
   type GetWorldEntityResponse,
   type QueryBlocksResponse,
@@ -329,49 +347,5 @@ export {
   type RaycastResponse,
   type SphereRegion,
 } from "./generated/soulfire/world_pb.js";
-export {
-  BotDesiredState,
-  BotRuntimeState,
-  ClickType,
-  type BotGetDialogResponse,
-  type BotInfoResponse,
-  type BotInventoryStateResponse,
-  type BotFleetSummary,
-  type BotListEntry,
-  type BotLiveState,
-  type BotStatus,
-  type WatchBotStatusesResponse,
-} from "./generated/soulfire/bot_pb.js";
-export {
-  AccountTypeCredentials,
-  AccountTypeDeviceCode,
-  type MinecraftAccountProto,
-  type ProxyProto,
-} from "./generated/soulfire/common_pb.js";
-export type {
-  CredentialsAuthResponse,
-  DeviceCodeAuthResponse,
-  RefreshResponse,
-} from "./generated/soulfire/mc-auth_pb.js";
-export type {
-  InstanceInfo,
-  InstanceListResponse_Instance,
-} from "./generated/soulfire/instance_pb.js";
-export {
-  InstanceEventFilterSchema,
-  type InstanceEvent,
-  type InstanceEventFilter,
-} from "./generated/soulfire/instance_live_pb.js";
-export {
-  NextAuthFlowResponse_Failure_Reason,
-  type NextAuthFlowResponse,
-} from "./generated/soulfire/login_pb.js";
-export {
-  PluginPermissionDefault,
-  PluginPermissionRisk,
-  PluginPermissionScope,
-  type PluginPermissionDescriptor,
-} from "./generated/soulfire/plugin_api_pb.js";
-export type {
-  UserPluginPermissionGrant,
-} from "./generated/soulfire/user_pb.js";
+
+export { rpcStream } from "./transport.js";

@@ -1,8 +1,8 @@
-import type {
-  DescMessage,
-  MessageInitShape,
-} from "@bufbuild/protobuf";
+import type { DescMessage, MessageInitShape } from "@bufbuild/protobuf";
 import type { CallOptions, Client } from "@connectrpc/connect";
+import { Effect, Stream } from "effect";
+import { type SoulFireOperationError } from "./errors.js";
+import { rpc, rpcStream, withSignal } from "./transport.js";
 
 import {
   BotService,
@@ -19,15 +19,13 @@ type BotScoped<T extends DescMessage> = Omit<
   "$typeName" | "instanceId" | "botId"
 >;
 
-export type CameraRenderOptions =
-  BotScoped<typeof BotRenderPovRequestSchema>;
+export type CameraRenderOptions = BotScoped<typeof BotRenderPovRequestSchema>;
 
-export type CameraStreamOptions =
-  & BotScoped<typeof BotWatchPovRequestSchema>
-  & { call?: CallOptions };
+export type CameraStreamOptions = BotScoped<typeof BotWatchPovRequestSchema> & {
+  call?: CallOptions;
+};
 
-export type WorldMapOptions =
-  BotScoped<typeof BotWorldMapRequestSchema>;
+export type WorldMapOptions = BotScoped<typeof BotWorldMapRequestSchema>;
 
 /**
  * Captures POV images and map-ready world snapshots for one bot.
@@ -44,24 +42,29 @@ export class SoulFireCamera {
    * defaults to 854x480, at most 1920x1080. The camera defaults to the bot's
    * eyes, facing where it looks; `cameraX/Y/Z`, `yRot` and `xRot` move it.
    */
+
   public capture(
     options: CameraRenderOptions = {},
     call?: CallOptions,
-  ): Promise<BotRenderPovResponse> {
-    return this.client.renderBotPov(
-      { ...options, ...this.scope() },
-      call,
+  ): Effect.Effect<BotRenderPovResponse, SoulFireOperationError> {
+    return rpc("SoulFireCamera.capture", (signal) =>
+      this.client.renderBotPov(
+        { ...options, ...this.scope() },
+        withSignal(call, signal),
+      ),
     );
   }
 
   /**
    * The `capture` image, decoded.
    */
-  public async captureBytes(
+  public captureBytes(
     options: CameraRenderOptions = {},
     call?: CallOptions,
-  ): Promise<Uint8Array> {
-    return decodeCameraImage(await this.capture(options, call));
+  ): Effect.Effect<Uint8Array, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      return decodeCameraImage(yield* this.capture(options, call));
+    });
   }
 
   /**
@@ -70,11 +73,17 @@ export class SoulFireCamera {
    */
   public frames(
     options: CameraStreamOptions = {},
-  ): AsyncIterable<BotPovFrame> {
-    const { call, ...request } = options;
-    return this.client.watchBotPov(
-      { ...request, ...this.scope() },
-      call,
+  ): Stream.Stream<BotPovFrame, SoulFireOperationError> {
+    return Stream.unwrap(
+      Effect.gen(this, function* () {
+        const { call, ...request } = options;
+        return rpcStream("SoulFireCamera.frames", (signal) =>
+          this.client.watchBotPov(
+            { ...request, ...this.scope() },
+            withSignal(call, signal),
+          ),
+        );
+      }),
     );
   }
 
@@ -86,10 +95,12 @@ export class SoulFireCamera {
   public worldMap(
     options: WorldMapOptions = {},
     call?: CallOptions,
-  ): Promise<BotWorldMapResponse> {
-    return this.client.getBotWorldMap(
-      { ...options, ...this.scope() },
-      call,
+  ): Effect.Effect<BotWorldMapResponse, SoulFireOperationError> {
+    return rpc("SoulFireCamera.worldMap", (signal) =>
+      this.client.getBotWorldMap(
+        { ...options, ...this.scope() },
+        withSignal(call, signal),
+      ),
     );
   }
 

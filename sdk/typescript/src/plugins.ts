@@ -5,6 +5,8 @@ import {
   toJson,
   type DescMessage,
   type DescMethod,
+  type DescMethodServerStreaming,
+  type DescMethodUnary,
   type DescService,
   type JsonValue,
   type Message,
@@ -12,28 +14,29 @@ import {
   type MessageShape,
   type Registry,
 } from "@bufbuild/protobuf";
-import {
-  FileDescriptorSetSchema,
-} from "@bufbuild/protobuf/wkt";
+import { FileDescriptorSetSchema } from "@bufbuild/protobuf/wkt";
 import {
   createClient,
   type CallOptions,
   type Client,
   type Transport,
 } from "@connectrpc/connect";
+import { Effect, Stream } from "effect";
+import {
+  operationError,
+  SoulFirePluginError,
+  type SoulFireOperationError,
+} from "./errors.js";
+import { rpc, rpcStream, withSignal } from "./transport.js";
 
 import {
   PluginApiEventKind,
   PluginApiService,
-  type PluginEvent,
   type PluginApiDescriptor,
   type PluginApiEvent,
+  type PluginEvent,
 } from "./generated/soulfire/plugin_api_pb.js";
-import type {
-  SoulFireTask,
-  SoulFireTasks,
-  TaskStartOptions,
-} from "./tasks.js";
+import type { SoulFireTask, SoulFireTasks, TaskStartOptions } from "./tasks.js";
 
 export interface WatchPluginEventOptions {
   readonly pluginIds?: readonly string[];
@@ -55,13 +58,10 @@ export interface ReflectivePluginEvent {
   readonly message?: ReflectiveMessage;
 }
 
-export interface SoulFirePluginModule<T> {
+export interface SoulFirePluginModule<T extends SoulFireExtension> {
   readonly pluginId: string;
   readonly isCompatible?: (descriptor: PluginApiDescriptor) => boolean;
-  create(
-    catalog: PluginCatalog,
-    descriptor: PluginApiDescriptor,
-  ): T;
+  create(catalog: PluginCatalog, descriptor: PluginApiDescriptor): T;
 }
 
 export class SoulFirePluginNotFoundError extends Error {
@@ -104,29 +104,48 @@ export class ReflectivePlugin {
     private readonly transport: Transport,
   ) {}
 
-  public async call(
+  public call(
     serviceName: string,
     methodName: string,
     input: JsonValue,
     options?: CallOptions,
-  ): Promise<ReflectiveMessage> {
-    const method = this.#method(serviceName, methodName);
-    if (method.methodKind !== "unary") {
-      throw new SoulFirePluginDescriptorError(
-        this.descriptor.pluginId,
-        `${serviceName}/${methodName} is not a unary RPC`,
+  ): Effect.Effect<ReflectiveMessage, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const method = yield* Effect.try({
+        try: () => this.#method(serviceName, methodName),
+        catch: (cause) => operationError("plugin.call", cause),
+      });
+      if (method.methodKind !== "unary")
+        return yield* Effect.fail(
+          operationError(
+            "plugin.call",
+            new SoulFirePluginDescriptorError(
+              this.descriptor.pluginId,
+              "The requested method is not a unary RPC",
+            ),
+          ),
+        );
+      const unary: DescMethodUnary = { ...method, methodKind: "unary" };
+      const request = yield* Effect.try({
+        try: () => fromJson(method.input, input, { registry: this.registry }),
+        catch: (cause) => operationError("plugin.call", cause),
+      });
+      const response = yield* rpc("plugin.call", (signal) =>
+        this.transport.unary(
+          unary,
+          withSignal(options, signal).signal,
+          options?.timeoutMs,
+          options?.headers,
+          request,
+          options?.contextValues,
+        ),
       );
-    }
-    const client = createClient(method.parent, this.transport);
-    const invoke = client[method.localName] as unknown as (
-      request: Message,
-      options?: CallOptions,
-    ) => Promise<Message>;
-    const response = await invoke(
-      fromJson(method.input, input, { registry: this.registry }),
-      options,
-    );
-    return reflectiveMessage(method.output, response, this.registry);
+      return yield* Effect.try({
+        try: () =>
+          reflectiveMessage(method.output, response.message, this.registry),
+        catch: (cause) => operationError("plugin.call", cause),
+      });
+    });
   }
 
   public stream(
@@ -134,24 +153,54 @@ export class ReflectivePlugin {
     methodName: string,
     input: JsonValue,
     options?: CallOptions,
-  ): AsyncIterable<ReflectiveMessage> {
-    const method = this.#method(serviceName, methodName);
-    if (method.methodKind !== "server_streaming") {
-      throw new SoulFirePluginDescriptorError(
-        this.descriptor.pluginId,
-        `${serviceName}/${methodName} is not a server-streaming RPC`,
-      );
-    }
-    const client = createClient(method.parent, this.transport);
-    const invoke = client[method.localName] as unknown as (
-      request: Message,
-      options?: CallOptions,
-    ) => AsyncIterable<Message>;
-    const values = invoke(
-      fromJson(method.input, input, { registry: this.registry }),
-      options,
+  ): Stream.Stream<ReflectiveMessage, SoulFireOperationError> {
+    return Stream.unwrap(
+      Effect.gen(this, function* () {
+        const method = yield* Effect.try({
+          try: () => this.#method(serviceName, methodName),
+          catch: (cause) => operationError("plugin.stream", cause),
+        });
+        if (method.methodKind !== "server_streaming")
+          return yield* Effect.fail(
+            operationError(
+              "plugin.stream",
+              new SoulFirePluginDescriptorError(
+                this.descriptor.pluginId,
+                "The requested method is not a server-streaming RPC",
+              ),
+            ),
+          );
+        const request = yield* Effect.try({
+          try: () => fromJson(method.input, input, { registry: this.registry }),
+          catch: (cause) => operationError("plugin.stream", cause),
+        });
+        const transport = this.transport;
+        const streaming: DescMethodServerStreaming = {
+          ...method,
+          methodKind: "server_streaming",
+        };
+        return rpcStream("plugin.stream", (signal) =>
+          (async function* () {
+            const response = await transport.stream(
+              streaming,
+              withSignal(options, signal).signal,
+              options?.timeoutMs,
+              options?.headers,
+              singleMessage(request),
+              options?.contextValues,
+            );
+            yield* response.message;
+          })(),
+        ).pipe(
+          Stream.mapEffect((value) =>
+            Effect.try({
+              try: () => reflectiveMessage(method.output, value, this.registry),
+              catch: (cause) => operationError("plugin.stream", cause),
+            }),
+          ),
+        );
+      }),
     );
-    return mapReflectiveStream(values, method.output, this.registry);
   }
 
   /**
@@ -160,17 +209,19 @@ export class ReflectivePlugin {
    */
   public events(
     options: Omit<WatchPluginEventOptions, "pluginIds"> = {},
-  ): AsyncIterable<ReflectivePluginEvent> {
+  ): Stream.Stream<ReflectivePluginEvent, SoulFireOperationError> {
     const client = createClient(PluginApiService, this.transport);
     const { call, typeUrls = [], ...request } = options;
     return mapReflectiveEvents(
-      client.watchPluginEvents(
-        {
-          ...request,
-          pluginIds: [this.descriptor.pluginId],
-          typeUrls: unique(typeUrls),
-        },
-        call,
+      rpcStream("plugins.events", (signal) =>
+        client.watchPluginEvents(
+          {
+            ...request,
+            pluginIds: [this.descriptor.pluginId],
+            typeUrls: unique(typeUrls),
+          },
+          withSignal(call, signal),
+        ),
       ),
       this.registry,
       this.descriptor.pluginId,
@@ -187,25 +238,32 @@ export class ReflectivePlugin {
     inputTypeUrl: string,
     input: JsonValue,
     options: TaskStartOptions = {},
-  ): Promise<SoulFireTask<DescMessage>> {
-    const task = this.descriptor.taskTypes.find(
-      (candidate) => candidate.inputTypeUrl === inputTypeUrl,
-    );
-    if (task === undefined) {
-      throw new SoulFirePluginCompatibilityError(
-        this.descriptor.pluginId,
-        `Plugin ${this.descriptor.pluginId} does not expose task ${inputTypeUrl}`,
+  ): Effect.Effect<SoulFireTask<DescMessage>, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const task = this.descriptor.taskTypes.find(
+        (candidate) => candidate.inputTypeUrl === inputTypeUrl,
       );
-    }
-    const inputSchema = this.#message(task.inputTypeUrl);
-    const resultSchema = this.#message(task.resultTypeUrl);
-    const value = fromJson(inputSchema, input, { registry: this.registry });
-    return tasks.start(
-      inputSchema,
-      value as MessageInitShape<typeof inputSchema>,
-      resultSchema,
-      options,
-    );
+      if (task === undefined) {
+        return yield* Effect.fail(
+          operationError(
+            "ReflectivePlugin.startTask",
+            new SoulFirePluginCompatibilityError(
+              this.descriptor.pluginId,
+              `Plugin ${this.descriptor.pluginId} does not expose task ${inputTypeUrl}`,
+            ),
+          ),
+        );
+      }
+      const inputSchema = this.#message(task.inputTypeUrl);
+      const resultSchema = this.#message(task.resultTypeUrl);
+      const value = fromJson(inputSchema, input, { registry: this.registry });
+      return yield* tasks.start(
+        inputSchema,
+        value as MessageInitShape<typeof inputSchema>,
+        resultSchema,
+        options,
+      );
+    });
   }
 
   #message(typeUrl: string): DescMessage {
@@ -259,10 +317,13 @@ export class PluginCatalog {
   readonly #transport: Transport;
   #plugins: Map<string, PluginApiDescriptor>;
   #revision: bigint;
-  readonly #reflective = new Map<string, {
-    readonly hash: string;
-    readonly plugin: ReflectivePlugin;
-  }>();
+  readonly #reflective = new Map<
+    string,
+    {
+      readonly hash: string;
+      readonly plugin: ReflectivePlugin;
+    }
+  >();
 
   public constructor(
     transport: Transport,
@@ -295,18 +356,25 @@ export class PluginCatalog {
     return descriptor;
   }
 
-  public require<T>(module: SoulFirePluginModule<T>): T {
-    const descriptor = this.requireDescriptor(module.pluginId);
-    if (
-      module.isCompatible !== undefined
-      && !module.isCompatible(descriptor)
-    ) {
-      throw new SoulFirePluginCompatibilityError(
-        module.pluginId,
-        `Installed plugin ${module.pluginId} ${descriptor.pluginVersion} is incompatible with its SDK module`,
-      );
-    }
-    return module.create(this, descriptor);
+  public require<T extends SoulFireExtension>(
+    module: SoulFirePluginModule<T>,
+  ): Effect.Effect<T, SoulFirePluginError> {
+    return Effect.try({
+      try: () => {
+        const descriptor = this.requireDescriptor(module.pluginId);
+        if (
+          module.isCompatible !== undefined &&
+          !module.isCompatible(descriptor)
+        )
+          throw new SoulFirePluginCompatibilityError(
+            module.pluginId,
+            "Installed plugin is incompatible with its SDK module",
+          );
+        return module.create(this, descriptor);
+      },
+      catch: (cause) =>
+        new SoulFirePluginError({ pluginId: module.pluginId, cause }),
+    });
   }
 
   public service<T extends DescService>(
@@ -327,80 +395,109 @@ export class PluginCatalog {
     return createClient(service, this.#transport);
   }
 
-  public async refresh(
+  public refresh(
     options?: CallOptions,
-  ): Promise<readonly PluginApiDescriptor[]> {
-    const response = await this.#client.listPluginApis({}, options);
-    this.#replace(response.plugins, response.revision);
-    return this.all();
-  }
-
-  public async descriptorSet(
-    pluginId: string,
-    options?: CallOptions,
-  ): Promise<Uint8Array> {
-    const descriptor = this.requireDescriptor(pluginId);
-    const response = await this.#client.getPluginDescriptorSet(
-      {
-        pluginId,
-        expectedSha256: descriptor.descriptorSha256,
-      },
-      options,
-    );
-    const actualHash = await sha256(response.descriptorSet);
-    if (actualHash !== response.descriptorSha256.toLowerCase()) {
-      throw new SoulFirePluginDescriptorError(
-        pluginId,
-        `Descriptor hash mismatch for plugin ${pluginId}`,
+  ): Effect.Effect<readonly PluginApiDescriptor[], SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const response = yield* rpc("PluginCatalog.refresh", (signal) =>
+        this.#client.listPluginApis({}, withSignal(options, signal)),
       );
-    }
-    return response.descriptorSet;
+      this.#replace(response.plugins, response.revision);
+      return this.all();
+    });
   }
 
-  public async reflective(
+  public descriptorSet(
     pluginId: string,
     options?: CallOptions,
-  ): Promise<ReflectivePlugin> {
-    const descriptor = this.requireDescriptor(pluginId);
-    const cached = this.#reflective.get(pluginId);
-    if (cached?.hash === descriptor.descriptorSha256) {
-      return cached.plugin;
-    }
-    const bytes = await this.descriptorSet(pluginId, options);
-    const descriptorSet = fromBinary(FileDescriptorSetSchema, bytes);
-    const registry = createFileRegistry(descriptorSet);
-    const plugin = new ReflectivePlugin(
-      descriptor,
-      registry,
-      this.#transport,
-    );
-    this.#reflective.set(pluginId, {
-      hash: descriptor.descriptorSha256,
-      plugin,
+  ): Effect.Effect<Uint8Array, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const descriptor = yield* Effect.try({
+        try: () => this.requireDescriptor(pluginId),
+        catch: (cause) => operationError("PluginCatalog.descriptorSet", cause),
+      });
+      const response = yield* rpc("PluginCatalog.descriptorSet", (signal) =>
+        this.#client.getPluginDescriptorSet(
+          {
+            pluginId,
+            expectedSha256: descriptor.descriptorSha256,
+          },
+          withSignal(options, signal),
+        ),
+      );
+      const actualHash = yield* rpc("plugins.sha256", () =>
+        sha256(response.descriptorSet),
+      );
+      if (actualHash !== response.descriptorSha256.toLowerCase()) {
+        return yield* Effect.fail(
+          operationError(
+            "PluginCatalog.descriptorSet",
+            new SoulFirePluginDescriptorError(
+              pluginId,
+              `Descriptor hash mismatch for plugin ${pluginId}`,
+            ),
+          ),
+        );
+      }
+      return response.descriptorSet;
     });
-    return plugin;
   }
 
-  public async *watch(
+  public reflective(
+    pluginId: string,
     options?: CallOptions,
-  ): AsyncIterable<PluginApiEvent> {
-    for await (
-      const event of this.#client.watchPluginApis(
-        { afterRevision: this.#revision },
-        options,
-      )
-    ) {
-      if (event.kind === PluginApiEventKind.SNAPSHOT) {
-        this.#replace(event.plugins, event.revision);
-      } else if (event.plugin !== undefined) {
-        this.#plugins.set(event.plugin.pluginId, event.plugin);
-        this.#revision = event.revision;
-      } else if (event.removedPluginId !== undefined) {
-        this.#plugins.delete(event.removedPluginId);
-        this.#revision = event.revision;
+  ): Effect.Effect<ReflectivePlugin, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const descriptor = yield* Effect.try({
+        try: () => this.requireDescriptor(pluginId),
+        catch: (cause) => operationError("PluginCatalog.reflective", cause),
+      });
+      const cached = this.#reflective.get(pluginId);
+      if (cached?.hash === descriptor.descriptorSha256) {
+        return cached.plugin;
       }
-      yield event;
-    }
+      const bytes = yield* this.descriptorSet(pluginId, options);
+      const registry = yield* Effect.try({
+        try: () =>
+          createFileRegistry(fromBinary(FileDescriptorSetSchema, bytes)),
+        catch: (cause) => operationError("plugins.reflective", cause),
+      });
+      const plugin = new ReflectivePlugin(
+        descriptor,
+        registry,
+        this.#transport,
+      );
+      this.#reflective.set(pluginId, {
+        hash: descriptor.descriptorSha256,
+        plugin,
+      });
+      return plugin;
+    });
+  }
+
+  public watch(
+    options?: CallOptions,
+  ): Stream.Stream<PluginApiEvent, SoulFireOperationError> {
+    return rpcStream("plugins.watch", (signal) =>
+      this.#client.watchPluginApis(
+        { afterRevision: this.#revision },
+        withSignal(options, signal),
+      ),
+    ).pipe(
+      Stream.tap((event) =>
+        Effect.sync(() => {
+          if (event.kind === PluginApiEventKind.SNAPSHOT)
+            this.#replace(event.plugins, event.revision);
+          else if (event.plugin !== undefined) {
+            this.#plugins.set(event.plugin.pluginId, event.plugin);
+            this.#revision = event.revision;
+          } else if (event.removedPluginId !== undefined) {
+            this.#plugins.delete(event.removedPluginId);
+            this.#revision = event.revision;
+          }
+        }),
+      ),
+    );
   }
 
   /**
@@ -411,20 +508,21 @@ export class PluginCatalog {
    */
   public events(
     options: WatchPluginEventOptions = {},
-  ): AsyncIterable<PluginEvent> {
-    const {
-      pluginIds = [],
-      typeUrls = [],
-      call,
-      ...request
-    } = options;
-    return this.#client.watchPluginEvents(
-      {
-        ...request,
-        pluginIds: unique(pluginIds),
-        typeUrls: unique(typeUrls),
-      },
-      call,
+  ): Stream.Stream<PluginEvent, SoulFireOperationError> {
+    return Stream.unwrap(
+      Effect.gen(this, function* () {
+        const { pluginIds = [], typeUrls = [], call, ...request } = options;
+        return rpcStream("PluginCatalog.events", (signal) =>
+          this.#client.watchPluginEvents(
+            {
+              ...request,
+              pluginIds: unique(pluginIds),
+              typeUrls: unique(typeUrls),
+            },
+            withSignal(call, signal),
+          ),
+        );
+      }),
     );
   }
 
@@ -435,34 +533,43 @@ export class PluginCatalog {
     pluginId: string,
     schema: T,
     options: Omit<WatchPluginEventOptions, "pluginIds" | "typeUrls"> = {},
-  ): AsyncIterable<TypedPluginEvent<T>> {
-    const typeUrl = typeUrlFor(schema);
-    const descriptor = this.requireDescriptor(pluginId);
-    const eventTypeUrls = new Set([
-      ...descriptor.eventTypeUrls,
-      ...descriptor.eventTypes.map((event) => event.typeUrl),
-    ]);
-    if (!eventTypeUrls.has(typeUrl)) {
-      throw new SoulFirePluginCompatibilityError(
-        pluginId,
-        `Plugin ${pluginId} does not publish ${typeUrl}`,
-      );
-    }
-    return mapTypedEvents(
-      this.events({
-        ...options,
-        pluginIds: [pluginId],
-        typeUrls: [typeUrl],
+  ): Stream.Stream<TypedPluginEvent<T>, SoulFireOperationError> {
+    return Stream.unwrap(
+      Effect.gen(this, function* () {
+        const typeUrl = typeUrlFor(schema);
+        const descriptor = yield* Effect.try({
+          try: () => this.requireDescriptor(pluginId),
+          catch: (cause) => operationError("PluginCatalog.typedEvents", cause),
+        });
+        const eventTypeUrls = new Set([
+          ...descriptor.eventTypeUrls,
+          ...descriptor.eventTypes.map((event) => event.typeUrl),
+        ]);
+        if (!eventTypeUrls.has(typeUrl)) {
+          return yield* Effect.fail(
+            operationError(
+              "PluginCatalog.typedEvents",
+              new SoulFirePluginCompatibilityError(
+                pluginId,
+                `Plugin ${pluginId} does not publish ${typeUrl}`,
+              ),
+            ),
+          );
+        }
+        return mapTypedEvents(
+          this.events({
+            ...options,
+            pluginIds: [pluginId],
+            typeUrls: [typeUrl],
+          }),
+          schema,
+          pluginId,
+        );
       }),
-      schema,
-      pluginId,
     );
   }
 
-  #replace(
-    plugins: readonly PluginApiDescriptor[],
-    revision: bigint,
-  ): void {
+  #replace(plugins: readonly PluginApiDescriptor[], revision: bigint): void {
     this.#plugins = indexPlugins(plugins);
     this.#revision = revision;
     this.#reflective.clear();
@@ -497,65 +604,69 @@ function reflectiveMessage(
   };
 }
 
-async function* mapReflectiveStream(
-  values: AsyncIterable<Message>,
-  descriptor: DescMessage,
-  registry: Registry,
-): AsyncIterable<ReflectiveMessage> {
-  for await (const value of values) {
-    yield reflectiveMessage(descriptor, value, registry);
-  }
-}
-
-async function* mapTypedEvents<T extends DescMessage>(
-  events: AsyncIterable<PluginEvent>,
+function mapTypedEvents<T extends DescMessage>(
+  events: Stream.Stream<PluginEvent, SoulFireOperationError>,
   schema: T,
   pluginId: string,
-): AsyncIterable<TypedPluginEvent<T>> {
+): Stream.Stream<TypedPluginEvent<T>, SoulFireOperationError> {
   const expectedTypeUrl = typeUrlFor(schema);
-  for await (const event of events) {
-    if (event.payload === undefined) {
-      yield { event };
-      continue;
-    }
-    if (event.typeUrl !== expectedTypeUrl || event.payload.typeUrl !== expectedTypeUrl) {
-      throw new SoulFirePluginDescriptorError(
-        pluginId,
-        `Expected ${expectedTypeUrl}, received ${event.typeUrl ?? event.payload.typeUrl}`,
-      );
-    }
-    yield {
-      event,
-      value: fromBinary(schema, event.payload.value),
-    };
-  }
+  return events.pipe(
+    Stream.mapEffect((event) =>
+      Effect.try({
+        try: (): TypedPluginEvent<T> => {
+          if (event.payload === undefined) return { event };
+          if (
+            event.typeUrl !== expectedTypeUrl ||
+            event.payload.typeUrl !== expectedTypeUrl
+          )
+            throw new SoulFirePluginDescriptorError(
+              pluginId,
+              `Expected ${expectedTypeUrl}, received ${event.typeUrl ?? event.payload.typeUrl}`,
+            );
+          return { event, value: fromBinary(schema, event.payload.value) };
+        },
+        catch: (cause) => operationError("plugins.typedEvents", cause),
+      }),
+    ),
+  );
 }
 
-async function* mapReflectiveEvents(
-  events: AsyncIterable<PluginEvent>,
+function mapReflectiveEvents(
+  events: Stream.Stream<PluginEvent, SoulFireOperationError>,
   registry: Registry,
   pluginId: string,
-): AsyncIterable<ReflectivePluginEvent> {
-  for await (const event of events) {
-    if (event.payload === undefined) {
-      yield { event };
-      continue;
-    }
-    const typeUrl = event.typeUrl ?? event.payload.typeUrl;
-    const typeName = typeNameFromUrl(typeUrl);
-    const schema = registry.getMessage(typeName);
-    if (schema === undefined) {
-      throw new SoulFirePluginDescriptorError(
-        pluginId,
-        `Plugin descriptor does not contain event type ${typeName}`,
-      );
-    }
-    const value = fromBinary(schema, event.payload.value);
-    yield {
-      event,
-      message: reflectiveMessage(schema, value, registry),
-    };
-  }
+): Stream.Stream<ReflectivePluginEvent, SoulFireOperationError> {
+  return events.pipe(
+    Stream.mapEffect((event) =>
+      Effect.try({
+        try: (): ReflectivePluginEvent => {
+          if (event.payload === undefined) return { event };
+          const typeName = typeNameFromUrl(
+            event.typeUrl ?? event.payload.typeUrl,
+          );
+          const schema = registry.getMessage(typeName);
+          if (schema === undefined)
+            throw new SoulFirePluginDescriptorError(
+              pluginId,
+              `Plugin descriptor does not contain event type ${typeName}`,
+            );
+          return {
+            event,
+            message: reflectiveMessage(
+              schema,
+              fromBinary(schema, event.payload.value),
+              registry,
+            ),
+          };
+        },
+        catch: (cause) => operationError("plugins.reflectiveEvents", cause),
+      }),
+    ),
+  );
+}
+
+async function* singleMessage(message: Message): AsyncIterable<Message> {
+  yield message;
 }
 
 function typeUrlFor(schema: DescMessage): string {
@@ -573,4 +684,18 @@ function typeNameFromUrl(typeUrl: string): string {
 
 function unique(values: readonly string[]): string[] {
   return [...new Set(values)];
+}
+
+export const SoulFireExtensionTypeId: unique symbol = Symbol.for(
+  "@soulfiremc/sdk/SoulFireExtension",
+);
+export interface SoulFireExtension {
+  readonly [SoulFireExtensionTypeId]: true;
+}
+export function defineSoulFirePlugin<T extends SoulFireExtension>(
+  module: SoulFirePluginModule<T>,
+): SoulFirePluginModule<T> {
+  if (module.pluginId.trim().length === 0)
+    throw new TypeError("SoulFire plugin modules require a non-empty pluginId");
+  return Object.freeze(module);
 }

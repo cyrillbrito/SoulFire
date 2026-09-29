@@ -1,8 +1,8 @@
-import type {
-  DescMessage,
-  MessageInitShape,
-} from "@bufbuild/protobuf";
+import type { DescMessage, MessageInitShape } from "@bufbuild/protobuf";
 import type { CallOptions, Client } from "@connectrpc/connect";
+import { Effect, Stream } from "effect";
+import { type SoulFireOperationError } from "./errors.js";
+import { rpc, rpcStream, withSignal } from "./transport.js";
 
 import {
   BotProtocolService,
@@ -18,11 +18,11 @@ type BotScoped<T extends DescMessage> = Omit<
   "$typeName" | "botId" | "instanceId"
 >;
 
-export type WatchPacketsOptions =
-  & BotScoped<typeof WatchPacketsRequestSchema>
-  & {
-    call?: CallOptions;
-  };
+export type WatchPacketsOptions = BotScoped<
+  typeof WatchPacketsRequestSchema
+> & {
+  call?: CallOptions;
+};
 
 export interface SendRawPacketOptions {
   call?: CallOptions;
@@ -42,49 +42,73 @@ export class SoulFireProtocol {
     private readonly client: Client<typeof BotProtocolService>,
   ) {}
 
-  public info(options?: CallOptions): Promise<BotProtocolInfo> {
-    return this.client.getProtocolInfo(this.scope(), options);
+  public info(
+    options?: CallOptions,
+  ): Effect.Effect<BotProtocolInfo, SoulFireOperationError> {
+    return rpc("SoulFireProtocol.info", (signal) =>
+      this.client.getProtocolInfo(this.scope(), withSignal(options, signal)),
+    );
   }
 
-  public async schemas(
+  public schemas(
     direction: PacketDirection,
     options?: CallOptions,
-  ): Promise<readonly PacketSchema[]> {
-    const response = await this.client.listPacketSchemas(
-      { ...this.scope(), direction },
-      options,
-    );
-    return response.packets;
+  ): Effect.Effect<readonly PacketSchema[], SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const response = yield* rpc("SoulFireProtocol.schemas", (signal) =>
+        this.client.listPacketSchemas(
+          { ...this.scope(), direction },
+          withSignal(options, signal),
+        ),
+      );
+      return response.packets;
+    });
   }
 
   public packets(
     options: WatchPacketsOptions = {},
-  ): AsyncIterable<RawPacketEvent> {
-    const { call, ...request } = options;
-    return this.client.watchPackets(
-      { ...request, ...this.scope() },
-      call,
+  ): Stream.Stream<RawPacketEvent, SoulFireOperationError> {
+    return Stream.unwrap(
+      Effect.gen(this, function* () {
+        const { call, ...request } = options;
+        return rpcStream("SoulFireProtocol.packets", (signal) =>
+          this.client.watchPackets(
+            { ...request, ...this.scope() },
+            withSignal(call, signal),
+          ),
+        );
+      }),
     );
   }
 
-  public async send(
+  public send(
     encodedPacket: Uint8Array,
     options: SendRawPacketOptions = {},
-  ): Promise<{ name: string; encodedBytes: number }> {
-    const response = await this.client.sendRawPacket(
-      {
-        ...this.scope(),
-        encodedPacket,
-        ...(options.expectedName === undefined
-          ? {}
-          : { expectedName: options.expectedName }),
-      },
-      options.call,
-    );
-    return {
-      name: response.name,
-      encodedBytes: response.encodedBytes,
-    };
+  ): Effect.Effect<
+    {
+      name: string;
+      encodedBytes: number;
+    },
+    SoulFireOperationError
+  > {
+    return Effect.gen(this, function* () {
+      const response = yield* rpc("SoulFireProtocol.send", (signal) =>
+        this.client.sendRawPacket(
+          {
+            ...this.scope(),
+            encodedPacket,
+            ...(options.expectedName === undefined
+              ? {}
+              : { expectedName: options.expectedName }),
+          },
+          withSignal(options.call, signal),
+        ),
+      );
+      return {
+        name: response.name,
+        encodedBytes: response.encodedBytes,
+      };
+    });
   }
 
   private scope(): { instanceId: string; botId: string } {

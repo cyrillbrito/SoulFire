@@ -1,6 +1,7 @@
 import { create, type MessageInitShape } from "@bufbuild/protobuf";
 import { anyPack } from "@bufbuild/protobuf/wkt";
 import { createRouterTransport } from "@connectrpc/connect";
+import { Deferred, Effect, Fiber, Stream } from "effect";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -9,9 +10,7 @@ import {
   BotService,
   type SetBotsDesiredStateRequest,
 } from "../src/generated/soulfire/bot_pb.js";
-import {
-  MinecraftAccountProto_AccountTypeProto,
-} from "../src/generated/soulfire/common_pb.js";
+import { MinecraftAccountProto_AccountTypeProto } from "../src/generated/soulfire/common_pb.js";
 import { InstanceService } from "../src/generated/soulfire/instance_pb.js";
 import {
   AutoRespawnTaskResultSchema,
@@ -19,106 +18,147 @@ import {
   BotTaskService,
   BotTaskStatus,
 } from "../src/generated/soulfire/task_pb.js";
-import { SoulFire } from "../src/promise-client.js";
+import { SoulFire } from "../src/index.js";
 
 describe("SoulFireFleet", () => {
-  it("selects by live state and metadata, distributes work, and controls the result", async () => {
-    let lifecycleRequest: SetBotsDesiredStateRequest | undefined;
-    const transport = fleetTransport({
-      onLifecycle(request) {
-        lifecycleRequest = request;
-      },
-    });
-    const soulfire = await SoulFire.unauthenticated({
-      baseUrl: "https://soulfire.example.com",
-      transport,
-    });
-    const fleet = soulfire.instance("instance-id").fleet;
-    const selector = {
-      online: true,
-      dimensions: ["minecraft:overworld"],
-      minimumHealth: 10,
-      near: {
-        x: 0,
-        y: 64,
-        z: 0,
-        radius: 32,
-        dimension: "minecraft:overworld",
-      },
-      metadata: [{
-        namespace: "fleet",
-        key: "role",
-        equals: "builder",
-      }],
-      orderBy: "health" as const,
-    };
+  it("selects by live state and metadata, distributes work, and controls the result", () =>
+    Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          let lifecycleRequest: SetBotsDesiredStateRequest | undefined;
+          const transport = fleetTransport({
+            onLifecycle(request) {
+              lifecycleRequest = request;
+            },
+          });
+          const soulfire = yield* SoulFire.unauthenticated({
+            baseUrl: "https://soulfire.example.com",
+            transport,
+          });
+          const fleet = soulfire.instance("instance-id").fleet;
+          const selector = {
+            online: true,
+            dimensions: ["minecraft:overworld"],
+            minimumHealth: 10,
+            near: {
+              x: 0,
+              y: 64,
+              z: 0,
+              radius: 32,
+              dimension: "minecraft:overworld",
+            },
+            metadata: [
+              {
+                namespace: "fleet",
+                key: "role",
+                equals: "builder",
+              },
+            ],
+            orderBy: "health" as const,
+          };
+          const selected = yield* fleet.select(selector);
+          const assignments = yield* fleet.distribute(
+            ["one", "two", "three"],
+            selector,
+          );
+          yield* fleet.start(selector);
+          yield* soulfire.close();
+          expect(selected.map(({ id }) => id)).toEqual(["healthy", "nearby"]);
+          expect(assignments.map(({ bot, items }) => [bot.id, items])).toEqual([
+            ["healthy", ["one", "three"]],
+            ["nearby", ["two"]],
+          ]);
+          expect(lifecycleRequest?.botIds).toEqual(["healthy", "nearby"]);
+        }),
+      ),
+    ));
 
-    const selected = await fleet.select(selector);
-    const assignments = await fleet.distribute(
-      ["one", "two", "three"],
-      selector,
-    );
-    await fleet.start(selector);
-    await soulfire.close();
-
-    expect(selected.map(({ id }) => id)).toEqual(["healthy", "nearby"]);
-    expect(assignments.map(({ bot, items }) => [bot.id, items])).toEqual([
-      ["healthy", ["one", "three"]],
-      ["nearby", ["two"]],
-    ]);
-    expect(lifecycleRequest?.botIds).toEqual(["healthy", "nearby"]);
-  });
-
-  it("starts typed tasks with bounded concurrency and aggregates results", async () => {
-    let active = 0;
-    let maximumActive = 0;
-    const transport = fleetTransport({
-      async onStartTask() {
-        active++;
-        maximumActive = Math.max(maximumActive, active);
-        await new Promise((resolve) => setTimeout(resolve, 5));
-        active--;
-      },
-    });
-    const soulfire = await SoulFire.unauthenticated({
-      baseUrl: "https://soulfire.example.com",
-      transport,
-    });
-    const fleet = soulfire.instance("instance-id").fleet;
-
-    const group = await fleet.startTasks(
-      { botIds: ["healthy", "nearby"] },
-      AutoRespawnTaskSchema,
-      (_bot, index) => ({
-        maximumRespawns: index + 1,
-      } satisfies MessageInitShape<typeof AutoRespawnTaskSchema>),
-      AutoRespawnTaskResultSchema,
-      { concurrency: 1 },
-    );
-    const events = [];
-    for await (const event of group.events()) {
-      events.push(event);
-    }
-    const report = await group.results();
-    await soulfire.close();
-
-    expect(maximumActive).toBe(1);
-    expect(group.size).toBe(2);
-    expect(events.map(({ bot }) => bot.id)).toEqual([
-      "healthy",
-      "nearby",
-    ]);
-    expect(report.rejected).toHaveLength(0);
-    expect(report.fulfilled.map(({ value }) => value.respawns)).toEqual([
-      1,
-      1,
-    ]);
-  });
+  it("starts typed tasks with bounded concurrency and aggregates results", () =>
+    Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          let active = 0;
+          let maximumActive = 0;
+          const transport = fleetTransport({
+            async onStartTask() {
+              active++;
+              maximumActive = Math.max(maximumActive, active);
+              await new Promise((resolve) => setTimeout(resolve, 5));
+              active--;
+            },
+          });
+          const soulfire = yield* SoulFire.unauthenticated({
+            baseUrl: "https://soulfire.example.com",
+            transport,
+          });
+          const fleet = soulfire.instance("instance-id").fleet;
+          const group = yield* fleet.startTasks(
+            { botIds: ["healthy", "nearby"] },
+            AutoRespawnTaskSchema,
+            (_bot, index) =>
+              ({
+                maximumRespawns: index + 1,
+              }) satisfies MessageInitShape<typeof AutoRespawnTaskSchema>,
+            AutoRespawnTaskResultSchema,
+            { concurrency: 1 },
+          );
+          const events = Array.from(yield* Stream.runCollect(group.events()));
+          const report = yield* group.results();
+          yield* soulfire.close();
+          expect(maximumActive).toBe(1);
+          expect(group.size).toBe(2);
+          expect(events.map(({ bot }) => bot.id)).toEqual([
+            "healthy",
+            "nearby",
+          ]);
+          expect(report.rejected).toHaveLength(0);
+          expect(report.fulfilled.map(({ value }) => value.respawns)).toEqual([
+            1, 1,
+          ]);
+        }),
+      ),
+    ));
+  it("cancels accepted tasks when fleet acquisition is interrupted", () =>
+    Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const cancelled: string[] = [];
+          const waiting = yield* Deferred.make<void>();
+          const soulfire = yield* SoulFire.unauthenticated({
+            baseUrl: "https://soulfire.example.com",
+            transport: fleetTransport({
+              onCancelTask: (id) => {
+                cancelled.push(id);
+              },
+            }),
+          });
+          const fiber = yield* soulfire
+            .instance("instance-id")
+            .fleet.startTasks(
+              { botIds: ["healthy", "nearby"] },
+              AutoRespawnTaskSchema,
+              (_bot, index) =>
+                index === 0
+                  ? { maximumRespawns: 1 }
+                  : Deferred.succeed(waiting, undefined).pipe(
+                      Effect.zipRight(Effect.never),
+                    ),
+              AutoRespawnTaskResultSchema,
+              { concurrency: 1 },
+            )
+            .pipe(Effect.forkScoped);
+          yield* Deferred.await(waiting);
+          yield* Fiber.interrupt(fiber);
+          expect(cancelled).toEqual(["task-healthy"]);
+        }),
+      ),
+    ));
 });
 
 function fleetTransport(options: {
   onLifecycle?: (request: SetBotsDesiredStateRequest) => void;
   onStartTask?: () => Promise<void>;
+  onCancelTask?: (taskId: string) => void;
 }) {
   return createRouterTransport(({ service }) => {
     service(BotService, {
@@ -165,20 +205,23 @@ function fleetTransport(options: {
                     profileId,
                     lastKnownName: profileId,
                     type: MinecraftAccountProto_AccountTypeProto.OFFLINE,
-                    persistentMetadata: [{
-                      namespace: "fleet",
-                      entries: [{
-                        key: "role",
-                        value: {
-                          kind: {
-                            case: "stringValue",
-                            value: profileId === "far"
-                              ? "scout"
-                              : "builder",
+                    persistentMetadata: [
+                      {
+                        namespace: "fleet",
+                        entries: [
+                          {
+                            key: "role",
+                            value: {
+                              kind: {
+                                case: "stringValue",
+                                value:
+                                  profileId === "far" ? "scout" : "builder",
+                              },
+                            },
                           },
-                        },
-                      }],
-                    }],
+                        ],
+                      },
+                    ],
                   }),
                 ),
               },
@@ -188,6 +231,10 @@ function fleetTransport(options: {
       },
     });
     service(BotTaskService, {
+      cancelBotTask(request) {
+        options.onCancelTask?.(request.taskId);
+        return { taskId: request.taskId, status: BotTaskStatus.CANCELLED };
+      },
       async startBotTask(request) {
         await options.onStartTask?.();
         return {

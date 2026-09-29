@@ -1,11 +1,11 @@
 # SoulFire TypeScript SDK
 
-`@soulfiremc/sdk` is the Effect-first SDK for SoulFire. It provides typed
+`@soulfiremc/sdk` is the Effect SDK for SoulFire. It provides typed
 operations, streams, scopes, task handles, capability negotiation, and plugin
 RPC discovery over gRPC-Web.
 
-Every capability is also available from `@soulfiremc/sdk/promise` for
-applications that use Promises and async iterables.
+The high-level API returns Effect operations and streams. Run a complete
+workflow through `Effect.runPromise` when your application uses async functions.
 
 ## Install
 
@@ -23,7 +23,7 @@ transport policies portable.
 ## Install a managed local server on Node.js
 
 JVM download and process management are available only from the explicit Node
-entry points. They require Node.js 22 or newer.
+entry point. It requires Node.js 22 or newer.
 
 ```ts
 import { Effect } from "effect";
@@ -43,15 +43,14 @@ await Effect.runPromise(
 );
 ```
 
-Promise applications import `SoulFire` from
-`@soulfiremc/sdk/node/promise`. The universal exports never import Node.js
-modules, so browser, worker, Bun, and Deno bundles do not pull in process or
-filesystem code.
+The universal exports keep process and filesystem code out of browser and
+worker bundles. Use `@soulfiremc/sdk/bun` for managed installation on Bun.
 
-## Connect with Effect
+## Quickstart
 
 Connections are scoped resources. Closing the scope closes the client,
-subscriptions, and any managed local server.
+subscriptions, and any managed local server. Keep connection setup and bot work inside the
+same scope.
 
 ```ts
 import { Effect } from "effect";
@@ -61,11 +60,12 @@ const program = Effect.scoped(
   Effect.gen(function* () {
     const soulfire = yield* SoulFire.connect({
       baseUrl: "https://soulfire.example.com",
-      token: process.env.SOULFIRE_TOKEN,
+      token: "your-api-token",
     });
 
     const bot = soulfire.instance("instance-uuid").bot("bot-uuid");
     yield* bot.start();
+    yield* bot.waitForOnline();
     yield* bot.chat.send("Hello from SoulFire");
   }),
 );
@@ -98,7 +98,7 @@ await Effect.runPromise(
   program.pipe(
     Effect.provide(SoulFire.layer({
       baseUrl: "https://soulfire.example.com",
-      token: process.env.SOULFIRE_TOKEN,
+      token: "your-api-token",
     })),
   ),
 );
@@ -139,7 +139,7 @@ deltas into a session.
 
 ## Run the beat-game application
 
-Game-specific progression lives in the separate Effect-first
+Game-specific progression lives in the separate Effect
 `@soulfiremc/beat-game` package. The package consumes only this SDK's public
 bot observations, actions, pathfinding, tasks, control leases, and plugin APIs.
 
@@ -151,14 +151,13 @@ const run = yield* beatGame(bot);
 const result = yield* run.awaitCompletion;
 ```
 
-The Promise entry point is `@soulfiremc/beat-game/promise`. See the
+See the
 [beat-game package guide](../beat-game/README.md) for checkpoint persistence,
 team runs, strategy hooks, events, and reusable behavior programs.
 
-Use `toReadableStream(events)` from `@soulfiremc/sdk/promise` when a Web
-`ReadableStream` fits the surrounding runtime better than `for await`.
-Backpressure advances the server iterator one item at a time, and cancelling
-the stream closes the underlying subscription.
+Use Effect's `Stream.toReadableStream(events)` when a Web `ReadableStream`
+fits your host application. `Stream.toAsyncIterable(events)` adapts a stream
+for `for await`. Consume either adapter inside the connection's lifetime.
 
 ## Orchestrate a fleet
 
@@ -234,8 +233,7 @@ const image = yield* bot.camera.capture({
 const png = decodeCameraImage(image);
 ```
 
-`bot.camera.frames()` is an Effect `Stream` in the default package and an
-`AsyncIterable` in `@soulfiremc/sdk/promise`. Each frame reports how many
+`bot.camera.frames()` returns an Effect `Stream`. Each frame reports how many
 scheduled frames were dropped while the transport was backpressured.
 
 ```ts
@@ -432,7 +430,7 @@ const tool = yield* bot.inventory.bestTool(blockPosition, {
 
 ## Compose behaviors
 
-Effect-first combinators compose durable tasks without moving game-tick work
+Behavior combinators compose durable tasks without moving game-tick work
 into the SDK process:
 
 ```ts
@@ -457,8 +455,8 @@ const results = yield* workflow.run(bot);
 
 The SDK includes `sequence`, `parallel`, `race`, `repeat`, `retry`, `timeout`,
 `until`, `conditional`, `fallback`, `cleanup`, and `scopedLease`. Effect uses
-fiber interruption. The Promise entry point exposes the same concepts with
-linked `AbortSignal` cancellation.
+fiber interruption. The combinators use standard Effect operators for
+sequencing, concurrency, retries, races, and resource cleanup.
 
 ## Call plugin APIs
 
@@ -492,8 +490,7 @@ yield* soulfire.plugins
 ```
 
 The first envelope reports whether the stream resumed after `afterSequence`.
-`droppedBefore` reports backpressure loss. The Promise facade exposes the same
-operation as an `AsyncIterable`.
+`droppedBefore` reports backpressure loss.
 
 Plugin authors can generate a complete companion package from a running server:
 
@@ -508,36 +505,57 @@ bunx soulfire-sdk generate \
 Set `SOULFIRE_TOKEN` for authenticated servers. An offline plugin build can use
 `--descriptor plugin-api.binpb` instead. The generator verifies live descriptor
 hashes and creates pinned protobuf bindings, compatibility metadata, and
-ergonomic clients. TypeScript output is Effect-first and exposes the same module
-to the Promise facade. Python output requires CPython 3.14 and includes both
+ergonomic clients. TypeScript output returns Effect operations and streams.
+Python output requires CPython 3.14 and includes both
 async and sync clients.
 
 The generator requires Node.js 22 or newer. Its pinned Buf binary and remote
 plugin versions make repeated generation deterministic.
 
-## Use the Promise facade
+## Call from an async host
 
-The Promise facade is backed by the same Effect operations and managed
-runtime:
+Keep orchestration in Effect and convert once at the host boundary. This
+function runs one scoped workflow and forwards request cancellation to its fibers.
 
 ```ts
-import { SoulFire } from "@soulfiremc/sdk/promise";
+import { Effect } from "effect";
+import { SoulFire, type SoulFireOptions } from "@soulfiremc/sdk";
 
-await using soulfire = await SoulFire.connect({
-  baseUrl: "https://soulfire.example.com",
-  token: process.env.SOULFIRE_TOKEN,
-});
-
-const bot = soulfire.instance("instance-uuid").bot("bot-uuid");
-await bot.chat.send("Hello from a Promise application");
-
-for await (const event of bot.events()) {
-  console.log(event);
+export async function announce(options: SoulFireOptions, instanceId: string, botId: string, signal: AbortSignal): Promise<void> {
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const soulfire = yield* SoulFire.connect(options);
+        const bot = soulfire.instance(instanceId).bot(botId);
+        yield* bot.start();
+        yield* bot.waitForOnline();
+        yield* bot.chat.send("Hello from an async host");
+      }),
+    ),
+    { signal },
+  );
 }
 ```
 
-Promise streams stay lazy and preserve backpressure. Pass an `AbortSignal`
-through call options to cancel an operation or stream.
+Call `announce` with your request's `AbortSignal`. Success, failure, and
+cancellation all close the scope before its Promise settles.
+
+The [quickstart](./examples/quickstart.ts) and
+[async-host example](./examples/async-host.ts) are included in the SDK typecheck.
+
+## Migrate existing Promise code
+
+The `/promise`, `/node/promise`, and `/bun/promise` entry points are removed.
+Import from the normal entry point and replace SDK `await` calls with
+`yield*` inside `Effect.gen`. Replace `await using` with `Effect.scoped`.
+Use standard Effect stream adapters for host streams.
+
+The beat-game package also uses its normal entry point. Its run handle exposes
+`awaitCompletion` as an Effect value. Use `yield* run.awaitCompletion`.
+
+Generated ConnectRPC clients still expose the wire API through
+`soulfire.service()`. Their Promises and async iterables belong at transport
+boundaries, where cancellation signals must reach the RPC call.
 
 ## Administer SoulFire
 

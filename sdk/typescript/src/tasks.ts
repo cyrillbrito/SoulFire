@@ -4,68 +4,48 @@ import {
   type MessageInitShape,
   type MessageShape,
 } from "@bufbuild/protobuf";
+import { anyPack, anyUnpack, timestampFromDate } from "@bufbuild/protobuf/wkt";
+import type { CallOptions, Client } from "@connectrpc/connect";
+import { Effect, Stream } from "effect";
 import {
-  anyPack,
-  anyUnpack,
-  timestampFromDate,
-} from "@bufbuild/protobuf/wkt";
-import type {
-  CallOptions,
-  Client,
-} from "@connectrpc/connect";
+  operationError,
+  SoulFireTaskError,
+  type SoulFireOperationError,
+} from "./errors.js";
+import { rpc, rpcStream, withSignal } from "./transport.js";
 
-import type {
-  PathfindGoal,
-} from "./generated/soulfire/bot_live_pb.js";
-import {
-  PathfindOptionsSchema,
-} from "./generated/soulfire/bot_live_pb.js";
+import type { PathfindGoal } from "./generated/soulfire/bot_live_pb.js";
+import { PathfindOptionsSchema } from "./generated/soulfire/bot_live_pb.js";
 import { BlockPositionSchema } from "./generated/soulfire/common_pb.js";
 import type { EntityReference } from "./generated/soulfire/domain_pb.js";
-import {
-  ItemSelectorSchema,
-} from "./generated/soulfire/inventory_pb.js";
-import {
-  EntitySelectorSchema,
-} from "./generated/soulfire/world_pb.js";
+import { ItemSelectorSchema } from "./generated/soulfire/inventory_pb.js";
 import {
   BrewTaskResultSchema,
   BrewTaskSchema,
-  type BrewTaskResult,
   CraftTaskResultSchema,
   CraftTaskSchema,
-  type CraftTaskResult,
   SmeltTaskResultSchema,
   SmeltTaskSchema,
-  type SmeltTaskResult,
   VillagerTradeTaskResultSchema,
   VillagerTradeTaskSchema,
+  type BrewTaskResult,
+  type CraftTaskResult,
+  type SmeltTaskResult,
   type VillagerTradeTaskResult,
 } from "./generated/soulfire/recipe_pb.js";
 import {
   AttackEntityTaskResultSchema,
   AttackEntityTaskSchema,
-  type AttackEntityTaskResult,
   AttackNearestTaskResultSchema,
   AttackNearestTaskSchema,
-  type AttackNearestTaskResult,
   AutoArmorTaskResultSchema,
   AutoArmorTaskSchema,
-  type AutoArmorTaskResult,
   AutoEatTaskResultSchema,
   AutoEatTaskSchema,
-  type AutoEatTaskResult,
   AutoRespawnTaskResultSchema,
   AutoRespawnTaskSchema,
-  type AutoRespawnTaskResult,
   AutoTotemTaskResultSchema,
   AutoTotemTaskSchema,
-  type AutoTotemTaskResult,
-  BuildMirror,
-  BuildRotation,
-  BuildTaskResultSchema,
-  BuildTaskSchema,
-  type BuildTaskResult,
   BotTaskConflictPolicy,
   BotTaskDisconnectPolicy,
   BotTaskPriority,
@@ -74,52 +54,64 @@ import {
   BotTaskStatus,
   BreedTaskResultSchema,
   BreedTaskSchema,
-  type BreedTaskResult,
+  BuildMirror,
+  BuildRotation,
+  BuildTaskResultSchema,
+  BuildTaskSchema,
   CollectBlocksTaskResultSchema,
   CollectBlocksTaskSchema,
-  type CollectBlocksTaskResult,
   ContainerTransferDirection,
   ContainerTransferTaskResultSchema,
   ContainerTransferTaskSchema,
-  type ContainerTransferTaskResult,
-  ExploreTaskResultSchema,
-  ExploreTaskSchema,
-  type ExploreTaskResult,
   ExcavateTaskResultSchema,
   ExcavateTaskSchema,
-  type ExcavateTaskResult,
+  ExploreTaskResultSchema,
+  ExploreTaskSchema,
   FarmTaskResultSchema,
   FarmTaskSchema,
-  type FarmTaskResult,
   FishTaskResultSchema,
   FishTaskSchema,
-  type FishTaskResult,
-  FollowEntityTaskResultSchema,
-  FollowEntityTaskSchema,
-  type FollowEntityTaskResult,
   FleeTaskResultSchema,
   FleeTaskSchema,
-  type FleeTaskResult,
-  GuardTaskResultSchema,
-  GuardTaskSchema,
-  type GuardTaskResult,
-  MaintainLoadoutTaskResultSchema,
-  MaintainLoadoutTaskSchema,
-  type MaintainLoadoutTaskResult,
+  FollowEntityTaskResultSchema,
+  FollowEntityTaskSchema,
   GoToTaskResultSchema,
   GoToTaskSchema,
-  type BotTask,
-  type BotTaskEvent,
-  type GoToTaskResult,
-  type ListBotTasksRequestSchema,
+  GuardTaskResultSchema,
+  GuardTaskSchema,
+  MaintainLoadoutTaskResultSchema,
+  MaintainLoadoutTaskSchema,
   RangedAttackTaskResultSchema,
   RangedAttackTaskSchema,
-  type RangedAttackTaskResult,
   SleepTaskResultSchema,
   SleepTaskSchema,
+  type AttackEntityTaskResult,
+  type AttackNearestTaskResult,
+  type AutoArmorTaskResult,
+  type AutoEatTaskResult,
+  type AutoRespawnTaskResult,
+  type AutoTotemTaskResult,
+  type BotTask,
+  type BotTaskEvent,
+  type BreedTaskResult,
+  type BuildTaskResult,
+  type CollectBlocksTaskResult,
+  type ContainerTransferTaskResult,
+  type ExcavateTaskResult,
+  type ExploreTaskResult,
+  type FarmTaskResult,
+  type FishTaskResult,
+  type FleeTaskResult,
+  type FollowEntityTaskResult,
+  type GoToTaskResult,
+  type GuardTaskResult,
+  type ListBotTasksRequestSchema,
+  type MaintainLoadoutTaskResult,
+  type RangedAttackTaskResult,
   type SleepTaskResult,
   type StartBotTaskRequestSchema,
 } from "./generated/soulfire/task_pb.js";
+import { EntitySelectorSchema } from "./generated/soulfire/world_pb.js";
 
 export type {
   AttackEntityTaskResult,
@@ -128,18 +120,18 @@ export type {
   AutoEatTaskResult,
   AutoRespawnTaskResult,
   AutoTotemTaskResult,
-  BuildTaskResult,
   BreedTaskResult,
+  BrewTaskResult,
+  BuildTaskResult,
   CollectBlocksTaskResult,
   ContainerTransferTaskResult,
-  ExploreTaskResult,
-  ExcavateTaskResult,
-  FarmTaskResult,
-  BrewTaskResult,
   CraftTaskResult,
+  ExcavateTaskResult,
+  ExploreTaskResult,
+  FarmTaskResult,
   FishTaskResult,
-  FollowEntityTaskResult,
   FleeTaskResult,
+  FollowEntityTaskResult,
   GuardTaskResult,
   MaintainLoadoutTaskResult,
   RangedAttackTaskResult,
@@ -774,15 +766,14 @@ export interface VillagerTradeTaskOptions extends TaskStartOptions {
   expectedResult?: MessageInitShape<typeof ItemSelectorSchema>;
 }
 
-export type FollowEntityTarget = Pick<
-  EntityReference,
-  "connectionEpoch" | "networkId"
-> | number;
+export type FollowEntityTarget =
+  | Pick<EntityReference, "connectionEpoch" | "networkId">
+  | number;
 
-export type AttackEntityTarget = (
-  Pick<EntityReference, "networkId">
-  & Partial<Pick<EntityReference, "connectionEpoch" | "uuid">>
-) | number;
+export type AttackEntityTarget =
+  | (Pick<EntityReference, "networkId"> &
+      Partial<Pick<EntityReference, "connectionEpoch" | "uuid">>)
+  | number;
 
 export interface TaskListOptions extends ScopedTaskListRequest {
   call?: CallOptions;
@@ -791,15 +782,7 @@ export interface TaskListOptions extends ScopedTaskListRequest {
 /**
  * Thrown by `SoulFireTask.result` when the task ended other than COMPLETED.
  */
-export class SoulFireTaskError extends Error {
-  public constructor(public readonly task: BotTask) {
-    super(
-      task.failure?.message
-        ?? `Task ${task.taskId} ended in status ${task.status}`,
-    );
-    this.name = "SoulFireTaskError";
-  }
-}
+export { SoulFireTaskError } from "./errors.js";
 
 /**
  * A task the bot runs on the server. It keeps running whatever the caller does,
@@ -812,8 +795,9 @@ export class SoulFireTask<Result extends DescMessage | undefined = undefined> {
     private readonly client: Client<typeof BotTaskService>,
     snapshot: BotTask,
     private readonly resultSchema: Result,
-    private readonly callOptions: (options?: CallOptions) =>
-      CallOptions | undefined,
+    private readonly callOptions: (
+      options?: CallOptions,
+    ) => CallOptions | undefined,
   ) {
     this.#snapshot = snapshot;
   }
@@ -836,122 +820,154 @@ export class SoulFireTask<Result extends DescMessage | undefined = undefined> {
     return isTerminalTaskStatus(this.#snapshot.status);
   }
 
-  public async refresh(options?: CallOptions): Promise<BotTask> {
-    this.#snapshot = await this.client.getBotTask(
-      { taskId: this.id },
-      options,
-    );
-    return this.#snapshot;
+  public refresh(
+    options?: CallOptions,
+  ): Effect.Effect<BotTask, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      this.#snapshot = yield* rpc("SoulFireTask.refresh", (signal) =>
+        this.client.getBotTask(
+          { taskId: this.id },
+          withSignal(options, signal),
+        ),
+      );
+      return this.#snapshot;
+    });
   }
 
   /**
    * The task's events after `afterRevision`, until it ends. `afterRevision`
    * defaults to the snapshot's.
    */
+
   public events(options?: {
     afterRevision?: bigint;
     call?: CallOptions;
-  }): AsyncIterable<BotTaskEvent> {
-    return this.client.watchBotTask(
-      {
-        taskId: this.id,
-        afterRevision: options?.afterRevision ?? this.#snapshot.revision,
-        follow: true,
-      },
-      options?.call,
+  }): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
+    return Stream.unwrap(
+      Effect.gen(this, function* () {
+        return rpcStream("SoulFireTask.events", (signal) =>
+          this.client.watchBotTask(
+            {
+              taskId: this.id,
+              afterRevision: options?.afterRevision ?? this.#snapshot.revision,
+              follow: true,
+            },
+            withSignal(options?.call, signal),
+          ),
+        );
+      }),
     );
   }
 
   /**
    * Resolves when the task ends, however it ends.
    */
-  public async wait(options?: {
+  public wait(options?: {
     call?: CallOptions;
-  }): Promise<BotTask> {
-    if (this.terminal) {
+  }): Effect.Effect<BotTask, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      if (this.terminal) return this.#snapshot;
+      yield* this.events(options).pipe(
+        Stream.runForEach((event) =>
+          Effect.sync(() => {
+            if (event.task !== undefined) this.#snapshot = event.task;
+          }),
+        ),
+      );
+      if (!this.terminal) yield* this.refresh(options?.call);
       return this.#snapshot;
-    }
-    for await (const event of this.client.watchBotTask(
-      {
-        taskId: this.id,
-        afterRevision: this.#snapshot.revision,
-        follow: true,
-      },
-      options?.call,
-    )) {
-      if (event.task !== undefined) {
-        this.#snapshot = event.task;
-      }
-    }
-    if (!this.terminal) {
-      await this.refresh(options?.call);
-    }
-    return this.#snapshot;
+    });
   }
 
-  public async cancel(
+  public cancel(
     reason = "",
     options?: CallOptions,
-  ): Promise<BotTask> {
-    this.#snapshot = await this.client.cancelBotTask(
-      { taskId: this.id, reason },
-      this.callOptions(options),
-    );
-    return this.#snapshot;
+  ): Effect.Effect<BotTask, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      this.#snapshot = yield* rpc("SoulFireTask.cancel", (signal) =>
+        this.client.cancelBotTask(
+          { taskId: this.id, reason },
+          withSignal(this.callOptions(options), signal),
+        ),
+      );
+      return this.#snapshot;
+    });
   }
 
   /**
    * Waits for the end and returns the result. Throws `SoulFireTaskError` unless
    * it completed.
    */
-  public async result(options?: {
+  /**
+   * Waits for the result. Fails with `SoulFireTaskFailed` unless it completed.
+   */
+  public result(options?: {
     call?: CallOptions;
-  }): Promise<
-    Result extends DescMessage ? MessageShape<Result> : BotTask
+  }): Effect.Effect<
+    Result extends DescMessage ? MessageShape<Result> : BotTask,
+    SoulFireOperationError
   > {
-    const task = await this.wait(options);
-    if (task.status !== BotTaskStatus.COMPLETED) {
-      throw new SoulFireTaskError(task);
-    }
-    if (this.resultSchema === undefined) {
-      return task as Result extends DescMessage
+    return Effect.gen(this, function* () {
+      const task = yield* this.wait(options);
+      if (task.status !== BotTaskStatus.COMPLETED) {
+        return yield* Effect.fail(
+          operationError("SoulFireTask.result", new SoulFireTaskError(task)),
+        );
+      }
+      if (this.resultSchema === undefined) {
+        return task as Result extends DescMessage
+          ? MessageShape<Result>
+          : BotTask;
+      }
+      if (task.result === undefined) {
+        return yield* Effect.fail(
+          operationError(
+            "SoulFireTask.result",
+            new SoulFireTaskError({
+              ...task,
+              failure: {
+                $typeName: "soulfire.v1.BotTaskFailure",
+                code: "missing_result",
+                message: "Completed task did not return a result",
+                retryable: false,
+              },
+            }),
+          ),
+        );
+      }
+      const payload = task.result;
+      const schema = this.resultSchema;
+      const result = yield* Effect.try({
+        try: () => anyUnpack(payload, schema),
+        catch: (cause) => operationError("SoulFireTask.result", cause),
+      });
+      if (result === undefined) {
+        return yield* Effect.fail(
+          operationError(
+            "SoulFireTask.result",
+            new SoulFireTaskError({
+              ...task,
+              failure: {
+                $typeName: "soulfire.v1.BotTaskFailure",
+                code: "result_type_mismatch",
+                message: `Task returned ${task.result.typeUrl}, expected ${this.resultSchema.typeName}`,
+                retryable: false,
+              },
+            }),
+          ),
+        );
+      }
+      return result as Result extends DescMessage
         ? MessageShape<Result>
         : BotTask;
-    }
-    if (task.result === undefined) {
-      throw new SoulFireTaskError({
-        ...task,
-        failure: {
-          $typeName: "soulfire.v1.BotTaskFailure",
-          code: "missing_result",
-          message: "Completed task did not return a result",
-          retryable: false,
-        },
-      });
-    }
-    const result = anyUnpack(task.result, this.resultSchema);
-    if (result === undefined) {
-      throw new SoulFireTaskError({
-        ...task,
-        failure: {
-          $typeName: "soulfire.v1.BotTaskFailure",
-          code: "result_type_mismatch",
-          message:
-            `Task returned ${task.result.typeUrl}, expected ${this.resultSchema.typeName}`,
-          retryable: false,
-        },
-      });
-    }
-    return result as Result extends DescMessage
-      ? MessageShape<Result>
-      : BotTask;
+    });
   }
 }
 
 /**
  * Long jobs the server runs for the bot. Each `x` starts a task and resolves
- * once it's accepted, not when it ends: `await (await tasks.x(...)).result()`
- * waits for its result. Each `runX` starts it and streams its events instead,
+ * once accepted. Use `yield* task.result()` to wait for completion.
+ * Each `runX` starts it and streams its events instead,
  * and the task is cancelled if the stream is.
  */
 export class SoulFireTasks {
@@ -959,14 +975,18 @@ export class SoulFireTasks {
     private readonly instanceId: string,
     private readonly botId: string,
     private readonly client: Client<typeof BotTaskService>,
-    private readonly callOptions: (options?: CallOptions) =>
-      CallOptions | undefined,
+    private readonly callOptions: (
+      options?: CallOptions,
+    ) => CallOptions | undefined,
   ) {}
 
   /**
    * Starts a task from its input message. `resultSchema` types `result()`.
    */
-  public async start<
+  /**
+   * Starts a task from its input message. `resultSchema` types `result()`.
+   */
+  public start<
     Input extends DescMessage,
     Result extends DescMessage | undefined = undefined,
   >(
@@ -974,31 +994,31 @@ export class SoulFireTasks {
     input: MessageInitShape<Input>,
     resultSchema?: Result,
     options: TaskStartOptions = {},
-  ): Promise<SoulFireTask<Result>> {
-    const {
-      call,
-      deadline,
-      ...taskOptions
-    } = options;
-    const request = create(inputSchema, input);
-    const task = await this.client.startBotTask(
-      {
-        ...taskOptions,
-        instanceId: this.instanceId,
-        botId: this.botId,
-        input: anyPack(inputSchema, request),
-        ...(deadline === undefined
-          ? {}
-          : { deadline: timestampFromDate(deadline) }),
-      },
-      this.callOptions(call),
-    );
-    return new SoulFireTask(
-      this.client,
-      task,
-      resultSchema as Result,
-      this.callOptions,
-    );
+  ): Effect.Effect<SoulFireTask<Result>, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const { call, deadline, ...taskOptions } = options;
+      const request = create(inputSchema, input);
+      const task = yield* rpc("SoulFireTasks.start", (signal) =>
+        this.client.startBotTask(
+          {
+            ...taskOptions,
+            instanceId: this.instanceId,
+            botId: this.botId,
+            input: anyPack(inputSchema, request),
+            ...(deadline === undefined
+              ? {}
+              : { deadline: timestampFromDate(deadline) }),
+          },
+          withSignal(this.callOptions(call), signal),
+        ),
+      );
+      return new SoulFireTask(
+        this.client,
+        task,
+        resultSchema as Result,
+        this.callOptions,
+      );
+    });
   }
 
   /**
@@ -1009,27 +1029,29 @@ export class SoulFireTasks {
     inputSchema: Input,
     input: MessageInitShape<Input>,
     options: TaskStartOptions = {},
-  ): AsyncIterable<BotTaskEvent> {
-    const {
-      call,
-      deadline,
-      ...taskOptions
-    } = options;
-    const request = create(inputSchema, input);
-    return this.client.runBotTask(
-      {
-        ...taskOptions,
-        instanceId: this.instanceId,
-        botId: this.botId,
-        input: anyPack(inputSchema, request),
-        disconnectPolicy:
-          taskOptions.disconnectPolicy
-          ?? BotTaskDisconnectPolicy.CANCEL_WITH_CALL,
-        ...(deadline === undefined
-          ? {}
-          : { deadline: timestampFromDate(deadline) }),
-      },
-      this.callOptions(call),
+  ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
+    return Stream.unwrap(
+      Effect.gen(this, function* () {
+        const { call, deadline, ...taskOptions } = options;
+        const request = create(inputSchema, input);
+        return rpcStream("SoulFireTasks.run", (signal) =>
+          this.client.runBotTask(
+            {
+              ...taskOptions,
+              instanceId: this.instanceId,
+              botId: this.botId,
+              input: anyPack(inputSchema, request),
+              disconnectPolicy:
+                taskOptions.disconnectPolicy ??
+                BotTaskDisconnectPolicy.CANCEL_WITH_CALL,
+              ...(deadline === undefined
+                ? {}
+                : { deadline: timestampFromDate(deadline) }),
+            },
+            withSignal(this.callOptions(call), signal),
+          ),
+        );
+      }),
     );
   }
 
@@ -1039,31 +1061,34 @@ export class SoulFireTasks {
   public goTo(
     goal: PathfindGoal,
     options: GoToTaskOptions = {},
-  ): Promise<SoulFireTask<typeof GoToTaskResultSchema>> {
-    const {
-      path,
-      ...taskOptions
-    } = options;
-    return this.start(
-      GoToTaskSchema,
-      { goal, ...(path === undefined ? {} : { options: path }) },
-      GoToTaskResultSchema,
-      taskOptions,
-    );
+  ): Effect.Effect<
+    SoulFireTask<typeof GoToTaskResultSchema>,
+    SoulFireOperationError
+  > {
+    return Effect.gen(this, function* () {
+      const { path, ...taskOptions } = options;
+      return yield* this.start(
+        GoToTaskSchema,
+        { goal, ...(path === undefined ? {} : { options: path }) },
+        GoToTaskResultSchema,
+        taskOptions,
+      );
+    });
   }
 
   public runGoTo(
     goal: PathfindGoal,
     options: GoToTaskOptions = {},
-  ): AsyncIterable<BotTaskEvent> {
-    const {
-      path,
-      ...taskOptions
-    } = options;
-    return this.run(
-      GoToTaskSchema,
-      { goal, ...(path === undefined ? {} : { options: path }) },
-      taskOptions,
+  ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
+    return Stream.unwrap(
+      Effect.gen(this, function* () {
+        const { path, ...taskOptions } = options;
+        return this.run(
+          GoToTaskSchema,
+          { goal, ...(path === undefined ? {} : { options: path }) },
+          taskOptions,
+        );
+      }),
     );
   }
 
@@ -1074,31 +1099,34 @@ export class SoulFireTasks {
     target: FollowEntityTarget,
     distance = 3,
     options: FollowEntityTaskOptions = {},
-  ): Promise<SoulFireTask<typeof FollowEntityTaskResultSchema>> {
-    const {
-      path,
-      targetUnavailableTimeoutSeconds = 0,
-      ...taskOptions
-    } = options;
-    return this.start(
-      FollowEntityTaskSchema,
-      {
-        target: {
-          entityId: typeof target === "number"
-            ? target
-            : target.networkId,
-          radius: distance,
-          ...(typeof target === "number"
-              || target.connectionEpoch.length === 0
-            ? {}
-            : { connectionEpoch: target.connectionEpoch }),
+  ): Effect.Effect<
+    SoulFireTask<typeof FollowEntityTaskResultSchema>,
+    SoulFireOperationError
+  > {
+    return Effect.gen(this, function* () {
+      const {
+        path,
+        targetUnavailableTimeoutSeconds = 0,
+        ...taskOptions
+      } = options;
+      return yield* this.start(
+        FollowEntityTaskSchema,
+        {
+          target: {
+            entityId: typeof target === "number" ? target : target.networkId,
+            radius: distance,
+            ...(typeof target === "number" ||
+            target.connectionEpoch.length === 0
+              ? {}
+              : { connectionEpoch: target.connectionEpoch }),
+          },
+          ...(path === undefined ? {} : { options: path }),
+          targetUnavailableTimeoutSeconds,
         },
-        ...(path === undefined ? {} : { options: path }),
-        targetUnavailableTimeoutSeconds,
-      },
-      FollowEntityTaskResultSchema,
-      taskOptions,
-    );
+        FollowEntityTaskResultSchema,
+        taskOptions,
+      );
+    });
   }
 
   /**
@@ -1108,29 +1136,31 @@ export class SoulFireTasks {
     target: FollowEntityTarget,
     distance = 3,
     options: FollowEntityTaskOptions = {},
-  ): AsyncIterable<BotTaskEvent> {
-    const {
-      path,
-      targetUnavailableTimeoutSeconds = 0,
-      ...taskOptions
-    } = options;
-    return this.run(
-      FollowEntityTaskSchema,
-      {
-        target: {
-          entityId: typeof target === "number"
-            ? target
-            : target.networkId,
-          radius: distance,
-          ...(typeof target === "number"
-              || target.connectionEpoch.length === 0
-            ? {}
-            : { connectionEpoch: target.connectionEpoch }),
-        },
-        ...(path === undefined ? {} : { options: path }),
-        targetUnavailableTimeoutSeconds,
-      },
-      taskOptions,
+  ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
+    return Stream.unwrap(
+      Effect.gen(this, function* () {
+        const {
+          path,
+          targetUnavailableTimeoutSeconds = 0,
+          ...taskOptions
+        } = options;
+        return this.run(
+          FollowEntityTaskSchema,
+          {
+            target: {
+              entityId: typeof target === "number" ? target : target.networkId,
+              radius: distance,
+              ...(typeof target === "number" ||
+              target.connectionEpoch.length === 0
+                ? {}
+                : { connectionEpoch: target.connectionEpoch }),
+            },
+            ...(path === undefined ? {} : { options: path }),
+            targetUnavailableTimeoutSeconds,
+          },
+          taskOptions,
+        );
+      }),
     );
   }
 
@@ -1141,69 +1171,86 @@ export class SoulFireTasks {
   public attackEntity(
     target: AttackEntityTarget,
     options: AttackEntityTaskOptions = {},
-  ): Promise<SoulFireTask<typeof AttackEntityTaskResultSchema>> {
-    const {
-      path,
-      attackRange = 3,
-      sprinting = false,
-      maximumAttacks = 0,
-      targetUnavailableTimeoutSeconds = 0,
-      selectBestWeapon = true,
-      weapon,
-      restoreSelectedSlot = true,
-      useOffhandShield = false,
-      ...taskOptions
-    } = options;
-    return this.start(
-      AttackEntityTaskSchema,
-      {
-        target: entityReference(target),
-        ...(path === undefined ? {} : { options: path }),
-        attackRange,
-        sprinting,
-        maximumAttacks,
-        targetUnavailableTimeoutSeconds,
-        selectBestWeapon,
-        ...(weapon === undefined ? {} : { weapon }),
-        restoreSelectedSlot,
-        useOffhandShield,
-      },
-      AttackEntityTaskResultSchema,
-      taskOptions,
-    );
+  ): Effect.Effect<
+    SoulFireTask<typeof AttackEntityTaskResultSchema>,
+    SoulFireOperationError
+  > {
+    return Effect.gen(this, function* () {
+      const {
+        path,
+        attackRange = 3,
+        sprinting = false,
+        maximumAttacks = 0,
+        targetUnavailableTimeoutSeconds = 0,
+        selectBestWeapon = true,
+        weapon,
+        restoreSelectedSlot = true,
+        useOffhandShield = false,
+        ...taskOptions
+      } = options;
+      return yield* this.start(
+        AttackEntityTaskSchema,
+        {
+          target: yield* Effect.try({
+            try: () => entityReference(target),
+            catch: (cause) =>
+              operationError("SoulFireTasks.attackEntity", cause),
+          }),
+          ...(path === undefined ? {} : { options: path }),
+          attackRange,
+          sprinting,
+          maximumAttacks,
+          targetUnavailableTimeoutSeconds,
+          selectBestWeapon,
+          ...(weapon === undefined ? {} : { weapon }),
+          restoreSelectedSlot,
+          useOffhandShield,
+        },
+        AttackEntityTaskResultSchema,
+        taskOptions,
+      );
+    });
   }
 
   public runAttackEntity(
     target: AttackEntityTarget,
     options: AttackEntityTaskOptions = {},
-  ): AsyncIterable<BotTaskEvent> {
-    const {
-      path,
-      attackRange = 3,
-      sprinting = false,
-      maximumAttacks = 0,
-      targetUnavailableTimeoutSeconds = 0,
-      selectBestWeapon = true,
-      weapon,
-      restoreSelectedSlot = true,
-      useOffhandShield = false,
-      ...taskOptions
-    } = options;
-    return this.run(
-      AttackEntityTaskSchema,
-      {
-        target: entityReference(target),
-        ...(path === undefined ? {} : { options: path }),
-        attackRange,
-        sprinting,
-        maximumAttacks,
-        targetUnavailableTimeoutSeconds,
-        selectBestWeapon,
-        ...(weapon === undefined ? {} : { weapon }),
-        restoreSelectedSlot,
-        useOffhandShield,
-      },
-      taskOptions,
+  ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
+    return Stream.unwrap(
+      Effect.gen(this, function* () {
+        const {
+          path,
+          attackRange = 3,
+          sprinting = false,
+          maximumAttacks = 0,
+          targetUnavailableTimeoutSeconds = 0,
+          selectBestWeapon = true,
+          weapon,
+          restoreSelectedSlot = true,
+          useOffhandShield = false,
+          ...taskOptions
+        } = options;
+        return this.run(
+          AttackEntityTaskSchema,
+          {
+            target: yield* Effect.try({
+              try: () => entityReference(target),
+              catch: (cause) =>
+                operationError("SoulFireTasks.runAttackEntity", cause),
+            }),
+            ...(path === undefined ? {} : { options: path }),
+            attackRange,
+            sprinting,
+            maximumAttacks,
+            targetUnavailableTimeoutSeconds,
+            selectBestWeapon,
+            ...(weapon === undefined ? {} : { weapon }),
+            restoreSelectedSlot,
+            useOffhandShield,
+          },
+          taskOptions,
+        );
+      }),
     );
   }
 
@@ -1214,77 +1261,86 @@ export class SoulFireTasks {
   public attackNearest(
     selector: MessageInitShape<typeof EntitySelectorSchema>,
     options: AttackNearestTaskOptions = {},
-  ): Promise<SoulFireTask<typeof AttackNearestTaskResultSchema>> {
-    const {
-      radius = 32,
-      path,
-      attackRange = 3,
-      sprinting = false,
-      maximumAttacks = 0,
-      maximumTargets = 1,
-      noTargetTimeoutSeconds = 0,
-      completeWhenNoTarget = true,
-      selectBestWeapon = true,
-      weapon,
-      restoreSelectedSlot = true,
-      ...taskOptions
-    } = options;
-    return this.start(
-      AttackNearestTaskSchema,
-      {
-        selector,
-        radius,
-        ...(path === undefined ? {} : { options: path }),
-        attackRange,
-        sprinting,
-        maximumAttacks,
-        maximumTargets,
-        noTargetTimeoutSeconds,
-        completeWhenNoTarget,
-        selectBestWeapon,
-        ...(weapon === undefined ? {} : { weapon }),
-        restoreSelectedSlot,
-      },
-      AttackNearestTaskResultSchema,
-      taskOptions,
-    );
+  ): Effect.Effect<
+    SoulFireTask<typeof AttackNearestTaskResultSchema>,
+    SoulFireOperationError
+  > {
+    return Effect.gen(this, function* () {
+      const {
+        radius = 32,
+        path,
+        attackRange = 3,
+        sprinting = false,
+        maximumAttacks = 0,
+        maximumTargets = 1,
+        noTargetTimeoutSeconds = 0,
+        completeWhenNoTarget = true,
+        selectBestWeapon = true,
+        weapon,
+        restoreSelectedSlot = true,
+        ...taskOptions
+      } = options;
+      return yield* this.start(
+        AttackNearestTaskSchema,
+        {
+          selector,
+          radius,
+          ...(path === undefined ? {} : { options: path }),
+          attackRange,
+          sprinting,
+          maximumAttacks,
+          maximumTargets,
+          noTargetTimeoutSeconds,
+          completeWhenNoTarget,
+          selectBestWeapon,
+          ...(weapon === undefined ? {} : { weapon }),
+          restoreSelectedSlot,
+        },
+        AttackNearestTaskResultSchema,
+        taskOptions,
+      );
+    });
   }
 
   public runAttackNearest(
     selector: MessageInitShape<typeof EntitySelectorSchema>,
     options: AttackNearestTaskOptions = {},
-  ): AsyncIterable<BotTaskEvent> {
-    const {
-      radius = 32,
-      path,
-      attackRange = 3,
-      sprinting = false,
-      maximumAttacks = 0,
-      maximumTargets = 0,
-      noTargetTimeoutSeconds = 0,
-      completeWhenNoTarget = false,
-      selectBestWeapon = true,
-      weapon,
-      restoreSelectedSlot = true,
-      ...taskOptions
-    } = options;
-    return this.run(
-      AttackNearestTaskSchema,
-      {
-        selector,
-        radius,
-        ...(path === undefined ? {} : { options: path }),
-        attackRange,
-        sprinting,
-        maximumAttacks,
-        maximumTargets,
-        noTargetTimeoutSeconds,
-        completeWhenNoTarget,
-        selectBestWeapon,
-        ...(weapon === undefined ? {} : { weapon }),
-        restoreSelectedSlot,
-      },
-      taskOptions,
+  ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
+    return Stream.unwrap(
+      Effect.gen(this, function* () {
+        const {
+          radius = 32,
+          path,
+          attackRange = 3,
+          sprinting = false,
+          maximumAttacks = 0,
+          maximumTargets = 0,
+          noTargetTimeoutSeconds = 0,
+          completeWhenNoTarget = false,
+          selectBestWeapon = true,
+          weapon,
+          restoreSelectedSlot = true,
+          ...taskOptions
+        } = options;
+        return this.run(
+          AttackNearestTaskSchema,
+          {
+            selector,
+            radius,
+            ...(path === undefined ? {} : { options: path }),
+            attackRange,
+            sprinting,
+            maximumAttacks,
+            maximumTargets,
+            noTargetTimeoutSeconds,
+            completeWhenNoTarget,
+            selectBestWeapon,
+            ...(weapon === undefined ? {} : { weapon }),
+            restoreSelectedSlot,
+          },
+          taskOptions,
+        );
+      }),
     );
   }
 
@@ -1295,22 +1351,31 @@ export class SoulFireTasks {
   public rangedAttack(
     target: AttackEntityTarget,
     options: RangedAttackTaskOptions = {},
-  ): Promise<SoulFireTask<typeof RangedAttackTaskResultSchema>> {
-    const { input, taskOptions } = rangedAttackInput(target, options);
-    return this.start(
-      RangedAttackTaskSchema,
-      input,
-      RangedAttackTaskResultSchema,
-      taskOptions,
-    );
+  ): Effect.Effect<
+    SoulFireTask<typeof RangedAttackTaskResultSchema>,
+    SoulFireOperationError
+  > {
+    return Effect.gen(this, function* () {
+      const { input, taskOptions } = rangedAttackInput(target, options);
+      return yield* this.start(
+        RangedAttackTaskSchema,
+        input,
+        RangedAttackTaskResultSchema,
+        taskOptions,
+      );
+    });
   }
 
   public runRangedAttack(
     target: AttackEntityTarget,
     options: RangedAttackTaskOptions = {},
-  ): AsyncIterable<BotTaskEvent> {
-    const { input, taskOptions } = rangedAttackInput(target, options);
-    return this.run(RangedAttackTaskSchema, input, taskOptions);
+  ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
+    return Stream.unwrap(
+      Effect.gen(this, function* () {
+        const { input, taskOptions } = rangedAttackInput(target, options);
+        return this.run(RangedAttackTaskSchema, input, taskOptions);
+      }),
+    );
   }
 
   /**
@@ -1319,57 +1384,66 @@ export class SoulFireTasks {
   public flee(
     threats: MessageInitShape<typeof EntitySelectorSchema>,
     options: FleeTaskOptions = {},
-  ): Promise<SoulFireTask<typeof FleeTaskResultSchema>> {
-    const {
-      triggerRadius = 8,
-      safeDistance = 16,
-      path,
-      safeSeconds = 2,
-      completeWhenSafe = true,
-      maximumEscapes = 0,
-      ...taskOptions
-    } = options;
-    return this.start(
-      FleeTaskSchema,
-      {
-        threats,
-        triggerRadius,
-        safeDistance,
-        ...(path === undefined ? {} : { options: path }),
-        safeSeconds,
-        completeWhenSafe,
-        maximumEscapes,
-      },
-      FleeTaskResultSchema,
-      taskOptions,
-    );
+  ): Effect.Effect<
+    SoulFireTask<typeof FleeTaskResultSchema>,
+    SoulFireOperationError
+  > {
+    return Effect.gen(this, function* () {
+      const {
+        triggerRadius = 8,
+        safeDistance = 16,
+        path,
+        safeSeconds = 2,
+        completeWhenSafe = true,
+        maximumEscapes = 0,
+        ...taskOptions
+      } = options;
+      return yield* this.start(
+        FleeTaskSchema,
+        {
+          threats,
+          triggerRadius,
+          safeDistance,
+          ...(path === undefined ? {} : { options: path }),
+          safeSeconds,
+          completeWhenSafe,
+          maximumEscapes,
+        },
+        FleeTaskResultSchema,
+        taskOptions,
+      );
+    });
   }
 
   public runFlee(
     threats: MessageInitShape<typeof EntitySelectorSchema>,
     options: FleeTaskOptions = {},
-  ): AsyncIterable<BotTaskEvent> {
-    const {
-      triggerRadius = 8,
-      safeDistance = 16,
-      path,
-      safeSeconds = 2,
-      completeWhenSafe = false,
-      maximumEscapes = 0,
-      ...taskOptions
-    } = options;
-    return this.run(
-      FleeTaskSchema,
-      {
-        threats,
-        triggerRadius,
-        safeDistance,
-        ...(path === undefined ? {} : { options: path }),
-        safeSeconds,
-        completeWhenSafe,
-        maximumEscapes,
-      },
-      taskOptions,
+  ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
+    return Stream.unwrap(
+      Effect.gen(this, function* () {
+        const {
+          triggerRadius = 8,
+          safeDistance = 16,
+          path,
+          safeSeconds = 2,
+          completeWhenSafe = false,
+          maximumEscapes = 0,
+          ...taskOptions
+        } = options;
+        return this.run(
+          FleeTaskSchema,
+          {
+            threats,
+            triggerRadius,
+            safeDistance,
+            ...(path === undefined ? {} : { options: path }),
+            safeSeconds,
+            completeWhenSafe,
+            maximumEscapes,
+          },
+          taskOptions,
+        );
+      }),
     );
   }
 
@@ -1380,7 +1454,10 @@ export class SoulFireTasks {
     position: MessageInitShape<typeof BlockPositionSchema>,
     threats: MessageInitShape<typeof EntitySelectorSchema>,
     options: GuardTaskOptions = {},
-  ): Promise<SoulFireTask<typeof GuardTaskResultSchema>> {
+  ): Effect.Effect<
+    SoulFireTask<typeof GuardTaskResultSchema>,
+    SoulFireOperationError
+  > {
     return this.startGuard(
       { case: "position", value: position },
       threats,
@@ -1393,12 +1470,16 @@ export class SoulFireTasks {
     position: MessageInitShape<typeof BlockPositionSchema>,
     threats: MessageInitShape<typeof EntitySelectorSchema>,
     options: GuardTaskOptions = {},
-  ): AsyncIterable<BotTaskEvent> {
-    return this.runGuardSubject(
-      { case: "position", value: position },
-      threats,
-      false,
-      options,
+  ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
+    return Stream.unwrap(
+      Effect.gen(this, function* () {
+        return this.runGuardSubject(
+          { case: "position", value: position },
+          threats,
+          false,
+          options,
+        );
+      }),
     );
   }
 
@@ -1409,25 +1490,45 @@ export class SoulFireTasks {
     entity: AttackEntityTarget,
     threats: MessageInitShape<typeof EntitySelectorSchema>,
     options: GuardTaskOptions = {},
-  ): Promise<SoulFireTask<typeof GuardTaskResultSchema>> {
-    return this.startGuard(
-      { case: "entity", value: entityReference(entity) },
-      threats,
-      true,
-      options,
-    );
+  ): Effect.Effect<
+    SoulFireTask<typeof GuardTaskResultSchema>,
+    SoulFireOperationError
+  > {
+    return Effect.gen(this, function* () {
+      const reference = yield* Effect.try({
+        try: () => entityReference(entity),
+        catch: (cause) => operationError("SoulFireTasks.protect", cause),
+      });
+      return yield* this.startGuard(
+        { case: "entity", value: reference },
+        threats,
+        true,
+        options,
+      );
+    });
   }
 
   public runProtect(
     entity: AttackEntityTarget,
     threats: MessageInitShape<typeof EntitySelectorSchema>,
     options: GuardTaskOptions = {},
-  ): AsyncIterable<BotTaskEvent> {
-    return this.runGuardSubject(
-      { case: "entity", value: entityReference(entity) },
-      threats,
-      false,
-      options,
+  ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
+    return Stream.unwrap(
+      Effect.gen(this, function* () {
+        return this.runGuardSubject(
+          {
+            case: "entity",
+            value: yield* Effect.try({
+              try: () => entityReference(entity),
+              catch: (cause) =>
+                operationError("SoulFireTasks.runProtect", cause),
+            }),
+          },
+          threats,
+          false,
+          options,
+        );
+      }),
     );
   }
 
@@ -1436,19 +1537,23 @@ export class SoulFireTasks {
     threats: MessageInitShape<typeof EntitySelectorSchema>,
     completeWhenClearDefault: boolean,
     options: GuardTaskOptions,
-  ): Promise<SoulFireTask<typeof GuardTaskResultSchema>> {
-    const { input, taskOptions } = guardTaskInput(
-      subject,
-      threats,
-      completeWhenClearDefault,
-      options,
-    );
-    return this.start(
-      GuardTaskSchema,
-      input,
-      GuardTaskResultSchema,
-      taskOptions,
-    );
+  ): Effect.Effect<
+    SoulFireTask<typeof GuardTaskResultSchema>,
+    SoulFireOperationError
+  > {
+    return Effect.gen(this, function* () {
+      const { input, taskOptions } = yield* Effect.try({
+        try: () =>
+          guardTaskInput(subject, threats, completeWhenClearDefault, options),
+        catch: (cause) => operationError("SoulFireTasks.startGuard", cause),
+      });
+      return yield* this.start(
+        GuardTaskSchema,
+        input,
+        GuardTaskResultSchema,
+        taskOptions,
+      );
+    });
   }
 
   private runGuardSubject(
@@ -1456,14 +1561,18 @@ export class SoulFireTasks {
     threats: MessageInitShape<typeof EntitySelectorSchema>,
     completeWhenClearDefault: boolean,
     options: GuardTaskOptions,
-  ): AsyncIterable<BotTaskEvent> {
-    const { input, taskOptions } = guardTaskInput(
-      subject,
-      threats,
-      completeWhenClearDefault,
-      options,
+  ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
+    return Stream.unwrap(
+      Effect.gen(this, function* () {
+        const { input, taskOptions } = yield* Effect.try({
+          try: () =>
+            guardTaskInput(subject, threats, completeWhenClearDefault, options),
+          catch: (cause) =>
+            operationError("SoulFireTasks.runGuardSubject", cause),
+        });
+        return this.run(GuardTaskSchema, input, taskOptions);
+      }),
     );
-    return this.run(GuardTaskSchema, input, taskOptions);
   }
 
   /**
@@ -1471,50 +1580,59 @@ export class SoulFireTasks {
    */
   public sleep(
     options: SleepTaskOptions = {},
-  ): Promise<SoulFireTask<typeof SleepTaskResultSchema>> {
-    const {
-      bed,
-      searchRadius = 24,
-      path,
-      waitUntilPossible = false,
-      retryIntervalTicks = 20,
-      ...taskOptions
-    } = options;
-    return this.start(
-      SleepTaskSchema,
-      {
-        ...(bed === undefined ? {} : { bed }),
-        searchRadius,
-        ...(path === undefined ? {} : { options: path }),
-        waitUntilPossible,
-        retryIntervalTicks,
-      },
-      SleepTaskResultSchema,
-      taskOptions,
-    );
+  ): Effect.Effect<
+    SoulFireTask<typeof SleepTaskResultSchema>,
+    SoulFireOperationError
+  > {
+    return Effect.gen(this, function* () {
+      const {
+        bed,
+        searchRadius = 24,
+        path,
+        waitUntilPossible = false,
+        retryIntervalTicks = 20,
+        ...taskOptions
+      } = options;
+      return yield* this.start(
+        SleepTaskSchema,
+        {
+          ...(bed === undefined ? {} : { bed }),
+          searchRadius,
+          ...(path === undefined ? {} : { options: path }),
+          waitUntilPossible,
+          retryIntervalTicks,
+        },
+        SleepTaskResultSchema,
+        taskOptions,
+      );
+    });
   }
 
   public runSleep(
     options: SleepTaskOptions = {},
-  ): AsyncIterable<BotTaskEvent> {
-    const {
-      bed,
-      searchRadius = 24,
-      path,
-      waitUntilPossible = true,
-      retryIntervalTicks = 20,
-      ...taskOptions
-    } = options;
-    return this.run(
-      SleepTaskSchema,
-      {
-        ...(bed === undefined ? {} : { bed }),
-        searchRadius,
-        ...(path === undefined ? {} : { options: path }),
-        waitUntilPossible,
-        retryIntervalTicks,
-      },
-      taskOptions,
+  ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
+    return Stream.unwrap(
+      Effect.gen(this, function* () {
+        const {
+          bed,
+          searchRadius = 24,
+          path,
+          waitUntilPossible = true,
+          retryIntervalTicks = 20,
+          ...taskOptions
+        } = options;
+        return this.run(
+          SleepTaskSchema,
+          {
+            ...(bed === undefined ? {} : { bed }),
+            searchRadius,
+            ...(path === undefined ? {} : { options: path }),
+            waitUntilPossible,
+            retryIntervalTicks,
+          },
+          taskOptions,
+        );
+      }),
     );
   }
 
@@ -1523,58 +1641,67 @@ export class SoulFireTasks {
    */
   public fish(
     options: FishTaskOptions = {},
-  ): Promise<SoulFireTask<typeof FishTaskResultSchema>> {
-    const {
-      maximumCatches = 1,
-      maximumFailedCasts = 0,
-      rod,
-      castTimeoutTicks = 100,
-      biteTimeoutTicks = 12_000,
-      completeWhenNoRod = true,
-      restoreSelectedSlot = true,
-      ...taskOptions
-    } = options;
-    return this.start(
-      FishTaskSchema,
-      {
-        maximumCatches,
-        maximumFailedCasts,
-        ...(rod === undefined ? {} : { rod }),
-        castTimeoutTicks,
-        biteTimeoutTicks,
-        completeWhenNoRod,
-        restoreSelectedSlot,
-      },
-      FishTaskResultSchema,
-      taskOptions,
-    );
+  ): Effect.Effect<
+    SoulFireTask<typeof FishTaskResultSchema>,
+    SoulFireOperationError
+  > {
+    return Effect.gen(this, function* () {
+      const {
+        maximumCatches = 1,
+        maximumFailedCasts = 0,
+        rod,
+        castTimeoutTicks = 100,
+        biteTimeoutTicks = 12000,
+        completeWhenNoRod = true,
+        restoreSelectedSlot = true,
+        ...taskOptions
+      } = options;
+      return yield* this.start(
+        FishTaskSchema,
+        {
+          maximumCatches,
+          maximumFailedCasts,
+          ...(rod === undefined ? {} : { rod }),
+          castTimeoutTicks,
+          biteTimeoutTicks,
+          completeWhenNoRod,
+          restoreSelectedSlot,
+        },
+        FishTaskResultSchema,
+        taskOptions,
+      );
+    });
   }
 
   public runFish(
     options: FishTaskOptions = {},
-  ): AsyncIterable<BotTaskEvent> {
-    const {
-      maximumCatches = 0,
-      maximumFailedCasts = 0,
-      rod,
-      castTimeoutTicks = 100,
-      biteTimeoutTicks = 12_000,
-      completeWhenNoRod = false,
-      restoreSelectedSlot = true,
-      ...taskOptions
-    } = options;
-    return this.run(
-      FishTaskSchema,
-      {
-        maximumCatches,
-        maximumFailedCasts,
-        ...(rod === undefined ? {} : { rod }),
-        castTimeoutTicks,
-        biteTimeoutTicks,
-        completeWhenNoRod,
-        restoreSelectedSlot,
-      },
-      taskOptions,
+  ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
+    return Stream.unwrap(
+      Effect.gen(this, function* () {
+        const {
+          maximumCatches = 0,
+          maximumFailedCasts = 0,
+          rod,
+          castTimeoutTicks = 100,
+          biteTimeoutTicks = 12000,
+          completeWhenNoRod = false,
+          restoreSelectedSlot = true,
+          ...taskOptions
+        } = options;
+        return this.run(
+          FishTaskSchema,
+          {
+            maximumCatches,
+            maximumFailedCasts,
+            ...(rod === undefined ? {} : { rod }),
+            castTimeoutTicks,
+            biteTimeoutTicks,
+            completeWhenNoRod,
+            restoreSelectedSlot,
+          },
+          taskOptions,
+        );
+      }),
     );
   }
 
@@ -1583,66 +1710,75 @@ export class SoulFireTasks {
    */
   public farm(
     options: FarmTaskOptions = {},
-  ): Promise<SoulFireTask<typeof FarmTaskResultSchema>> {
-    const {
-      cropIds = [],
-      center,
-      radius = 24,
-      maximumHarvests = 1,
-      replant = true,
-      completeWhenNoMatureCrops = true,
-      path,
-      rescanIntervalTicks = 100,
-      restoreSelectedSlot = true,
-      ...taskOptions
-    } = options;
-    return this.start(
-      FarmTaskSchema,
-      {
-        cropIds: [...cropIds],
-        ...(center === undefined ? {} : { center }),
-        radius,
-        maximumHarvests,
-        replant,
-        completeWhenNoMatureCrops,
-        ...(path === undefined ? {} : { options: path }),
-        rescanIntervalTicks,
-        restoreSelectedSlot,
-      },
-      FarmTaskResultSchema,
-      taskOptions,
-    );
+  ): Effect.Effect<
+    SoulFireTask<typeof FarmTaskResultSchema>,
+    SoulFireOperationError
+  > {
+    return Effect.gen(this, function* () {
+      const {
+        cropIds = [],
+        center,
+        radius = 24,
+        maximumHarvests = 1,
+        replant = true,
+        completeWhenNoMatureCrops = true,
+        path,
+        rescanIntervalTicks = 100,
+        restoreSelectedSlot = true,
+        ...taskOptions
+      } = options;
+      return yield* this.start(
+        FarmTaskSchema,
+        {
+          cropIds: [...cropIds],
+          ...(center === undefined ? {} : { center }),
+          radius,
+          maximumHarvests,
+          replant,
+          completeWhenNoMatureCrops,
+          ...(path === undefined ? {} : { options: path }),
+          rescanIntervalTicks,
+          restoreSelectedSlot,
+        },
+        FarmTaskResultSchema,
+        taskOptions,
+      );
+    });
   }
 
   public runFarm(
     options: FarmTaskOptions = {},
-  ): AsyncIterable<BotTaskEvent> {
-    const {
-      cropIds = [],
-      center,
-      radius = 24,
-      maximumHarvests = 0,
-      replant = true,
-      completeWhenNoMatureCrops = false,
-      path,
-      rescanIntervalTicks = 100,
-      restoreSelectedSlot = true,
-      ...taskOptions
-    } = options;
-    return this.run(
-      FarmTaskSchema,
-      {
-        cropIds: [...cropIds],
-        ...(center === undefined ? {} : { center }),
-        radius,
-        maximumHarvests,
-        replant,
-        completeWhenNoMatureCrops,
-        ...(path === undefined ? {} : { options: path }),
-        rescanIntervalTicks,
-        restoreSelectedSlot,
-      },
-      taskOptions,
+  ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
+    return Stream.unwrap(
+      Effect.gen(this, function* () {
+        const {
+          cropIds = [],
+          center,
+          radius = 24,
+          maximumHarvests = 0,
+          replant = true,
+          completeWhenNoMatureCrops = false,
+          path,
+          rescanIntervalTicks = 100,
+          restoreSelectedSlot = true,
+          ...taskOptions
+        } = options;
+        return this.run(
+          FarmTaskSchema,
+          {
+            cropIds: [...cropIds],
+            ...(center === undefined ? {} : { center }),
+            radius,
+            maximumHarvests,
+            replant,
+            completeWhenNoMatureCrops,
+            ...(path === undefined ? {} : { options: path }),
+            rescanIntervalTicks,
+            restoreSelectedSlot,
+          },
+          taskOptions,
+        );
+      }),
     );
   }
 
@@ -1652,74 +1788,83 @@ export class SoulFireTasks {
    */
   public breed(
     options: BreedTaskOptions = {},
-  ): Promise<SoulFireTask<typeof BreedTaskResultSchema>> {
-    const {
-      animals = {},
-      food,
-      center,
-      radius = 24,
-      maximumPairs = 1,
-      completeWhenNoPair = true,
-      completeWhenNoFood = true,
-      path,
-      rescanIntervalTicks = 100,
-      breedingTimeoutTicks = 100,
-      restoreSelectedSlot = true,
-      ...taskOptions
-    } = options;
-    return this.start(
-      BreedTaskSchema,
-      {
-        animals,
-        ...(food === undefined ? {} : { food }),
-        ...(center === undefined ? {} : { center }),
-        radius,
-        maximumPairs,
-        completeWhenNoPair,
-        completeWhenNoFood,
-        ...(path === undefined ? {} : { options: path }),
-        rescanIntervalTicks,
-        breedingTimeoutTicks,
-        restoreSelectedSlot,
-      },
-      BreedTaskResultSchema,
-      taskOptions,
-    );
+  ): Effect.Effect<
+    SoulFireTask<typeof BreedTaskResultSchema>,
+    SoulFireOperationError
+  > {
+    return Effect.gen(this, function* () {
+      const {
+        animals = {},
+        food,
+        center,
+        radius = 24,
+        maximumPairs = 1,
+        completeWhenNoPair = true,
+        completeWhenNoFood = true,
+        path,
+        rescanIntervalTicks = 100,
+        breedingTimeoutTicks = 100,
+        restoreSelectedSlot = true,
+        ...taskOptions
+      } = options;
+      return yield* this.start(
+        BreedTaskSchema,
+        {
+          animals,
+          ...(food === undefined ? {} : { food }),
+          ...(center === undefined ? {} : { center }),
+          radius,
+          maximumPairs,
+          completeWhenNoPair,
+          completeWhenNoFood,
+          ...(path === undefined ? {} : { options: path }),
+          rescanIntervalTicks,
+          breedingTimeoutTicks,
+          restoreSelectedSlot,
+        },
+        BreedTaskResultSchema,
+        taskOptions,
+      );
+    });
   }
 
   public runBreed(
     options: BreedTaskOptions = {},
-  ): AsyncIterable<BotTaskEvent> {
-    const {
-      animals = {},
-      food,
-      center,
-      radius = 24,
-      maximumPairs = 0,
-      completeWhenNoPair = false,
-      completeWhenNoFood = false,
-      path,
-      rescanIntervalTicks = 100,
-      breedingTimeoutTicks = 100,
-      restoreSelectedSlot = true,
-      ...taskOptions
-    } = options;
-    return this.run(
-      BreedTaskSchema,
-      {
-        animals,
-        ...(food === undefined ? {} : { food }),
-        ...(center === undefined ? {} : { center }),
-        radius,
-        maximumPairs,
-        completeWhenNoPair,
-        completeWhenNoFood,
-        ...(path === undefined ? {} : { options: path }),
-        rescanIntervalTicks,
-        breedingTimeoutTicks,
-        restoreSelectedSlot,
-      },
-      taskOptions,
+  ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
+    return Stream.unwrap(
+      Effect.gen(this, function* () {
+        const {
+          animals = {},
+          food,
+          center,
+          radius = 24,
+          maximumPairs = 0,
+          completeWhenNoPair = false,
+          completeWhenNoFood = false,
+          path,
+          rescanIntervalTicks = 100,
+          breedingTimeoutTicks = 100,
+          restoreSelectedSlot = true,
+          ...taskOptions
+        } = options;
+        return this.run(
+          BreedTaskSchema,
+          {
+            animals,
+            ...(food === undefined ? {} : { food }),
+            ...(center === undefined ? {} : { center }),
+            radius,
+            maximumPairs,
+            completeWhenNoPair,
+            completeWhenNoFood,
+            ...(path === undefined ? {} : { options: path }),
+            rescanIntervalTicks,
+            breedingTimeoutTicks,
+            restoreSelectedSlot,
+          },
+          taskOptions,
+        );
+      }),
     );
   }
 
@@ -1728,58 +1873,67 @@ export class SoulFireTasks {
    */
   public explore(
     options: ExploreTaskOptions = {},
-  ): Promise<SoulFireTask<typeof ExploreTaskResultSchema>> {
-    const {
-      origin,
-      radius = 256,
-      waypointSpacing = 64,
-      maximumWaypoints = 1,
-      path,
-      returnToOrigin = false,
-      purpose = "sdk-explore",
-      ...taskOptions
-    } = options;
-    return this.start(
-      ExploreTaskSchema,
-      {
-        ...(origin === undefined ? {} : { origin }),
-        radius,
-        waypointSpacing,
-        maximumWaypoints,
-        ...(path === undefined ? {} : { options: path }),
-        returnToOrigin,
-        purpose,
-      },
-      ExploreTaskResultSchema,
-      taskOptions,
-    );
+  ): Effect.Effect<
+    SoulFireTask<typeof ExploreTaskResultSchema>,
+    SoulFireOperationError
+  > {
+    return Effect.gen(this, function* () {
+      const {
+        origin,
+        radius = 256,
+        waypointSpacing = 64,
+        maximumWaypoints = 1,
+        path,
+        returnToOrigin = false,
+        purpose = "sdk-explore",
+        ...taskOptions
+      } = options;
+      return yield* this.start(
+        ExploreTaskSchema,
+        {
+          ...(origin === undefined ? {} : { origin }),
+          radius,
+          waypointSpacing,
+          maximumWaypoints,
+          ...(path === undefined ? {} : { options: path }),
+          returnToOrigin,
+          purpose,
+        },
+        ExploreTaskResultSchema,
+        taskOptions,
+      );
+    });
   }
 
   public runExplore(
     options: ExploreTaskOptions = {},
-  ): AsyncIterable<BotTaskEvent> {
-    const {
-      origin,
-      radius = 256,
-      waypointSpacing = 64,
-      maximumWaypoints = 0,
-      path,
-      returnToOrigin = false,
-      purpose = "sdk-explore",
-      ...taskOptions
-    } = options;
-    return this.run(
-      ExploreTaskSchema,
-      {
-        ...(origin === undefined ? {} : { origin }),
-        radius,
-        waypointSpacing,
-        maximumWaypoints,
-        ...(path === undefined ? {} : { options: path }),
-        returnToOrigin,
-        purpose,
-      },
-      taskOptions,
+  ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
+    return Stream.unwrap(
+      Effect.gen(this, function* () {
+        const {
+          origin,
+          radius = 256,
+          waypointSpacing = 64,
+          maximumWaypoints = 0,
+          path,
+          returnToOrigin = false,
+          purpose = "sdk-explore",
+          ...taskOptions
+        } = options;
+        return this.run(
+          ExploreTaskSchema,
+          {
+            ...(origin === undefined ? {} : { origin }),
+            radius,
+            waypointSpacing,
+            maximumWaypoints,
+            ...(path === undefined ? {} : { options: path }),
+            returnToOrigin,
+            purpose,
+          },
+          taskOptions,
+        );
+      }),
     );
   }
 
@@ -1790,33 +1944,42 @@ export class SoulFireTasks {
     container: MessageInitShape<typeof BlockPositionSchema>,
     operations: readonly ContainerTransferSpec[],
     options: ContainerTransferTaskOptions = {},
-  ): Promise<SoulFireTask<typeof ContainerTransferTaskResultSchema>> {
-    const { input, taskOptions } = containerTransferInput(
-      ContainerTransferDirection.DEPOSIT,
-      container,
-      operations,
-      options,
-    );
-    return this.start(
-      ContainerTransferTaskSchema,
-      input,
-      ContainerTransferTaskResultSchema,
-      taskOptions,
-    );
+  ): Effect.Effect<
+    SoulFireTask<typeof ContainerTransferTaskResultSchema>,
+    SoulFireOperationError
+  > {
+    return Effect.gen(this, function* () {
+      const { input, taskOptions } = containerTransferInput(
+        ContainerTransferDirection.DEPOSIT,
+        container,
+        operations,
+        options,
+      );
+      return yield* this.start(
+        ContainerTransferTaskSchema,
+        input,
+        ContainerTransferTaskResultSchema,
+        taskOptions,
+      );
+    });
   }
 
   public runStash(
     container: MessageInitShape<typeof BlockPositionSchema>,
     operations: readonly ContainerTransferSpec[],
     options: ContainerTransferTaskOptions = {},
-  ): AsyncIterable<BotTaskEvent> {
-    const { input, taskOptions } = containerTransferInput(
-      ContainerTransferDirection.DEPOSIT,
-      container,
-      operations,
-      options,
+  ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
+    return Stream.unwrap(
+      Effect.gen(this, function* () {
+        const { input, taskOptions } = containerTransferInput(
+          ContainerTransferDirection.DEPOSIT,
+          container,
+          operations,
+          options,
+        );
+        return this.run(ContainerTransferTaskSchema, input, taskOptions);
+      }),
     );
-    return this.run(ContainerTransferTaskSchema, input, taskOptions);
   }
 
   /**
@@ -1826,33 +1989,42 @@ export class SoulFireTasks {
     container: MessageInitShape<typeof BlockPositionSchema>,
     operations: readonly ContainerTransferSpec[],
     options: ContainerTransferTaskOptions = {},
-  ): Promise<SoulFireTask<typeof ContainerTransferTaskResultSchema>> {
-    const { input, taskOptions } = containerTransferInput(
-      ContainerTransferDirection.WITHDRAW,
-      container,
-      operations,
-      options,
-    );
-    return this.start(
-      ContainerTransferTaskSchema,
-      input,
-      ContainerTransferTaskResultSchema,
-      taskOptions,
-    );
+  ): Effect.Effect<
+    SoulFireTask<typeof ContainerTransferTaskResultSchema>,
+    SoulFireOperationError
+  > {
+    return Effect.gen(this, function* () {
+      const { input, taskOptions } = containerTransferInput(
+        ContainerTransferDirection.WITHDRAW,
+        container,
+        operations,
+        options,
+      );
+      return yield* this.start(
+        ContainerTransferTaskSchema,
+        input,
+        ContainerTransferTaskResultSchema,
+        taskOptions,
+      );
+    });
   }
 
   public runWithdraw(
     container: MessageInitShape<typeof BlockPositionSchema>,
     operations: readonly ContainerTransferSpec[],
     options: ContainerTransferTaskOptions = {},
-  ): AsyncIterable<BotTaskEvent> {
-    const { input, taskOptions } = containerTransferInput(
-      ContainerTransferDirection.WITHDRAW,
-      container,
-      operations,
-      options,
+  ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
+    return Stream.unwrap(
+      Effect.gen(this, function* () {
+        const { input, taskOptions } = containerTransferInput(
+          ContainerTransferDirection.WITHDRAW,
+          container,
+          operations,
+          options,
+        );
+        return this.run(ContainerTransferTaskSchema, input, taskOptions);
+      }),
     );
-    return this.run(ContainerTransferTaskSchema, input, taskOptions);
   }
 
   /**
@@ -1863,31 +2035,40 @@ export class SoulFireTasks {
     container: MessageInitShape<typeof BlockPositionSchema>,
     requirements: readonly LoadoutRequirementSpec[],
     options: MaintainLoadoutTaskOptions = {},
-  ): Promise<SoulFireTask<typeof MaintainLoadoutTaskResultSchema>> {
-    const { input, taskOptions } = maintainLoadoutInput(
-      container,
-      requirements,
-      options,
-    );
-    return this.start(
-      MaintainLoadoutTaskSchema,
-      input,
-      MaintainLoadoutTaskResultSchema,
-      taskOptions,
-    );
+  ): Effect.Effect<
+    SoulFireTask<typeof MaintainLoadoutTaskResultSchema>,
+    SoulFireOperationError
+  > {
+    return Effect.gen(this, function* () {
+      const { input, taskOptions } = yield* Effect.try({
+        try: () => maintainLoadoutInput(container, requirements, options),
+        catch: (cause) =>
+          operationError("SoulFireTasks.maintainLoadout", cause),
+      });
+      return yield* this.start(
+        MaintainLoadoutTaskSchema,
+        input,
+        MaintainLoadoutTaskResultSchema,
+        taskOptions,
+      );
+    });
   }
 
   public runMaintainLoadout(
     container: MessageInitShape<typeof BlockPositionSchema>,
     requirements: readonly LoadoutRequirementSpec[],
     options: MaintainLoadoutTaskOptions = {},
-  ): AsyncIterable<BotTaskEvent> {
-    const { input, taskOptions } = maintainLoadoutInput(
-      container,
-      requirements,
-      options,
+  ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
+    return Stream.unwrap(
+      Effect.gen(this, function* () {
+        const { input, taskOptions } = yield* Effect.try({
+          try: () => maintainLoadoutInput(container, requirements, options),
+          catch: (cause) =>
+            operationError("SoulFireTasks.runMaintainLoadout", cause),
+        });
+        return this.run(MaintainLoadoutTaskSchema, input, taskOptions);
+      }),
     );
-    return this.run(MaintainLoadoutTaskSchema, input, taskOptions);
   }
 
   /**
@@ -1900,7 +2081,10 @@ export class SoulFireTasks {
       MaintainLoadoutTaskOptions,
       "completeWhenSatisfied" | "maximumRebalances"
     > = {},
-  ): Promise<SoulFireTask<typeof MaintainLoadoutTaskResultSchema>> {
+  ): Effect.Effect<
+    SoulFireTask<typeof MaintainLoadoutTaskResultSchema>,
+    SoulFireOperationError
+  > {
     return this.maintainLoadout(container, requirements, {
       ...options,
       maximumRebalances: 1,
@@ -1915,28 +2099,33 @@ export class SoulFireTasks {
   public autoEat(
     foodItemIds: readonly string[] = [],
     options: AutoEatTaskOptions = {},
-  ): Promise<SoulFireTask<typeof AutoEatTaskResultSchema>> {
-    const {
-      foodLevel = 14,
-      checkIntervalTicks = 20,
-      maximumMeals = 0,
-      completeWhenNoFood = false,
-      restoreSelectedSlot = true,
-      ...taskOptions
-    } = options;
-    return this.start(
-      AutoEatTaskSchema,
-      {
-        foodItemIds: [...foodItemIds],
-        foodLevel,
-        checkIntervalTicks,
-        maximumMeals,
-        completeWhenNoFood,
-        restoreSelectedSlot,
-      },
-      AutoEatTaskResultSchema,
-      taskOptions,
-    );
+  ): Effect.Effect<
+    SoulFireTask<typeof AutoEatTaskResultSchema>,
+    SoulFireOperationError
+  > {
+    return Effect.gen(this, function* () {
+      const {
+        foodLevel = 14,
+        checkIntervalTicks = 20,
+        maximumMeals = 0,
+        completeWhenNoFood = false,
+        restoreSelectedSlot = true,
+        ...taskOptions
+      } = options;
+      return yield* this.start(
+        AutoEatTaskSchema,
+        {
+          foodItemIds: [...foodItemIds],
+          foodLevel,
+          checkIntervalTicks,
+          maximumMeals,
+          completeWhenNoFood,
+          restoreSelectedSlot,
+        },
+        AutoEatTaskResultSchema,
+        taskOptions,
+      );
+    });
   }
 
   /**
@@ -1945,26 +2134,30 @@ export class SoulFireTasks {
   public runAutoEat(
     foodItemIds: readonly string[] = [],
     options: AutoEatTaskOptions = {},
-  ): AsyncIterable<BotTaskEvent> {
-    const {
-      foodLevel = 14,
-      checkIntervalTicks = 20,
-      maximumMeals = 0,
-      completeWhenNoFood = false,
-      restoreSelectedSlot = true,
-      ...taskOptions
-    } = options;
-    return this.run(
-      AutoEatTaskSchema,
-      {
-        foodItemIds: [...foodItemIds],
-        foodLevel,
-        checkIntervalTicks,
-        maximumMeals,
-        completeWhenNoFood,
-        restoreSelectedSlot,
-      },
-      taskOptions,
+  ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
+    return Stream.unwrap(
+      Effect.gen(this, function* () {
+        const {
+          foodLevel = 14,
+          checkIntervalTicks = 20,
+          maximumMeals = 0,
+          completeWhenNoFood = false,
+          restoreSelectedSlot = true,
+          ...taskOptions
+        } = options;
+        return this.run(
+          AutoEatTaskSchema,
+          {
+            foodItemIds: [...foodItemIds],
+            foodLevel,
+            checkIntervalTicks,
+            maximumMeals,
+            completeWhenNoFood,
+            restoreSelectedSlot,
+          },
+          taskOptions,
+        );
+      }),
     );
   }
 
@@ -1973,32 +2166,41 @@ export class SoulFireTasks {
    */
   public autoRespawn(
     options: AutoRespawnTaskOptions = {},
-  ): Promise<SoulFireTask<typeof AutoRespawnTaskResultSchema>> {
-    const {
-      respawnDelayTicks = 0,
-      maximumRespawns = 0,
-      ...taskOptions
-    } = options;
-    return this.start(
-      AutoRespawnTaskSchema,
-      { respawnDelayTicks, maximumRespawns },
-      AutoRespawnTaskResultSchema,
-      taskOptions,
-    );
+  ): Effect.Effect<
+    SoulFireTask<typeof AutoRespawnTaskResultSchema>,
+    SoulFireOperationError
+  > {
+    return Effect.gen(this, function* () {
+      const {
+        respawnDelayTicks = 0,
+        maximumRespawns = 0,
+        ...taskOptions
+      } = options;
+      return yield* this.start(
+        AutoRespawnTaskSchema,
+        { respawnDelayTicks, maximumRespawns },
+        AutoRespawnTaskResultSchema,
+        taskOptions,
+      );
+    });
   }
 
   public runAutoRespawn(
     options: AutoRespawnTaskOptions = {},
-  ): AsyncIterable<BotTaskEvent> {
-    const {
-      respawnDelayTicks = 0,
-      maximumRespawns = 0,
-      ...taskOptions
-    } = options;
-    return this.run(
-      AutoRespawnTaskSchema,
-      { respawnDelayTicks, maximumRespawns },
-      taskOptions,
+  ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
+    return Stream.unwrap(
+      Effect.gen(this, function* () {
+        const {
+          respawnDelayTicks = 0,
+          maximumRespawns = 0,
+          ...taskOptions
+        } = options;
+        return this.run(
+          AutoRespawnTaskSchema,
+          { respawnDelayTicks, maximumRespawns },
+          taskOptions,
+        );
+      }),
     );
   }
 
@@ -2007,46 +2209,55 @@ export class SoulFireTasks {
    */
   public autoTotem(
     options: AutoTotemTaskOptions = {},
-  ): Promise<SoulFireTask<typeof AutoTotemTaskResultSchema>> {
-    const {
-      checkIntervalTicks = 20,
-      maximumEquips = 0,
-      completeWhenNoTotem = false,
-      replaceOccupiedOffhand = false,
-      ...taskOptions
-    } = options;
-    return this.start(
-      AutoTotemTaskSchema,
-      {
-        checkIntervalTicks,
-        maximumEquips,
-        completeWhenNoTotem,
-        replaceOccupiedOffhand,
-      },
-      AutoTotemTaskResultSchema,
-      taskOptions,
-    );
+  ): Effect.Effect<
+    SoulFireTask<typeof AutoTotemTaskResultSchema>,
+    SoulFireOperationError
+  > {
+    return Effect.gen(this, function* () {
+      const {
+        checkIntervalTicks = 20,
+        maximumEquips = 0,
+        completeWhenNoTotem = false,
+        replaceOccupiedOffhand = false,
+        ...taskOptions
+      } = options;
+      return yield* this.start(
+        AutoTotemTaskSchema,
+        {
+          checkIntervalTicks,
+          maximumEquips,
+          completeWhenNoTotem,
+          replaceOccupiedOffhand,
+        },
+        AutoTotemTaskResultSchema,
+        taskOptions,
+      );
+    });
   }
 
   public runAutoTotem(
     options: AutoTotemTaskOptions = {},
-  ): AsyncIterable<BotTaskEvent> {
-    const {
-      checkIntervalTicks = 20,
-      maximumEquips = 0,
-      completeWhenNoTotem = false,
-      replaceOccupiedOffhand = false,
-      ...taskOptions
-    } = options;
-    return this.run(
-      AutoTotemTaskSchema,
-      {
-        checkIntervalTicks,
-        maximumEquips,
-        completeWhenNoTotem,
-        replaceOccupiedOffhand,
-      },
-      taskOptions,
+  ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
+    return Stream.unwrap(
+      Effect.gen(this, function* () {
+        const {
+          checkIntervalTicks = 20,
+          maximumEquips = 0,
+          completeWhenNoTotem = false,
+          replaceOccupiedOffhand = false,
+          ...taskOptions
+        } = options;
+        return this.run(
+          AutoTotemTaskSchema,
+          {
+            checkIntervalTicks,
+            maximumEquips,
+            completeWhenNoTotem,
+            replaceOccupiedOffhand,
+          },
+          taskOptions,
+        );
+      }),
     );
   }
 
@@ -2055,34 +2266,43 @@ export class SoulFireTasks {
    */
   public autoArmor(
     options: AutoArmorTaskOptions = {},
-  ): Promise<SoulFireTask<typeof AutoArmorTaskResultSchema>> {
-    const {
-      checkIntervalTicks = 20,
-      maximumEquips = 0,
-      completeWhenNoUpgrade = false,
-      ...taskOptions
-    } = options;
-    return this.start(
-      AutoArmorTaskSchema,
-      { checkIntervalTicks, maximumEquips, completeWhenNoUpgrade },
-      AutoArmorTaskResultSchema,
-      taskOptions,
-    );
+  ): Effect.Effect<
+    SoulFireTask<typeof AutoArmorTaskResultSchema>,
+    SoulFireOperationError
+  > {
+    return Effect.gen(this, function* () {
+      const {
+        checkIntervalTicks = 20,
+        maximumEquips = 0,
+        completeWhenNoUpgrade = false,
+        ...taskOptions
+      } = options;
+      return yield* this.start(
+        AutoArmorTaskSchema,
+        { checkIntervalTicks, maximumEquips, completeWhenNoUpgrade },
+        AutoArmorTaskResultSchema,
+        taskOptions,
+      );
+    });
   }
 
   public runAutoArmor(
     options: AutoArmorTaskOptions = {},
-  ): AsyncIterable<BotTaskEvent> {
-    const {
-      checkIntervalTicks = 20,
-      maximumEquips = 0,
-      completeWhenNoUpgrade = false,
-      ...taskOptions
-    } = options;
-    return this.run(
-      AutoArmorTaskSchema,
-      { checkIntervalTicks, maximumEquips, completeWhenNoUpgrade },
-      taskOptions,
+  ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
+    return Stream.unwrap(
+      Effect.gen(this, function* () {
+        const {
+          checkIntervalTicks = 20,
+          maximumEquips = 0,
+          completeWhenNoUpgrade = false,
+          ...taskOptions
+        } = options;
+        return this.run(
+          AutoArmorTaskSchema,
+          { checkIntervalTicks, maximumEquips, completeWhenNoUpgrade },
+          taskOptions,
+        );
+      }),
     );
   }
 
@@ -2092,61 +2312,70 @@ export class SoulFireTasks {
   public collectBlocks(
     blockIds: readonly string[],
     options: CollectBlocksTaskOptions = {},
-  ): Promise<SoulFireTask<typeof CollectBlocksTaskResultSchema>> {
-    const {
-      tags = [],
-      count = 1,
-      searchRadius = 32,
-      avoidSubmergedTargets = false,
-      requireLineOfSight = false,
-      targetYRange,
-      path,
-      ...taskOptions
-    } = options;
-    return this.start(
-      CollectBlocksTaskSchema,
-      {
-        blockIds: [...blockIds],
-        tags: [...tags],
-        count,
-        searchRadius,
-        avoidSubmergedTargets,
-        requireLineOfSight,
-        ...(targetYRange === undefined ? {} : { targetYRange }),
-        ...(path === undefined ? {} : { options: path }),
-      },
-      CollectBlocksTaskResultSchema,
-      taskOptions,
-    );
+  ): Effect.Effect<
+    SoulFireTask<typeof CollectBlocksTaskResultSchema>,
+    SoulFireOperationError
+  > {
+    return Effect.gen(this, function* () {
+      const {
+        tags = [],
+        count = 1,
+        searchRadius = 32,
+        avoidSubmergedTargets = false,
+        requireLineOfSight = false,
+        targetYRange,
+        path,
+        ...taskOptions
+      } = options;
+      return yield* this.start(
+        CollectBlocksTaskSchema,
+        {
+          blockIds: [...blockIds],
+          tags: [...tags],
+          count,
+          searchRadius,
+          avoidSubmergedTargets,
+          requireLineOfSight,
+          ...(targetYRange === undefined ? {} : { targetYRange }),
+          ...(path === undefined ? {} : { options: path }),
+        },
+        CollectBlocksTaskResultSchema,
+        taskOptions,
+      );
+    });
   }
 
   public runCollectBlocks(
     blockIds: readonly string[],
     options: CollectBlocksTaskOptions = {},
-  ): AsyncIterable<BotTaskEvent> {
-    const {
-      tags = [],
-      count = 1,
-      searchRadius = 32,
-      avoidSubmergedTargets = false,
-      requireLineOfSight = false,
-      targetYRange,
-      path,
-      ...taskOptions
-    } = options;
-    return this.run(
-      CollectBlocksTaskSchema,
-      {
-        blockIds: [...blockIds],
-        tags: [...tags],
-        count,
-        searchRadius,
-        avoidSubmergedTargets,
-        requireLineOfSight,
-        ...(targetYRange === undefined ? {} : { targetYRange }),
-        ...(path === undefined ? {} : { options: path }),
-      },
-      taskOptions,
+  ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
+    return Stream.unwrap(
+      Effect.gen(this, function* () {
+        const {
+          tags = [],
+          count = 1,
+          searchRadius = 32,
+          avoidSubmergedTargets = false,
+          requireLineOfSight = false,
+          targetYRange,
+          path,
+          ...taskOptions
+        } = options;
+        return this.run(
+          CollectBlocksTaskSchema,
+          {
+            blockIds: [...blockIds],
+            tags: [...tags],
+            count,
+            searchRadius,
+            avoidSubmergedTargets,
+            requireLineOfSight,
+            ...(targetYRange === undefined ? {} : { targetYRange }),
+            ...(path === undefined ? {} : { options: path }),
+          },
+          taskOptions,
+        );
+      }),
     );
   }
 
@@ -2158,44 +2387,45 @@ export class SoulFireTasks {
     from: MessageInitShape<typeof BlockPositionSchema>,
     to: MessageInitShape<typeof BlockPositionSchema>,
     options: ExcavateTaskOptions = {},
-  ): Promise<SoulFireTask<typeof ExcavateTaskResultSchema>> {
-    const {
-      path,
-      maximumBlocks = 0,
-      ...taskOptions
-    } = options;
-    return this.start(
-      ExcavateTaskSchema,
-      {
-        cornerA: from,
-        cornerB: to,
-        maximumBlocks,
-        ...(path === undefined ? {} : { options: path }),
-      },
-      ExcavateTaskResultSchema,
-      taskOptions,
-    );
+  ): Effect.Effect<
+    SoulFireTask<typeof ExcavateTaskResultSchema>,
+    SoulFireOperationError
+  > {
+    return Effect.gen(this, function* () {
+      const { path, maximumBlocks = 0, ...taskOptions } = options;
+      return yield* this.start(
+        ExcavateTaskSchema,
+        {
+          cornerA: from,
+          cornerB: to,
+          maximumBlocks,
+          ...(path === undefined ? {} : { options: path }),
+        },
+        ExcavateTaskResultSchema,
+        taskOptions,
+      );
+    });
   }
 
   public runExcavate(
     from: MessageInitShape<typeof BlockPositionSchema>,
     to: MessageInitShape<typeof BlockPositionSchema>,
     options: ExcavateTaskOptions = {},
-  ): AsyncIterable<BotTaskEvent> {
-    const {
-      path,
-      maximumBlocks = 0,
-      ...taskOptions
-    } = options;
-    return this.run(
-      ExcavateTaskSchema,
-      {
-        cornerA: from,
-        cornerB: to,
-        maximumBlocks,
-        ...(path === undefined ? {} : { options: path }),
-      },
-      taskOptions,
+  ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
+    return Stream.unwrap(
+      Effect.gen(this, function* () {
+        const { path, maximumBlocks = 0, ...taskOptions } = options;
+        return this.run(
+          ExcavateTaskSchema,
+          {
+            cornerA: from,
+            cornerB: to,
+            maximumBlocks,
+            ...(path === undefined ? {} : { options: path }),
+          },
+          taskOptions,
+        );
+      }),
     );
   }
 
@@ -2206,23 +2436,38 @@ export class SoulFireTasks {
     origin: MessageInitShape<typeof BlockPositionSchema>,
     blocks: readonly SchematicBlock[],
     options: BuildTaskOptions = {},
-  ): Promise<SoulFireTask<typeof BuildTaskResultSchema>> {
-    const { input, taskOptions } = buildInput(origin, blocks, options);
-    return this.start(
-      BuildTaskSchema,
-      input,
-      BuildTaskResultSchema,
-      taskOptions,
-    );
+  ): Effect.Effect<
+    SoulFireTask<typeof BuildTaskResultSchema>,
+    SoulFireOperationError
+  > {
+    return Effect.gen(this, function* () {
+      const { input, taskOptions } = yield* Effect.try({
+        try: () => buildInput(origin, blocks, options),
+        catch: (cause) => operationError("SoulFireTasks.build", cause),
+      });
+      return yield* this.start(
+        BuildTaskSchema,
+        input,
+        BuildTaskResultSchema,
+        taskOptions,
+      );
+    });
   }
 
   public runBuild(
     origin: MessageInitShape<typeof BlockPositionSchema>,
     blocks: readonly SchematicBlock[],
     options: BuildTaskOptions = {},
-  ): AsyncIterable<BotTaskEvent> {
-    const { input, taskOptions } = buildInput(origin, blocks, options);
-    return this.run(BuildTaskSchema, input, taskOptions);
+  ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
+    return Stream.unwrap(
+      Effect.gen(this, function* () {
+        const { input, taskOptions } = yield* Effect.try({
+          try: () => buildInput(origin, blocks, options),
+          catch: (cause) => operationError("SoulFireTasks.runBuild", cause),
+        });
+        return this.run(BuildTaskSchema, input, taskOptions);
+      }),
+    );
   }
 
   /**
@@ -2233,21 +2478,23 @@ export class SoulFireTasks {
     recipeId: string,
     count = 1,
     options: CraftTaskOptions = {},
-  ): Promise<SoulFireTask<typeof CraftTaskResultSchema>> {
-    const {
-      station,
-      ...taskOptions
-    } = options;
-    return this.start(
-      CraftTaskSchema,
-      {
-        recipeId,
-        count,
-        ...(station === undefined ? {} : { station }),
-      },
-      CraftTaskResultSchema,
-      taskOptions,
-    );
+  ): Effect.Effect<
+    SoulFireTask<typeof CraftTaskResultSchema>,
+    SoulFireOperationError
+  > {
+    return Effect.gen(this, function* () {
+      const { station, ...taskOptions } = options;
+      return yield* this.start(
+        CraftTaskSchema,
+        {
+          recipeId,
+          count,
+          ...(station === undefined ? {} : { station }),
+        },
+        CraftTaskResultSchema,
+        taskOptions,
+      );
+    });
   }
 
   /**
@@ -2258,19 +2505,20 @@ export class SoulFireTasks {
     recipeId: string,
     count = 1,
     options: CraftTaskOptions = {},
-  ): AsyncIterable<BotTaskEvent> {
-    const {
-      station,
-      ...taskOptions
-    } = options;
-    return this.run(
-      CraftTaskSchema,
-      {
-        recipeId,
-        count,
-        ...(station === undefined ? {} : { station }),
-      },
-      taskOptions,
+  ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
+    return Stream.unwrap(
+      Effect.gen(this, function* () {
+        const { station, ...taskOptions } = options;
+        return this.run(
+          CraftTaskSchema,
+          {
+            recipeId,
+            count,
+            ...(station === undefined ? {} : { station }),
+          },
+          taskOptions,
+        );
+      }),
     );
   }
 
@@ -2282,23 +2530,24 @@ export class SoulFireTasks {
     input: MessageInitShape<typeof ItemSelectorSchema>,
     count = 1,
     options: SmeltTaskOptions = {},
-  ): Promise<SoulFireTask<typeof SmeltTaskResultSchema>> {
-    const {
-      fuel,
-      station,
-      ...taskOptions
-    } = options;
-    return this.start(
-      SmeltTaskSchema,
-      {
-        input,
-        count,
-        ...(fuel === undefined ? {} : { fuel }),
-        ...(station === undefined ? {} : { station }),
-      },
-      SmeltTaskResultSchema,
-      taskOptions,
-    );
+  ): Effect.Effect<
+    SoulFireTask<typeof SmeltTaskResultSchema>,
+    SoulFireOperationError
+  > {
+    return Effect.gen(this, function* () {
+      const { fuel, station, ...taskOptions } = options;
+      return yield* this.start(
+        SmeltTaskSchema,
+        {
+          input,
+          count,
+          ...(fuel === undefined ? {} : { fuel }),
+          ...(station === undefined ? {} : { station }),
+        },
+        SmeltTaskResultSchema,
+        taskOptions,
+      );
+    });
   }
 
   /**
@@ -2308,21 +2557,21 @@ export class SoulFireTasks {
     input: MessageInitShape<typeof ItemSelectorSchema>,
     count = 1,
     options: SmeltTaskOptions = {},
-  ): AsyncIterable<BotTaskEvent> {
-    const {
-      fuel,
-      station,
-      ...taskOptions
-    } = options;
-    return this.run(
-      SmeltTaskSchema,
-      {
-        input,
-        count,
-        ...(fuel === undefined ? {} : { fuel }),
-        ...(station === undefined ? {} : { station }),
-      },
-      taskOptions,
+  ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
+    return Stream.unwrap(
+      Effect.gen(this, function* () {
+        const { fuel, station, ...taskOptions } = options;
+        return this.run(
+          SmeltTaskSchema,
+          {
+            input,
+            count,
+            ...(fuel === undefined ? {} : { fuel }),
+            ...(station === undefined ? {} : { station }),
+          },
+          taskOptions,
+        );
+      }),
     );
   }
 
@@ -2335,26 +2584,26 @@ export class SoulFireTasks {
     ingredient: MessageInitShape<typeof ItemSelectorSchema>,
     count = 1,
     options: BrewTaskOptions = {},
-  ): Promise<SoulFireTask<typeof BrewTaskResultSchema>> {
-    const {
-      fuel,
-      station,
-      expectedResult,
-      ...taskOptions
-    } = options;
-    return this.start(
-      BrewTaskSchema,
-      {
-        input,
-        ingredient,
-        count,
-        ...(fuel === undefined ? {} : { fuel }),
-        ...(station === undefined ? {} : { station }),
-        ...(expectedResult === undefined ? {} : { expectedResult }),
-      },
-      BrewTaskResultSchema,
-      taskOptions,
-    );
+  ): Effect.Effect<
+    SoulFireTask<typeof BrewTaskResultSchema>,
+    SoulFireOperationError
+  > {
+    return Effect.gen(this, function* () {
+      const { fuel, station, expectedResult, ...taskOptions } = options;
+      return yield* this.start(
+        BrewTaskSchema,
+        {
+          input,
+          ingredient,
+          count,
+          ...(fuel === undefined ? {} : { fuel }),
+          ...(station === undefined ? {} : { station }),
+          ...(expectedResult === undefined ? {} : { expectedResult }),
+        },
+        BrewTaskResultSchema,
+        taskOptions,
+      );
+    });
   }
 
   /**
@@ -2365,24 +2614,23 @@ export class SoulFireTasks {
     ingredient: MessageInitShape<typeof ItemSelectorSchema>,
     count = 1,
     options: BrewTaskOptions = {},
-  ): AsyncIterable<BotTaskEvent> {
-    const {
-      fuel,
-      station,
-      expectedResult,
-      ...taskOptions
-    } = options;
-    return this.run(
-      BrewTaskSchema,
-      {
-        input,
-        ingredient,
-        count,
-        ...(fuel === undefined ? {} : { fuel }),
-        ...(station === undefined ? {} : { station }),
-        ...(expectedResult === undefined ? {} : { expectedResult }),
-      },
-      taskOptions,
+  ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
+    return Stream.unwrap(
+      Effect.gen(this, function* () {
+        const { fuel, station, expectedResult, ...taskOptions } = options;
+        return this.run(
+          BrewTaskSchema,
+          {
+            input,
+            ingredient,
+            count,
+            ...(fuel === undefined ? {} : { fuel }),
+            ...(station === undefined ? {} : { station }),
+            ...(expectedResult === undefined ? {} : { expectedResult }),
+          },
+          taskOptions,
+        );
+      }),
     );
   }
 
@@ -2395,23 +2643,24 @@ export class SoulFireTasks {
     offerIndex: number,
     count = 1,
     options: VillagerTradeTaskOptions = {},
-  ): Promise<SoulFireTask<typeof VillagerTradeTaskResultSchema>> {
-    const {
-      closeWhenDone = false,
-      expectedResult,
-      ...taskOptions
-    } = options;
-    return this.start(
-      VillagerTradeTaskSchema,
-      {
-        offerIndex,
-        count,
-        closeWhenDone,
-        ...(expectedResult === undefined ? {} : { expectedResult }),
-      },
-      VillagerTradeTaskResultSchema,
-      taskOptions,
-    );
+  ): Effect.Effect<
+    SoulFireTask<typeof VillagerTradeTaskResultSchema>,
+    SoulFireOperationError
+  > {
+    return Effect.gen(this, function* () {
+      const { closeWhenDone = false, expectedResult, ...taskOptions } = options;
+      return yield* this.start(
+        VillagerTradeTaskSchema,
+        {
+          offerIndex,
+          count,
+          closeWhenDone,
+          ...(expectedResult === undefined ? {} : { expectedResult }),
+        },
+        VillagerTradeTaskResultSchema,
+        taskOptions,
+      );
+    });
   }
 
   /**
@@ -2421,67 +2670,84 @@ export class SoulFireTasks {
     offerIndex: number,
     count = 1,
     options: VillagerTradeTaskOptions = {},
-  ): AsyncIterable<BotTaskEvent> {
-    const {
-      closeWhenDone = false,
-      expectedResult,
-      ...taskOptions
-    } = options;
-    return this.run(
-      VillagerTradeTaskSchema,
-      {
-        offerIndex,
-        count,
-        closeWhenDone,
-        ...(expectedResult === undefined ? {} : { expectedResult }),
-      },
-      taskOptions,
+  ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
+    return Stream.unwrap(
+      Effect.gen(this, function* () {
+        const {
+          closeWhenDone = false,
+          expectedResult,
+          ...taskOptions
+        } = options;
+        return this.run(
+          VillagerTradeTaskSchema,
+          {
+            offerIndex,
+            count,
+            closeWhenDone,
+            ...(expectedResult === undefined ? {} : { expectedResult }),
+          },
+          taskOptions,
+        );
+      }),
     );
   }
 
   /**
    * One of this bot's tasks, by id.
    */
-  public async get<Result extends DescMessage | undefined = undefined>(
+  public get<Result extends DescMessage | undefined = undefined>(
     taskId: string,
     resultSchema?: Result,
     options?: CallOptions,
-  ): Promise<SoulFireTask<Result>> {
-    const task = await this.client.getBotTask({ taskId }, options);
-    if (task.instanceId !== this.instanceId || task.botId !== this.botId) {
-      throw new Error(
-        `Task ${taskId} does not belong to bot ${this.botId}`,
+  ): Effect.Effect<SoulFireTask<Result>, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const task = yield* rpc("SoulFireTasks.get", (signal) =>
+        this.client.getBotTask({ taskId }, withSignal(options, signal)),
       );
-    }
-    return new SoulFireTask(
-      this.client,
-      task,
-      resultSchema as Result,
-      this.callOptions,
-    );
+      if (task.instanceId !== this.instanceId || task.botId !== this.botId) {
+        return yield* Effect.fail(
+          operationError(
+            "SoulFireTasks.get",
+            new Error(`Task ${taskId} does not belong to bot ${this.botId}`),
+          ),
+        );
+      }
+      return new SoulFireTask(
+        this.client,
+        task,
+        resultSchema as Result,
+        this.callOptions,
+      );
+    });
   }
 
   /**
    * This bot's tasks, all pages. Ended tasks only with `includeTerminal`.
    */
-  public async list(options: TaskListOptions = {}): Promise<BotTask[]> {
-    const { call, ...request } = options;
-    const tasks: BotTask[] = [];
-    let pageToken = request.pageToken ?? "";
-    do {
-      const response = await this.client.listBotTasks(
-        {
-          ...request,
-          instanceId: this.instanceId,
-          botId: this.botId,
-          pageToken,
-        },
-        call,
-      );
-      tasks.push(...response.tasks);
-      pageToken = response.nextPageToken;
-    } while (pageToken.length > 0);
-    return tasks;
+  public list(
+    options: TaskListOptions = {},
+  ): Effect.Effect<BotTask[], SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const { call, ...request } = options;
+      const tasks: BotTask[] = [];
+      let pageToken = request.pageToken ?? "";
+      do {
+        const response = yield* rpc("SoulFireTasks.list", (signal) =>
+          this.client.listBotTasks(
+            {
+              ...request,
+              instanceId: this.instanceId,
+              botId: this.botId,
+              pageToken,
+            },
+            withSignal(call, signal),
+          ),
+        );
+        tasks.push(...response.tasks);
+        pageToken = response.nextPageToken;
+      } while (pageToken.length > 0);
+      return tasks;
+    });
   }
 
   /**
@@ -2493,20 +2759,25 @@ export class SoulFireTasks {
     includeSnapshot?: boolean;
     statuses?: readonly BotTaskStatus[];
     call?: CallOptions;
-  }): AsyncIterable<BotTaskEvent> {
-    return this.client.watchBotTasks(
-      {
-        instanceId: this.instanceId,
-        botId: this.botId,
-        ...(options?.afterSequence === undefined
-          ? {}
-          : { afterSequence: options.afterSequence }),
-        includeSnapshot: options?.includeSnapshot ?? true,
-        statuses: options?.statuses === undefined
-          ? []
-          : [...options.statuses],
-      },
-      options?.call,
+  }): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
+    return Stream.unwrap(
+      Effect.gen(this, function* () {
+        return rpcStream("SoulFireTasks.watch", (signal) =>
+          this.client.watchBotTasks(
+            {
+              instanceId: this.instanceId,
+              botId: this.botId,
+              ...(options?.afterSequence === undefined
+                ? {}
+                : { afterSequence: options.afterSequence }),
+              includeSnapshot: options?.includeSnapshot ?? true,
+              statuses:
+                options?.statuses === undefined ? [] : [...options.statuses],
+            },
+            withSignal(options?.call, signal),
+          ),
+        );
+      }),
     );
   }
 }
@@ -2516,8 +2787,8 @@ function entityReference(target: AttackEntityTarget) {
     ? { networkId: target }
     : {
         networkId: target.networkId,
-        ...(target.connectionEpoch === undefined
-            || target.connectionEpoch.length === 0
+        ...(target.connectionEpoch === undefined ||
+        target.connectionEpoch.length === 0
           ? {}
           : { connectionEpoch: target.connectionEpoch }),
         ...(target.uuid === undefined || target.uuid.length === 0
@@ -2639,9 +2910,9 @@ function buildInput(
     throw new RangeError("partitionCount must be a positive integer");
   }
   if (
-    !Number.isInteger(partitionIndex)
-    || partitionIndex < 0
-    || partitionIndex >= partitionCount
+    !Number.isInteger(partitionIndex) ||
+    partitionIndex < 0 ||
+    partitionIndex >= partitionCount
   ) {
     throw new RangeError(
       "partitionIndex must be a non-negative integer smaller than partitionCount",
@@ -2682,11 +2953,7 @@ function containerTransferInput(
   input: MessageInitShape<typeof ContainerTransferTaskSchema>;
   taskOptions: TaskStartOptions;
 } {
-  const {
-    path,
-    closeContainer = true,
-    ...taskOptions
-  } = options;
+  const { path, closeContainer = true, ...taskOptions } = options;
   return {
     input: {
       container,
@@ -2716,11 +2983,11 @@ function maintainLoadoutInput(
   }
   for (const requirement of requirements) {
     if (
-      requirement.minimumCount < 0
-      || requirement.targetCount < requirement.minimumCount
-      || requirement.maximumCount !== undefined
-      && requirement.maximumCount > 0
-      && requirement.maximumCount < requirement.targetCount
+      requirement.minimumCount < 0 ||
+      requirement.targetCount < requirement.minimumCount ||
+      (requirement.maximumCount !== undefined &&
+        requirement.maximumCount > 0 &&
+        requirement.maximumCount < requirement.targetCount)
     ) {
       throw new RangeError(
         "Each requirement needs minimumCount <= targetCount <= maximumCount when maximumCount is set",
@@ -2755,10 +3022,12 @@ function maintainLoadoutInput(
 }
 
 export function isTerminalTaskStatus(status: BotTaskStatus): boolean {
-  return status === BotTaskStatus.COMPLETED
-    || status === BotTaskStatus.CANCELLED
-    || status === BotTaskStatus.FAILED
-    || status === BotTaskStatus.TIMED_OUT;
+  return (
+    status === BotTaskStatus.COMPLETED ||
+    status === BotTaskStatus.CANCELLED ||
+    status === BotTaskStatus.FAILED ||
+    status === BotTaskStatus.TIMED_OUT
+  );
 }
 
 export {
@@ -2770,8 +3039,4 @@ export {
   BuildMirror,
   BuildRotation,
 };
-export type {
-  BotTask,
-  BotTaskEvent,
-  GoToTaskResult,
-};
+export type { BotTask, BotTaskEvent, GoToTaskResult };

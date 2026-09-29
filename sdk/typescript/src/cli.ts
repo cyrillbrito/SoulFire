@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 
+import { Effect } from "effect";
+
 import { readFile } from "node:fs/promises";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
 
-import { SoulFire } from "./promise-client.js";
 import { SDK_VERSION } from "./connection.js";
+import { SoulFire } from "./index.js";
 import {
   generatePluginSdk,
   pluginMetadata,
@@ -27,7 +29,10 @@ interface GenerateArguments {
 }
 
 async function main(arguments_: readonly string[]): Promise<void> {
-  const nodeMajor = Number.parseInt(process.versions.node.split(".")[0] ?? "", 10);
+  const nodeMajor = Number.parseInt(
+    process.versions.node.split(".")[0] ?? "",
+    10,
+  );
   if (!Number.isFinite(nodeMajor) || nodeMajor < 22) {
     throw new Error("soulfire-sdk requires Node.js 22 or newer");
   }
@@ -45,18 +50,19 @@ async function main(arguments_: readonly string[]): Promise<void> {
   }
 
   const options = parseGenerateArguments(rest);
-  const source = options.server === undefined
-    ? {
-      descriptorSet: new Uint8Array(
-        await readFile(requireValue(options.descriptor, "--descriptor")),
-      ),
-      metadata: undefined,
-    }
-    : await downloadDescriptor(
-      options.server,
-      requireValue(options.plugin, "--plugin"),
-      options.token,
-    );
+  const source =
+    options.server === undefined
+      ? {
+          descriptorSet: new Uint8Array(
+            await readFile(requireValue(options.descriptor, "--descriptor")),
+          ),
+          metadata: undefined,
+        }
+      : await downloadDescriptor(
+          options.server,
+          requireValue(options.plugin, "--plugin"),
+          options.token,
+        );
   const outputDirectory = await generatePluginSdk({
     descriptorSet: source.descriptorSet,
     ...(source.metadata === undefined ? {} : { metadata: source.metadata }),
@@ -78,7 +84,9 @@ async function main(arguments_: readonly string[]): Promise<void> {
       ? {}
       : { packageName: options.packageName }),
   });
-  process.stdout.write(`Generated ${options.language} plugin SDK at ${outputDirectory}\n`);
+  process.stdout.write(
+    `Generated ${options.language} plugin SDK at ${outputDirectory}\n`,
+  );
 }
 
 async function downloadDescriptor(
@@ -89,21 +97,23 @@ async function downloadDescriptor(
   readonly descriptorSet: Uint8Array;
   readonly metadata: PluginSdkMetadata;
 }> {
-  const client = await SoulFire.connect({
-    baseUrl: server,
-    ...(token === undefined ? {} : { token }),
-    requiredCapabilities: ["plugin.rpc.v1", "plugin.discovery.v1"],
-    requiredPlugins: [{ pluginId }],
-  });
-  try {
-    const descriptor = await client.plugins.requireDescriptor(pluginId);
-    return {
-      descriptorSet: await client.plugins.descriptorSet(pluginId),
-      metadata: pluginMetadata(descriptor),
-    };
-  } finally {
-    await client.close();
-  }
+  return Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const client = yield* SoulFire.connect({
+          baseUrl: server,
+          ...(token === undefined ? {} : { token }),
+          requiredCapabilities: ["plugin.rpc.v1", "plugin.discovery.v1"],
+          requiredPlugins: [{ pluginId }],
+        });
+        const descriptor = client.plugins.requireDescriptor(pluginId);
+        return {
+          descriptorSet: yield* client.plugins.descriptorSet(pluginId),
+          metadata: pluginMetadata(descriptor),
+        };
+      }),
+    ),
+  );
 }
 
 function parseGenerateArguments(
@@ -195,10 +205,7 @@ function optionalPositiveInteger(
   return parsed;
 }
 
-function requireValue(
-  value: string | undefined,
-  option: string,
-): string {
+function requireValue(value: string | undefined, option: string): string {
   if (value === undefined || value.length === 0) {
     throw new Error(`${option} is required`);
   }

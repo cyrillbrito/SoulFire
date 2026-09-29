@@ -1,9 +1,16 @@
-import type {
-  DescMessage,
-  MessageInitShape,
-} from "@bufbuild/protobuf";
+import type { DescMessage, MessageInitShape } from "@bufbuild/protobuf";
 import type { CallOptions, Client } from "@connectrpc/connect";
+import { Effect, Stream } from "effect";
+import { type SoulFireOperationError } from "./errors.js";
+import { rpc, withSignal } from "./transport.js";
 
+import type { ItemSelectorSchema } from "./generated/soulfire/inventory_pb.js";
+import type {
+  BrewTaskResultSchema,
+  CraftTaskResultSchema,
+  SmeltTaskResultSchema,
+  VillagerTradeTaskResultSchema,
+} from "./generated/soulfire/recipe_pb.js";
 import {
   RecipeService,
   type CanCraftRequestSchema,
@@ -12,6 +19,7 @@ import {
   type ListRecipesResponse,
   type ListVillagerTradesResponse,
 } from "./generated/soulfire/recipe_pb.js";
+import type { BotTaskEvent } from "./generated/soulfire/task_pb.js";
 import type {
   BrewTaskOptions,
   CraftTaskOptions,
@@ -20,16 +28,6 @@ import type {
   SoulFireTasks,
   VillagerTradeTaskOptions,
 } from "./tasks.js";
-import type {
-  BrewTaskResultSchema,
-  CraftTaskResultSchema,
-  SmeltTaskResultSchema,
-  VillagerTradeTaskResultSchema,
-} from "./generated/soulfire/recipe_pb.js";
-import type { BotTaskEvent } from "./generated/soulfire/task_pb.js";
-import type {
-  ItemSelectorSchema,
-} from "./generated/soulfire/inventory_pb.js";
 
 type RecipeRequest<T extends DescMessage> = Omit<
   MessageInitShape<T>,
@@ -52,10 +50,12 @@ export class SoulFireRecipes {
   public list(
     request: RecipeRequest<typeof ListRecipesRequestSchema> = {},
     options?: CallOptions,
-  ): Promise<ListRecipesResponse> {
-    return this.client.listRecipes(
-      { ...request, scope: this.scope() },
-      options,
+  ): Effect.Effect<ListRecipesResponse, SoulFireOperationError> {
+    return rpc("SoulFireRecipes.list", (signal) =>
+      this.client.listRecipes(
+        { ...request, scope: this.scope() },
+        withSignal(options, signal),
+      ),
     );
   }
 
@@ -67,10 +67,12 @@ export class SoulFireRecipes {
   public canCraft(
     request: RecipeRequest<typeof CanCraftRequestSchema>,
     options?: CallOptions,
-  ): Promise<CanCraftResponse> {
-    return this.client.canCraft(
-      { ...request, scope: this.scope() },
-      options,
+  ): Effect.Effect<CanCraftResponse, SoulFireOperationError> {
+    return rpc("SoulFireRecipes.canCraft", (signal) =>
+      this.client.canCraft(
+        { ...request, scope: this.scope() },
+        withSignal(options, signal),
+      ),
     );
   }
 
@@ -79,10 +81,12 @@ export class SoulFireRecipes {
    */
   public listVillagerTrades(
     options?: CallOptions,
-  ): Promise<ListVillagerTradesResponse> {
-    return this.client.listVillagerTrades(
-      { scope: this.scope() },
-      options,
+  ): Effect.Effect<ListVillagerTradesResponse, SoulFireOperationError> {
+    return rpc("SoulFireRecipes.listVillagerTrades", (signal) =>
+      this.client.listVillagerTrades(
+        { scope: this.scope() },
+        withSignal(options, signal),
+      ),
     );
   }
 
@@ -94,7 +98,10 @@ export class SoulFireRecipes {
     recipeId: string,
     count = 1,
     options: CraftTaskOptions = {},
-  ): Promise<SoulFireTask<typeof CraftTaskResultSchema>> {
+  ): Effect.Effect<
+    SoulFireTask<typeof CraftTaskResultSchema>,
+    SoulFireOperationError
+  > {
     return this.tasks.craft(recipeId, count, options);
   }
 
@@ -106,8 +113,12 @@ export class SoulFireRecipes {
     recipeId: string,
     count = 1,
     options: CraftTaskOptions = {},
-  ): AsyncIterable<BotTaskEvent> {
-    return this.tasks.runCraft(recipeId, count, options);
+  ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
+    return Stream.unwrap(
+      Effect.gen(this, function* () {
+        return this.tasks.runCraft(recipeId, count, options);
+      }),
+    );
   }
 
   /**
@@ -117,7 +128,10 @@ export class SoulFireRecipes {
     input: MessageInitShape<typeof ItemSelectorSchema>,
     count = 1,
     options: SmeltTaskOptions = {},
-  ): Promise<SoulFireTask<typeof SmeltTaskResultSchema>> {
+  ): Effect.Effect<
+    SoulFireTask<typeof SmeltTaskResultSchema>,
+    SoulFireOperationError
+  > {
     return this.tasks.smelt(input, count, options);
   }
 
@@ -129,8 +143,12 @@ export class SoulFireRecipes {
     input: MessageInitShape<typeof ItemSelectorSchema>,
     count = 1,
     options: SmeltTaskOptions = {},
-  ): AsyncIterable<BotTaskEvent> {
-    return this.tasks.runSmelt(input, count, options);
+  ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
+    return Stream.unwrap(
+      Effect.gen(this, function* () {
+        return this.tasks.runSmelt(input, count, options);
+      }),
+    );
   }
 
   /**
@@ -141,7 +159,10 @@ export class SoulFireRecipes {
     ingredient: MessageInitShape<typeof ItemSelectorSchema>,
     count = 1,
     options: BrewTaskOptions = {},
-  ): Promise<SoulFireTask<typeof BrewTaskResultSchema>> {
+  ): Effect.Effect<
+    SoulFireTask<typeof BrewTaskResultSchema>,
+    SoulFireOperationError
+  > {
     return this.tasks.brew(input, ingredient, count, options);
   }
 
@@ -153,8 +174,12 @@ export class SoulFireRecipes {
     ingredient: MessageInitShape<typeof ItemSelectorSchema>,
     count = 1,
     options: BrewTaskOptions = {},
-  ): AsyncIterable<BotTaskEvent> {
-    return this.tasks.runBrew(input, ingredient, count, options);
+  ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
+    return Stream.unwrap(
+      Effect.gen(this, function* () {
+        return this.tasks.runBrew(input, ingredient, count, options);
+      }),
+    );
   }
 
   /**
@@ -165,7 +190,10 @@ export class SoulFireRecipes {
     offerIndex: number,
     count = 1,
     options: VillagerTradeTaskOptions = {},
-  ): Promise<SoulFireTask<typeof VillagerTradeTaskResultSchema>> {
+  ): Effect.Effect<
+    SoulFireTask<typeof VillagerTradeTaskResultSchema>,
+    SoulFireOperationError
+  > {
     return this.tasks.villagerTrade(offerIndex, count, options);
   }
 
@@ -177,8 +205,12 @@ export class SoulFireRecipes {
     offerIndex: number,
     count = 1,
     options: VillagerTradeTaskOptions = {},
-  ): AsyncIterable<BotTaskEvent> {
-    return this.tasks.runVillagerTrade(offerIndex, count, options);
+  ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
+    return Stream.unwrap(
+      Effect.gen(this, function* () {
+        return this.tasks.runVillagerTrade(offerIndex, count, options);
+      }),
+    );
   }
 
   private scope(): { instanceId: string; botId: string } {

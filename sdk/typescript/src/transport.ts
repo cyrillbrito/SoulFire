@@ -1,0 +1,73 @@
+import type { CallOptions } from "@connectrpc/connect";
+import { Effect, Option, Stream } from "effect";
+
+import { rpcError, type SoulFireRpcError } from "./errors.js";
+
+/** Converts a ConnectRPC unary call at the transport boundary. */
+export function rpc<A>(
+  operation: string,
+  call: (signal: AbortSignal) => Promise<A>,
+): Effect.Effect<A, SoulFireRpcError> {
+  return Effect.tryPromise({
+    try: call,
+    catch: (cause) => rpcError(operation, cause),
+  }).pipe(Effect.withSpan(operation));
+}
+
+/** Acquires a fresh transport stream for each subscription. */
+export function rpcStream<A>(
+  operation: string,
+  call: (signal: AbortSignal) => AsyncIterable<A>,
+): Stream.Stream<A, SoulFireRpcError> {
+  return Stream.unwrapScoped(
+    Effect.acquireRelease(
+      Effect.try({
+        try: () => {
+          const controller = new AbortController();
+          const iterator = call(controller.signal)[Symbol.asyncIterator]();
+          return { controller, iterator };
+        },
+        catch: (cause) => rpcError(operation, cause),
+      }),
+      ({ controller, iterator }) =>
+        Effect.gen(function* () {
+          // Abort pending next() before awaiting an async generator's return().
+          controller.abort();
+          if (iterator.return !== undefined) {
+            yield* Effect.tryPromise({
+              try: () => iterator.return!(),
+              catch: (cause) => rpcError(operation, cause),
+            }).pipe(Effect.ignore);
+          }
+        }),
+    ).pipe(
+      Effect.map(({ iterator }) =>
+        Stream.repeatEffectOption(
+          Effect.tryPromise({
+            try: () => iterator.next(),
+            catch: (cause) => Option.some(rpcError(operation, cause)),
+          }).pipe(
+            Effect.flatMap((result) =>
+              result.done
+                ? Effect.fail(Option.none())
+                : Effect.succeed(result.value),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+export function withSignal(
+  options: CallOptions | undefined,
+  signal: AbortSignal,
+): CallOptions {
+  return {
+    ...options,
+    signal:
+      options?.signal === undefined
+        ? signal
+        : AbortSignal.any([options.signal, signal]),
+  };
+}

@@ -55,7 +55,6 @@ async function updateJsrExports() {
   const generated = await generatedTypeScriptModules(generatedRoot);
   jsr.exports = {
     ".": "./src/index.ts",
-    "./promise": "./src/promise.ts",
     "./platform": "./src/platform.ts",
     ...Object.fromEntries(
       generated.map((modulePath) => [
@@ -73,10 +72,10 @@ async function generatedTypeScriptModules(directory, relative = "") {
     const entryRelative = path.posix.join(relative, entry.name);
     if (entry.isDirectory()) {
       modules.push(
-        ...await generatedTypeScriptModules(
+        ...(await generatedTypeScriptModules(
           path.join(directory, entry.name),
           entryRelative,
-        ),
+        )),
       );
     } else if (entry.name.endsWith("_pb.ts")) {
       modules.push(entryRelative);

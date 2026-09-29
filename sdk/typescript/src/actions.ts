@@ -8,6 +8,7 @@ import {
  * holds the status and the error.
  */
 export class SoulFireActionError extends Error {
+  public readonly _tag = "SoulFireActionError";
   public constructor(public readonly result: BotActionResult) {
     super(result.error ?? `Bot action ${result.actionId} did not complete`);
     this.name = "SoulFireActionError";

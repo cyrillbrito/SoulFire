@@ -1,8 +1,8 @@
-import {
-  create,
-  type MessageInitShape,
-} from "@bufbuild/protobuf";
+import { create, type MessageInitShape } from "@bufbuild/protobuf";
 import type { CallOptions, Client } from "@connectrpc/connect";
+import { Effect } from "effect";
+import { operationError, type SoulFireOperationError } from "./errors.js";
+import { rpc, withSignal } from "./transport.js";
 
 import {
   PathfindGoalSchema,
@@ -26,10 +26,9 @@ import type {
 
 export type BlockTarget = MessageInitShape<typeof BlockPositionSchema>;
 export type WorldTarget = MessageInitShape<typeof WorldPositionSchema>;
-export type EntityTarget = Pick<
-  EntityReference,
-  "connectionEpoch" | "networkId"
-> | number;
+export type EntityTarget =
+  | Pick<EntityReference, "connectionEpoch" | "networkId">
+  | number;
 
 export interface PlanPathOptions {
   path?: MessageInitShape<typeof PathfindOptionsSchema>;
@@ -51,24 +50,34 @@ export class SoulFirePathfinder {
   /**
    * Plans a route to `goal` from the loaded world, without moving the bot.
    */
-  public async plan(
+
+  public plan(
     goal: PathfindGoal,
     options: PlanPathOptions = {},
-  ): Promise<PathPlan> {
-    const response = await this.client.planPath(
-      {
-        instanceId: this.instanceId,
-        botId: this.botId,
-        goal,
-        ...(options.path === undefined ? {} : { options: options.path }),
-        includeDescriptions: options.includeDescriptions ?? false,
-      },
-      options.call,
-    );
-    if (response.plan === undefined) {
-      throw new Error("SoulFire did not return a path plan");
-    }
-    return response.plan;
+  ): Effect.Effect<PathPlan, SoulFireOperationError> {
+    return Effect.gen(this, function* () {
+      const response = yield* rpc("SoulFirePathfinder.plan", (signal) =>
+        this.client.planPath(
+          {
+            instanceId: this.instanceId,
+            botId: this.botId,
+            goal,
+            ...(options.path === undefined ? {} : { options: options.path }),
+            includeDescriptions: options.includeDescriptions ?? false,
+          },
+          withSignal(options.call, signal),
+        ),
+      );
+      if (response.plan === undefined) {
+        return yield* Effect.fail(
+          operationError(
+            "SoulFirePathfinder.plan",
+            new Error("SoulFire did not return a path plan"),
+          ),
+        );
+      }
+      return response.plan;
+    });
   }
 
   /**
@@ -133,7 +142,7 @@ function entityTarget(target: EntityTarget): {
         ...(target.connectionEpoch.length === 0
           ? {}
           : { connectionEpoch: target.connectionEpoch }),
-  };
+      };
 }
 
 /**
@@ -259,10 +268,7 @@ export const goals: PathGoals = {
     });
   },
 
-  awayFromPosition(
-    position: WorldTarget,
-    radius: number,
-  ): PathfindGoal {
+  awayFromPosition(position: WorldTarget, radius: number): PathfindGoal {
     return create(PathfindGoalSchema, {
       goal: {
         case: "awayFromPosition",

@@ -1,11 +1,7 @@
-import {
-  create,
-  createRegistry,
-} from "@bufbuild/protobuf";
+import { create, createRegistry } from "@bufbuild/protobuf";
 import { anyPack } from "@bufbuild/protobuf/wkt";
-import {
-  createRouterTransport,
-} from "@connectrpc/connect";
+import { createRouterTransport } from "@connectrpc/connect";
+import { Effect, Stream } from "effect";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -19,69 +15,63 @@ import {
   PluginEventSchema,
   type WatchPluginEventsRequest,
 } from "../src/generated/soulfire/plugin_api_pb.js";
-import {
-  PluginCatalog,
-  ReflectivePlugin,
-} from "../src/plugins.js";
+import { PluginCatalog, ReflectivePlugin } from "../src/plugins.js";
 
-const tickTypeUrl =
-  "type.googleapis.com/soulfire.plugin.example.v1.Tick";
+const tickTypeUrl = "type.googleapis.com/soulfire.plugin.example.v1.Tick";
 
 describe("plugin events", () => {
-  it("filters and decodes typed plugin event streams", async () => {
-    let request: WatchPluginEventsRequest | undefined;
-    const transport = eventTransport((value) => {
-      request = value;
-    });
-    const catalog = new PluginCatalog(transport, [pluginDescriptor()]);
+  it("filters and decodes typed plugin event streams", () =>
+    Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          let request: WatchPluginEventsRequest | undefined;
+          const transport = eventTransport((value) => {
+            request = value;
+          });
+          const catalog = new PluginCatalog(transport, [pluginDescriptor()]);
+          const events = Array.from(
+            yield* Stream.runCollect(
+              catalog.typedEvents("example", TickSchema, {
+                instanceId: "instance-id",
+                afterSequence: 40n,
+              }),
+            ),
+          );
+          expect(request).toMatchObject({
+            pluginIds: ["example"],
+            typeUrls: [tickTypeUrl],
+            instanceId: "instance-id",
+            afterSequence: 40n,
+          });
+          expect(events).toHaveLength(2);
+          expect(events[0]?.event).toMatchObject({
+            kind: PluginEventKind.READY,
+            resumeGap: true,
+          });
+          expect(events[0]?.value).toBeUndefined();
+          expect(events[1]?.value?.sequence).toBe(42);
+        }),
+      ),
+    ));
 
-    const events = [];
-    for await (
-      const event of catalog.typedEvents(
-        "example",
-        TickSchema,
-        {
-          instanceId: "instance-id",
-          afterSequence: 40n,
-        },
-      )
-    ) {
-      events.push(event);
-    }
-
-    expect(request).toMatchObject({
-      pluginIds: ["example"],
-      typeUrls: [tickTypeUrl],
-      instanceId: "instance-id",
-      afterSequence: 40n,
-    });
-    expect(events).toHaveLength(2);
-    expect(events[0]?.event).toMatchObject({
-      kind: PluginEventKind.READY,
-      resumeGap: true,
-    });
-    expect(events[0]?.value).toBeUndefined();
-    expect(events[1]?.value?.sequence).toBe(42);
-  });
-
-  it("decodes unknown plugin event payloads reflectively", async () => {
-    const transport = eventTransport();
-    const plugin = new ReflectivePlugin(
-      pluginDescriptor(),
-      createRegistry(file_soulfire_plugin_example_v1_example),
-      transport,
-    );
-
-    const events = [];
-    for await (const event of plugin.events()) {
-      events.push(event);
-    }
-
-    expect(events[1]?.message).toMatchObject({
-      typeName: "soulfire.plugin.example.v1.Tick",
-      json: { sequence: 42 },
-    });
-  });
+  it("decodes unknown plugin event payloads reflectively", () =>
+    Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const transport = eventTransport();
+          const plugin = new ReflectivePlugin(
+            pluginDescriptor(),
+            createRegistry(file_soulfire_plugin_example_v1_example),
+            transport,
+          );
+          const events = Array.from(yield* Stream.runCollect(plugin.events()));
+          expect(events[1]?.message).toMatchObject({
+            typeName: "soulfire.plugin.example.v1.Tick",
+            json: { sequence: 42 },
+          });
+        }),
+      ),
+    ));
 });
 
 function pluginDescriptor() {
@@ -110,10 +100,7 @@ function eventTransport(
           kind: PluginEventKind.DATA,
           pluginId: "example",
           typeUrl: tickTypeUrl,
-          payload: anyPack(
-            TickSchema,
-            create(TickSchema, { sequence: 42 }),
-          ),
+          payload: anyPack(TickSchema, create(TickSchema, { sequence: 42 })),
         });
       },
     });

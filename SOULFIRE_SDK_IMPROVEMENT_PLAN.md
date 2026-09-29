@@ -63,7 +63,7 @@ This plan includes:
 - World, entity, inventory, recipe, pathfinding, combat, and behavior APIs.
 - Plugin-defined RPCs, events, tasks, permissions, and SDK modules.
 - SoulFireClient adoption of the official SDK.
-- An Effect-first TypeScript SDK with a complete Promise interoperability surface.
+- An Effect TypeScript SDK with interoperability at host and transport boundaries.
 - A modern Python SDK that targets the newest stable Python and uses its latest useful language and concurrency APIs.
 - Publishing the complete SDK documentation in the `soulfiremc.com` repository.
 - A mineflayer migration and native parity strategy.
@@ -88,7 +88,7 @@ SoulFire can call the first official SDK release successful when:
 - Unknown plugin services can still be called through a reflective SDK API.
 - Plugin tasks use the same cancellation, progress, arbitration, permission, and audit infrastructure as core tasks.
 - TypeScript exposes Effect-native errors, streams, scopes, layers, retries, and interruption as its canonical API.
-- TypeScript applications that use ordinary Promises and async iterables can access every SDK capability through a maintained facade.
+- Async TypeScript applications run scoped SDK workflows through `Effect.runPromise`.
 - Python uses the newest stable CPython minor selected for the SDK release and does not carry compatibility shims for older Python versions.
 - Python exposes native sync and async clients with shared domain models and behavior.
 - SoulFireClient consumes the official protocol and SDK instead of maintaining a separate copy of the API.
@@ -372,8 +372,7 @@ The canonical TypeScript API should use the latest stable Effect major available
 
 This is a first-release requirement, not an optional integration. Core
 operations, generated plugin clients, streams, resource ownership, retries,
-interruption, and typed failures must all be designed in Effect first. The
-Promise API is generated from that canonical operation model.
+interruption, and typed failures must all be designed in Effect first. Async hosts run that operation model through Effect runtime boundaries.
 
 Core signatures should use:
 
@@ -452,75 +451,48 @@ Core and plugin services should compose through the same Effect mechanisms:
 - Plugin scopes release subscriptions, leases, and server task ownership correctly.
 - Test layers can replace core or plugin services without network access.
 
-The plugin generator should emit the Effect API and Promise facade from the same service description. Plugin authors must not implement two clients.
+The plugin generator emits Effect operations and streams from the service description. Plugin authors maintain one client.
 
 ### General TypeScript compatibility
 
-Effect-first must not mean Effect-only. The SDK should provide a complete `@soulfiremc/sdk/promise` export backed by the same Effect operations.
+Effect is the sole supported high-level TypeScript API. Lifecycle management
+and orchestration use Effect scopes, fibers, streams, and typed failures.
+Promise conversion occurs at transport and host boundaries.
 
-The architecture decision is to use `effect` for the canonical program model
-and `@effect/platform` as the general compatibility layer between JavaScript
-runtimes. Its portable service contracts let the same SoulFire program run
-with browser, Node.js, or Bun implementations without runtime-specific code in
-the SDK core. There is no separate package
-that can make an Effect API transparent to every ordinary TypeScript caller.
-That broader compatibility comes from SoulFire's own generated Promise,
-`AbortSignal`, `AsyncIterable`, and `ReadableStream` adapters at the SDK
-boundary.
+Use these package boundaries:
 
-Use these package boundaries for the first release:
-
-- `@soulfiremc/sdk` is the canonical Effect-first, runtime-neutral API.
-- `@soulfiremc/sdk/promise` exposes the complete ordinary TypeScript facade.
+- `@soulfiremc/sdk` provides the runtime-neutral Effect API.
 - `@soulfiremc/sdk/browser`, `@soulfiremc/sdk/node`, and
-  `@soulfiremc/sdk/bun` provide platform-specific live layers and convenience
-  constructors without contaminating the browser-safe core.
-- `effect` provides the execution model and the interop primitives used to
-  enter or leave it.
-- `@effect/platform` provides portable runtime service contracts. It does not
-  replace the Promise facade.
+  `@soulfiremc/sdk/bun` provide platform layers and convenience constructors.
+- `effect` provides execution and host interoperability primitives.
+- `@effect/platform` provides portable runtime service contracts.
 
-An application that uses Effect should be able to compose SoulFire directly
-with its own layers and runtime. An application that does not use Effect
-should only need normal `Promise`, `AbortSignal`, `AsyncIterable`,
-`ReadableStream`, and `AsyncDisposable` concepts. Both paths must cover every
-core and plugin-defined operation.
-
-Use Effect's interoperability primitives:
-
-- `Effect.runPromise` for individual operations at a program boundary.
-- `Effect.runPromiseExit` when callers need an explicit success or failure value.
-- `ManagedRuntime` to provide SoulFire layers once, run many operations from ordinary application code, and dispose all scoped resources.
-- `Stream.toAsyncIterable` for `for await` consumers.
-- `Stream.toReadableStream` for browser and Web API consumers.
-- `AbortSignal` propagation into the Effect runtime so Promise cancellation interrupts the correct fiber.
-
-Target Promise usage:
+An Effect application composes SoulFire with its layers and runtime. An async
+application runs one scoped workflow with `Effect.runPromise`. It forwards
+its `AbortSignal` to that runtime boundary.
 
 ```ts
-import { SoulFire } from "@soulfiremc/sdk/promise";
+import { Effect } from "effect";
+import { SoulFire } from "@soulfiremc/sdk";
 
-await using soulfire = await SoulFire.connect(options);
-const bot = await soulfire.instance(instanceId).bot(botId);
-
-await bot.chat.send("Hello from SoulFire");
-
-for await (const event of bot.events()) {
-  console.log(event);
-}
+await Effect.runPromise(
+  Effect.scoped(
+    Effect.gen(function* () {
+      const soulfire = yield* SoulFire.connect(options);
+      const bot = soulfire.instance(instanceId).bot(botId);
+      yield* bot.chat.send("Hello from SoulFire");
+    }),
+  ),
+  { signal },
+);
 ```
 
-The facade should:
+Use `Stream.toAsyncIterable` or `Stream.toReadableStream` when the host needs
+those interfaces. Consume adapters within the connection's lifetime.
+Generated ConnectRPC clients remain available as a transport escape hatch.
 
-- Cover every core and generated plugin capability.
-- Translate expected Effect failures into stable JavaScript error subclasses rather than leaking `FiberFailure`.
-- Preserve `cause`, request IDs, server error codes, and retryability.
-- Preserve stream laziness, cleanup, backpressure, and cancellation.
-- Use `AsyncDisposable` for clients, sessions, leases, local servers, and task subscriptions.
-- Be generated or mechanically derived from the Effect operation catalog so parity cannot drift.
-- Have its own API and integration tests.
-
-Effect remains the API shown first in TypeScript documentation. Promise examples live in clearly labeled tabs and are treated as a supported interoperability surface, not a compatibility shim.
+All behavior combinators use the same Effect implementation. Stream cleanup
+aborts pending transport reads before closing their iterators.
 
 ### Cross-runtime TypeScript support
 
@@ -659,7 +631,7 @@ If practical:
 
 ### Language design acceptance suite
 
-Before freezing the APIs, implement the same representative programs in Effect TypeScript, Promise TypeScript, async Python, and sync Python:
+Before freezing the APIs, implement the same representative programs in Effect TypeScript, an async TypeScript host, async Python, and sync Python:
 
 1. Connect, negotiate capabilities, and close cleanly.
 2. Build a chat bot with a cancellable event stream.
@@ -672,7 +644,7 @@ Before freezing the APIs, implement the same representative programs in Effect T
 
 Treat these programs as compile-time and integration tests. The native language surfaces may look different, but their capabilities and protocol behavior must match.
 
-TypeScript snippets elsewhere in this roadmap may use the Promise facade when that keeps a subsystem example focused on its domain. Published TypeScript documentation must lead with the Effect API and label Promise examples explicitly.
+Subsystem snippets in this roadmap illustrate domain operations. Use `yield*` inside `Effect.gen` for SDK calls. The SDK README contains checked examples of the current public API.
 
 ## Connection and capability negotiation
 
@@ -752,7 +724,7 @@ for await (const message of session.chat.events()) {
 - Keep read-only state maps for entities, players, blocks, inventory, effects, teams, boss bars, and scoreboards.
 - Expose typed event filters.
 - Support `waitFor` and `once` helpers.
-- Close cleanly through an Effect `Scope`, an `AbortSignal` in the Promise facade, or a Python context manager.
+- Close cleanly through an Effect `Scope`, host cancellation at the Effect runtime boundary, or a Python context manager.
 
 ### Event envelope
 
@@ -2332,7 +2304,6 @@ Suggested packages:
 
 - `@soulfiremc/protocol`
 - `@soulfiremc/sdk` with the canonical Effect API
-- `@soulfiremc/sdk/promise` as a package export for Promise interoperability
 - `@soulfiremc/sdk-node`
 - Python `soulfire`
 - `soulfire-sdk` CLI
@@ -2527,7 +2498,7 @@ Expand that section using the Diátaxis structure below. Documentation work is p
 ### Tutorials
 
 - Build your first SoulFire bot with Effect.
-- Build your first SoulFire bot with the Promise facade.
+- Run a scoped SoulFire workflow from an async host.
 - Build your first async Python bot.
 - Build your first synchronous Python bot.
 - Build a chat bot.
@@ -2597,7 +2568,7 @@ Deliver:
 - Shared TypeScript and Python capability checklist.
 - Typed error design.
 - Effect-first TypeScript architecture decision.
-- Promise facade generation strategy.
+- Host and transport interoperability boundaries.
 - Newest-stable-Python version policy.
 - Sync and async Python client architecture.
 - Language design acceptance programs.
@@ -2607,7 +2578,7 @@ Exit criteria:
 - Core protocol has one source of truth.
 - SDK and server compatibility is checked at connection time.
 - A protocol change cannot merge without compatibility validation.
-- Effect, Promise, async Python, and sync Python API shapes are approved before the high-level surface expands.
+- Effect, async-host integration, async Python, and sync Python API shapes are approved before the high-level surface expands.
 
 ### Phase 1: Plugin RPC foundation
 
@@ -2641,7 +2612,7 @@ Deliver:
 - Typed errors.
 - Cancellation and cleanup.
 - Effect services, layers, scopes, streams, schedules, and tagged errors.
-- Promise facade backed by a managed Effect runtime.
+- Async-host integration through one scoped Effect workflow.
 - Modern async and sync Python clients.
 - TypeScript and Python parity tests.
 - Effect and Promise interoperability tests.
@@ -2714,7 +2685,7 @@ Deliver:
 - `soulfire-sdk` CLI.
 - TypeScript plugin SDK generator.
 - Python plugin SDK generator.
-- Effect and Promise clients generated from one plugin operation model.
+- Effect clients generated from one plugin operation model.
 - Async and sync Python clients generated from one plugin operation model.
 - Reflective invocation.
 - SDK module registration.
@@ -2754,7 +2725,7 @@ Deliver:
 - Security review.
 - Plugin isolation review.
 - Effect dependency and platform compatibility matrix.
-- Promise facade parity suite.
+- Async-host cancellation and scoped cleanup tests.
 - Newest-stable-Python dependency and runtime validation.
 - Complete tutorial, how-to, reference, and explanation documentation published on `soulfiremc.com`.
 - Generated SDK and protocol references integrated into the website build.
@@ -2779,7 +2750,7 @@ The first concrete slices should be:
 5. Design `PluginContext`, `PluginRpcRegistry`, and dynamic permissions together.
 6. Register an example plugin service before the RPC server is built.
 7. Expose plugin descriptors through `PluginApiService`.
-8. Generate and call the example plugin from Effect, Promise, async Python, and sync Python.
+8. Generate and call the example plugin from Effect, an async TypeScript host, async Python, and sync Python.
 9. Add the event envelope and resumable stream fields.
 10. Build `BotSession` and migrate one SoulFireClient bot view to it.
 11. Define `BotTaskService` and resource arbitration.
@@ -2807,7 +2778,7 @@ The SDK should use the latest stable Effect release when dependencies are frozen
 
 Keep the protobuf transport behind SoulFire Effect services and layers. Adopt `@effect/platform` modules only after verifying their stability, browser behavior, bundle impact, and compatibility with ConnectRPC.
 
-The Promise facade is generated from the Effect operation catalog and tested for complete parity. It must not become a separately designed SDK that drifts from the canonical surface.
+The SDK keeps one Effect implementation. Async hosts use standard Effect runtime and stream adapters.
 
 ### Newest Python dependency support
 
@@ -2837,7 +2808,7 @@ SoulFire is ready to be recommended as a general mineflayer replacement when:
 - First-party pathfinder, collection, tools, armor, PVP, auto-eat, builder, state-machine, viewer, and GUI capabilities exist.
 - TypeScript and Python expose equivalent feature sets.
 - TypeScript is Effect-first across core services, plugins, streams, tasks, errors, resource scopes, and documentation.
-- The Promise facade exposes every TypeScript capability through Promises, async iterables, readable streams where relevant, abort signals, and async disposal.
+- Async hosts run complete scoped workflows with `Effect.runPromise` and forward cancellation through `AbortSignal`.
 - The Python package requires the newest stable CPython selected for the release and uses its useful modern APIs without older-version shims.
 - Async and sync Python clients pass the same behavioral capability suite and strict type checking.
 - `BotSession` provides reliable synchronized state.
