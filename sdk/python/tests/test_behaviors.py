@@ -1,89 +1,184 @@
 import asyncio
-from typing import cast
+from typing import Protocol, cast
 
 import pytest
+from effect_py import (
+    EffectGen,
+    Failure,
+    fail,
+    fn,
+    from_async,
+    layer,
+    run_async,
+    run_async_exit,
+    service,
+    succeed,
+    sync,
+)
+from effect_py.errors import TaggedError
 
 from soulfire.behaviors import (
     SoulFireBehaviorTimeoutError,
     cleanup,
     define_behavior,
+    fallback,
     parallel,
     race,
+    repeat,
     retry,
     sequence,
     timeout,
+    until,
 )
-from soulfire.bot import AsyncSoulFireBot
+from soulfire.bot import SoulFireBot
 
-bot = cast(AsyncSoulFireBot, object())
+bot = cast(SoulFireBot, object())
 
 
-@pytest.mark.asyncio
-async def test_combinators_preserve_order_parallelize_and_retry() -> None:
-    calls: list[int] = []
-    attempts = 0
+class Unavailable(TaggedError):
+    pass
 
-    async def first(_: AsyncSoulFireBot) -> str:
-        calls.append(1)
-        return "first"
 
-    async def second(_: AsyncSoulFireBot) -> str:
-        calls.append(2)
-        return "second"
+class Counter(Protocol):
+    def increment(self) -> int: ...
 
-    async def unstable(_: AsyncSoulFireBot) -> int:
-        nonlocal attempts
-        attempts += 1
-        if attempts < 3:
-            raise RuntimeError
-        return attempts
 
-    assert await sequence(define_behavior(first), define_behavior(second)).run(bot) == (
-        "first",
-        "second",
+class InMemoryCounter:
+    value = 0
+
+    def increment(self) -> int:
+        self.value += 1
+        return self.value
+
+
+async def test_combinators_preserve_services_errors_and_result_order() -> None:
+    counter = InMemoryCounter()
+
+    @fn("increment")
+    def increment(_: SoulFireBot) -> EffectGen[int, Unavailable, Counter]:
+        dependency = yield from service(Counter)
+        value = dependency.increment()
+        if value < 3:
+            return (yield from fail(Unavailable()))
+        return value
+
+    behavior = sequence(
+        retry(define_behavior(increment), attempts=3),
+        repeat(define_behavior(lambda _: succeed(7)), times=2),
     )
-    assert calls == [1, 2]
-    assert await parallel(define_behavior(second), define_behavior(first)).run(bot) == (
-        "second",
-        "first",
+    result = await run_async(
+        behavior.run(bot).pipe(layer.provide(layer.succeed(Counter, counter))).or_die()
     )
-    assert await retry(define_behavior(unstable), attempts=3).run(bot) == 3
+    assert result == (3, (7, 7))
+    assert counter.value == 3
 
 
-@pytest.mark.asyncio
-async def test_race_cancels_loser_and_cleanup_runs_after_failure() -> None:
-    loser_cancelled = asyncio.Event()
-    cleaned = False
+async def test_parallel_fails_fast_and_waits_for_sibling_cleanup() -> None:
+    started = asyncio.Event()
+    cleaned = asyncio.Event()
 
-    async def winner(_: AsyncSoulFireBot) -> int:
-        await asyncio.sleep(0)
-        return 7
-
-    async def loser(_: AsyncSoulFireBot) -> int:
-        try:
-            await asyncio.Event().wait()
-        finally:
-            loser_cancelled.set()
-        return 0
-
-    async def failing(_: AsyncSoulFireBot) -> None:
-        raise RuntimeError
-
-    async def finalizer(_: AsyncSoulFireBot) -> None:
-        nonlocal cleaned
-        cleaned = True
-
-    assert await race(define_behavior(loser), define_behavior(winner)).run(bot) == 7
-    await asyncio.wait_for(loser_cancelled.wait(), timeout=1)
-    with pytest.raises(RuntimeError):
-        await cleanup(define_behavior(failing), define_behavior(finalizer)).run(bot)
-    assert cleaned
-
-
-@pytest.mark.asyncio
-async def test_timeout_finishes_when_behavior_ignores_external_cancellation() -> None:
-    async def never(_: AsyncSoulFireBot) -> None:
+    async def blocked() -> None:
+        started.set()
         await asyncio.Event().wait()
 
-    with pytest.raises(SoulFireBehaviorTimeoutError):
-        await timeout(define_behavior(never), 0.001).run(bot)
+    @fn("fail_after_sibling_starts")
+    def failing(_: SoulFireBot) -> EffectGen[None, Unavailable]:
+        yield from from_async(started.wait)
+        return (yield from fail(Unavailable()))
+
+    waiting = cleanup(
+        define_behavior(lambda _: from_async(blocked)), define_behavior(lambda _: sync(cleaned.set))
+    )
+    result = await asyncio.wait_for(
+        run_async_exit(parallel(waiting, define_behavior(failing)).run(bot)), 1
+    )
+    assert isinstance(result, Failure)
+    assert isinstance(result.error, Unavailable)
+    assert cleaned.is_set()
+
+
+async def test_race_waits_for_loser_cleanup_and_ignores_typed_failures() -> None:
+    started = asyncio.Event()
+    cleaned = asyncio.Event()
+
+    async def blocked() -> int:
+        started.set()
+        await asyncio.Event().wait()
+        return 0
+
+    @fn("winner")
+    def winner(_: SoulFireBot) -> EffectGen[int]:
+        yield from from_async(started.wait)
+        return 7
+
+    loser = cleanup(
+        define_behavior(lambda _: from_async(blocked)), define_behavior(lambda _: sync(cleaned.set))
+    )
+    result = await run_async(
+        race(loser, define_behavior(lambda _: fail(Unavailable())), define_behavior(winner))
+        .run(bot)
+        .or_die()
+    )
+    assert result == 7
+    assert cleaned.is_set()
+
+
+async def test_cleanup_runs_on_external_cancellation() -> None:
+    started = asyncio.Event()
+    cleaned = asyncio.Event()
+
+    async def wait() -> None:
+        started.set()
+        await asyncio.Event().wait()
+
+    behavior = cleanup(
+        define_behavior(lambda _: from_async(wait)), define_behavior(lambda _: sync(cleaned.set))
+    )
+    task = asyncio.create_task(run_async(behavior.run(bot)))
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert cleaned.is_set()
+
+
+async def test_timeout_awaits_cleanup_before_returning_typed_failure() -> None:
+    cleaned = asyncio.Event()
+    behavior = cleanup(
+        define_behavior(lambda _: from_async(asyncio.Event().wait)),
+        define_behavior(lambda _: sync(cleaned.set)),
+    )
+    result = await run_async_exit(timeout(behavior, 0.001).run(bot))
+    assert isinstance(result, Failure)
+    assert isinstance(result.error, SoulFireBehaviorTimeoutError)
+    assert cleaned.is_set()
+
+
+async def test_retry_predicate_and_fallback_only_handle_typed_errors() -> None:
+    attempts = 0
+
+    @fn("fail")
+    def failing(_: SoulFireBot) -> EffectGen[int, Unavailable]:
+        nonlocal attempts
+        attempts += 1
+        return (yield from fail(Unavailable()))
+
+    selected = fallback(
+        retry(define_behavior(failing), attempts=4, while_=lambda _: False),
+        define_behavior(lambda _: succeed(9)),
+    )
+    assert await run_async(selected.run(bot).or_die()) == 9
+    assert attempts == 1
+    defective = define_behavior(lambda _: sync(lambda: 1 / 0))
+    with pytest.raises(ZeroDivisionError):
+        await run_async(fallback(defective, define_behavior(lambda _: succeed(9))).run(bot))
+
+
+async def test_until_accepts_an_effect_predicate() -> None:
+    counter = InMemoryCounter()
+    behavior = until(
+        define_behavior(lambda _: sync(counter.increment)),
+        lambda value: succeed(value == 3),
+        maximum_iterations=4,
+    )
+    assert await run_async(behavior.run(bot).or_die()) == 3

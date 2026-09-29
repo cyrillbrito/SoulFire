@@ -1,6 +1,8 @@
 import asyncio
 from collections.abc import AsyncIterator
 
+from effect_py import fork, from_async, gen, join, run_async, scoped
+
 from soulfire.bot_live_pb2 import (
     BOSS_BAR_EVENT_ADD,
     ENTITY_EVENT_SPAWN,
@@ -34,10 +36,11 @@ from soulfire.domain_pb2 import (
     TextComponent,
 )
 from soulfire.session import (
-    AsyncBotSession,
+    BotSession,
     empty_bot_session_state,
     reduce_bot_session_state,
 )
+from soulfire.transport import rpc_stream
 
 
 def event(
@@ -78,22 +81,25 @@ async def test_async_session_merges_snapshot_and_delta() -> None:
         )
         await asyncio.Future()
 
-    session = await AsyncBotSession.open(stream)
-    assert session.state.player is not None
-    assert session.state.player.health == 20
+    @gen
+    def workflow():
+        session = yield from BotSession.open(
+            lambda request: rpc_stream("watch", lambda: stream(request))
+        )
+        assert session.state.player is not None
+        assert session.state.player.health == 20
+        waiter = yield from fork(session.once("state_delta"))
+        yield from from_async(lambda: asyncio.sleep(0))
+        release_delta.set()
+        yield from join(waiter)
+        assert session.state.player is not None
+        assert session.state.player.x == 3
+        assert session.state.player.y == 64
+        assert session.state.player.health == 14
+        assert session.state.player.max_health == 20
+        assert session.state.sequence == 2
 
-    changed = asyncio.create_task(session.once("state_delta"))
-    await asyncio.sleep(0)
-    release_delta.set()
-    await changed
-
-    assert session.state.player is not None
-    assert session.state.player.x == 3
-    assert session.state.player.y == 64
-    assert session.state.player.health == 14
-    assert session.state.player.max_health == 20
-    assert session.state.sequence == 2
-    await session.close()
+    await run_async(scoped(workflow).or_die())
 
 
 def test_session_indexes_semantic_world_snapshots() -> None:

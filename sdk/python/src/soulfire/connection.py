@@ -4,21 +4,12 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Final
 
+from .errors import SoulFireCapabilityError, SoulFireCompatibilityError
 from .plugin_api_pb2 import PluginApiDescriptor
 from .sdk_pb2 import SdkApiVersion, SdkHandshakeResponse, SdkIdentity
 
 SDK_VERSION: Final = "2.11.0"
 SDK_API_VERSION: Final = SdkApiVersion(major=1, minor=0, patch=0)
-
-
-class SoulFireCompatibilityError(RuntimeError):
-    """The server and SDK cannot safely communicate."""
-
-
-class SoulFireCapabilityError(RuntimeError):
-    def __init__(self, capability: str) -> None:
-        super().__init__(f"SoulFire capability is unavailable: {capability}")
-        self.capability = capability
 
 
 @dataclass(frozen=True, slots=True)

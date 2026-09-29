@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Iterable, Iterator
+from collections.abc import Iterable
+
+from effect_py import Effect, EffectGen, Scope, acquire_release, fail, fn, gen, scoped
 
 from .actions import action_headers, require_action
-from .bot_connect import BotServiceClient, BotServiceClientSync
-from .bot_live_connect import BotLiveServiceClient, BotLiveServiceClientSync
+from .bot_connect import BotServiceClient
+from .bot_live_connect import BotLiveServiceClient
 from .bot_live_pb2 import (
     HAND_MAIN,
     AcquireBotControlRequest,
@@ -78,40 +80,31 @@ from .bot_pb2 import (
     RestartBotsRequest,
     SetBotsDesiredStateRequest,
 )
-from .camera import AsyncSoulFireCamera, SoulFireCamera
-from .chat_connect import ChatServiceClient, ChatServiceClientSync
+from .camera import SoulFireCamera
+from .chat_connect import ChatServiceClient
 from .common_pb2 import BlockPosition
-from .inventory_connect import InventoryServiceClient, InventoryServiceClientSync
+from .errors import SoulFireOperationError, operation_error
+from .inventory_connect import InventoryServiceClient
 from .inventory_pb2 import InventoryScope
-from .pathfinding import AsyncSoulFirePathfinder, SoulFirePathfinder
-from .pathfinding_connect import (
-    PathfinderServiceClient,
-    PathfinderServiceClientSync,
-)
-from .protocol import AsyncSoulFireProtocol, SoulFireProtocol
-from .protocol_connect import BotProtocolServiceClient, BotProtocolServiceClientSync
-from .recipe_connect import RecipeServiceClient, RecipeServiceClientSync
-from .registry_connect import RegistryServiceClient, RegistryServiceClientSync
+from .pathfinding import SoulFirePathfinder
+from .pathfinding_connect import PathfinderServiceClient
+from .protocol import SoulFireProtocol
+from .protocol_connect import BotProtocolServiceClient
+from .recipe_connect import RecipeServiceClient
+from .registry_connect import RegistryServiceClient
 from .semantic import (
-    AsyncSoulFireChat,
-    AsyncSoulFireInventory,
-    AsyncSoulFireRecipes,
-    AsyncSoulFireRegistry,
-    AsyncSoulFireWorld,
     SoulFireChat,
     SoulFireInventory,
     SoulFireRecipes,
     SoulFireRegistry,
     SoulFireWorld,
 )
-from .session import (
-    AsyncBotSession,
-    BotSession,
-    BotSessionOptions,
-)
-from .task_connect import BotTaskServiceClient, BotTaskServiceClientSync
-from .tasks import AsyncSoulFireTasks, SoulFireTasks
-from .world_connect import WorldServiceClient, WorldServiceClientSync
+from .session import BotSession, BotSessionOptions
+from .streams import End, Stream
+from .task_connect import BotTaskServiceClient
+from .tasks import SoulFireTasks
+from .transport import rpc, rpc_stream, validate
+from .world_connect import WorldServiceClient
 
 
 def default_event_filter() -> BotEventFilter:
@@ -141,7 +134,7 @@ _require_action = require_action
 _action_headers = action_headers
 
 
-class AsyncSoulFireBot:
+class SoulFireBot:
     def __init__(
         self,
         instance_id: str,
@@ -156,897 +149,6 @@ class AsyncSoulFireBot:
         registry_client: RegistryServiceClient | None = None,
         world_client: WorldServiceClient | None = None,
         protocol_client: BotProtocolServiceClient | None = None,
-    ) -> None:
-        self.instance_id = instance_id
-        self.id = bot_id
-        self._bot_client = bot_client
-        self._live_client = live_client
-        self._task_client = task_client
-        self._pathfinder_client = pathfinder_client
-        self._chat_client = chat_client
-        self._inventory_client = inventory_client
-        self._recipe_client = recipe_client
-        self._registry_client = registry_client
-        self._world_client = world_client
-        self._protocol_client = protocol_client
-        self._control_token: str | None = None
-
-    @property
-    def tasks(self) -> AsyncSoulFireTasks:
-        if self._task_client is None:
-            raise RuntimeError("The bot task service is unavailable")
-        return AsyncSoulFireTasks(
-            self.instance_id,
-            self.id,
-            self._task_client,
-            lambda headers: _action_headers(headers, self._control_token),
-        )
-
-    @property
-    def pathfinder(self) -> AsyncSoulFirePathfinder:
-        return AsyncSoulFirePathfinder(
-            self.instance_id,
-            self.id,
-            _required_service(self._pathfinder_client, "pathfinder"),
-            self.tasks,
-        )
-
-    @property
-    def chat(self) -> AsyncSoulFireChat:
-        return AsyncSoulFireChat(
-            self.instance_id,
-            self.id,
-            _required_service(self._chat_client, "chat"),
-            lambda headers: _action_headers(headers, self._control_token),
-            lambda event_filter, timeout_ms: self.events(
-                event_filter,
-                timeout_ms=timeout_ms,
-            ),
-        )
-
-    @property
-    def inventory(self) -> AsyncSoulFireInventory:
-        return AsyncSoulFireInventory(
-            self.instance_id,
-            self.id,
-            _required_service(self._inventory_client, "inventory"),
-            lambda headers: _action_headers(headers, self._control_token),
-        )
-
-    @property
-    def recipes(self) -> AsyncSoulFireRecipes:
-        return AsyncSoulFireRecipes(
-            InventoryScope(instance_id=self.instance_id, bot_id=self.id),
-            _required_service(self._recipe_client, "recipe"),
-            self.tasks,
-        )
-
-    @property
-    def registry(self) -> AsyncSoulFireRegistry:
-        return AsyncSoulFireRegistry(
-            self.instance_id,
-            self.id,
-            _required_service(self._registry_client, "registry"),
-        )
-
-    @property
-    def world(self) -> AsyncSoulFireWorld:
-        return AsyncSoulFireWorld(
-            self.instance_id,
-            self.id,
-            _required_service(self._world_client, "world"),
-        )
-
-    @property
-    def camera(self) -> AsyncSoulFireCamera:
-        return AsyncSoulFireCamera(self.instance_id, self.id, self._bot_client)
-
-    @property
-    def protocol(self) -> AsyncSoulFireProtocol:
-        return AsyncSoulFireProtocol(
-            self.instance_id,
-            self.id,
-            _required_service(self._protocol_client, "protocol"),
-        )
-
-    async def start(self, *, timeout_ms: int | None = None) -> BotStatus:
-        response = await self._bot_client.set_bots_desired_state(
-            SetBotsDesiredStateRequest(
-                instance_id=self.instance_id,
-                bot_ids=[self.id],
-                desired_state=BOT_DESIRED_STATE_RUNNING,
-            ),
-            timeout_ms=timeout_ms,
-        )
-        return _required_status(response.bots, self.id)
-
-    async def stop(self, *, timeout_ms: int | None = None) -> BotStatus:
-        response = await self._bot_client.set_bots_desired_state(
-            SetBotsDesiredStateRequest(
-                instance_id=self.instance_id,
-                bot_ids=[self.id],
-                desired_state=BOT_DESIRED_STATE_STOPPED,
-            ),
-            timeout_ms=timeout_ms,
-        )
-        return _required_status(response.bots, self.id)
-
-    async def restart(self, *, timeout_ms: int | None = None) -> BotStatus:
-        response = await self._bot_client.restart_bots(
-            RestartBotsRequest(instance_id=self.instance_id, bot_ids=[self.id]),
-            timeout_ms=timeout_ms,
-        )
-        return _required_status(response.bots, self.id)
-
-    async def status(self, *, timeout_ms: int | None = None) -> BotStatus:
-        return (await self.info(timeout_ms=timeout_ms)).status
-
-    async def info(self, *, timeout_ms: int | None = None) -> BotInfoResponse:
-        return await self._bot_client.get_bot_info(
-            BotInfoRequest(instance_id=self.instance_id, bot_id=self.id),
-            timeout_ms=timeout_ms,
-        )
-
-    async def wait_for_online(
-        self,
-        *,
-        timeout_ms: int | None = None,
-    ) -> BotStatus:
-        current = await self.info(timeout_ms=timeout_ms)
-        latest_status = current.status
-        if current.HasField("live_state"):
-            return latest_status
-        async for event in self.events(timeout_ms=timeout_ms):
-            event_type = event.WhichOneof("event")
-            if event_type == "status":
-                latest_status = event.status
-            elif event_type == "snapshot":
-                return latest_status
-        raise RuntimeError(f"Bot {self.id} event stream ended before it came online")
-
-    def events(
-        self,
-        event_filter: BotEventFilter | None = None,
-        *,
-        timeout_ms: int | None = None,
-    ) -> AsyncIterator[BotEvent]:
-        return self._live_client.watch_bot_events(
-            WatchBotEventsRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                filter=event_filter or default_event_filter(),
-            ),
-            timeout_ms=timeout_ms,
-        )
-
-    async def observe(
-        self,
-        options: BotSessionOptions | None = None,
-        *,
-        timeout_ms: int | None = None,
-    ) -> AsyncBotSession:
-        def stream(request: WatchBotEventsRequest) -> AsyncIterator[BotEvent]:
-            request.instance_id = self.instance_id
-            request.bot_id = self.id
-            return self._live_client.watch_bot_events(
-                request,
-                timeout_ms=timeout_ms,
-            )
-
-        return await AsyncBotSession.open(stream, options)
-
-    async def send_chat(
-        self,
-        message: str,
-        *,
-        timeout_ms: int | None = None,
-    ) -> BotActionResult:
-        from .bot_live_pb2 import SendChatRequest
-
-        response = await self._live_client.send_chat(
-            SendChatRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                message=message,
-            ),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
-        )
-        return _require_action(response.result)
-
-    async def get_block(
-        self,
-        position: BlockPosition,
-        *,
-        timeout_ms: int | None = None,
-    ) -> GetBlockResponse:
-        return await self._live_client.get_block(
-            GetBlockRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                position=position,
-            ),
-            timeout_ms=timeout_ms,
-        )
-
-    async def find_blocks(
-        self,
-        block_ids: Iterable[str],
-        *,
-        max_distance: int,
-        max_count: int,
-        timeout_ms: int | None = None,
-    ) -> FindBlocksResponse:
-        return await self._live_client.find_blocks(
-            FindBlocksRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                block_ids=block_ids,
-                max_distance=max_distance,
-                max_count=max_count,
-            ),
-            timeout_ms=timeout_ms,
-        )
-
-    async def list_nearby_entities(
-        self,
-        radius: float,
-        *,
-        entity_types: Iterable[str] = (),
-        include_players: bool = True,
-        timeout_ms: int | None = None,
-    ) -> ListNearbyEntitiesResponse:
-        return await self._live_client.list_nearby_entities(
-            ListNearbyEntitiesRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                radius=radius,
-                entity_types=entity_types,
-                include_players=include_players,
-            ),
-            timeout_ms=timeout_ms,
-        )
-
-    async def dig_block(
-        self,
-        position: BlockPosition,
-        *,
-        cancel: bool = False,
-        timeout_ms: int | None = None,
-    ) -> BotActionResult:
-        response = await self._live_client.dig_block(
-            DigBlockRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                position=position,
-                cancel=cancel,
-            ),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
-        )
-        return _require_action(response.result)
-
-    async def place_block(
-        self,
-        against: BlockPosition,
-        face: BlockFace,
-        hand: Hand = HAND_MAIN,
-        *,
-        timeout_ms: int | None = None,
-    ) -> BotActionResult:
-        response = await self._live_client.place_block(
-            PlaceBlockRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                against=against,
-                face=face,
-                hand=hand,
-            ),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
-        )
-        return _require_action(response.result)
-
-    async def interact_block(
-        self,
-        position: BlockPosition,
-        face: BlockFace,
-        hand: Hand = HAND_MAIN,
-        *,
-        sneaking: bool = False,
-        timeout_ms: int | None = None,
-    ) -> BotActionResult:
-        response = await self._live_client.interact_block(
-            InteractBlockRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                position=position,
-                face=face,
-                hand=hand,
-                sneaking=sneaking,
-            ),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
-        )
-        return _require_action(response.result)
-
-    async def use_item(
-        self,
-        hand: Hand = HAND_MAIN,
-        *,
-        timeout_ms: int | None = None,
-    ) -> BotActionResult:
-        response = await self._live_client.use_item(
-            UseItemRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                hand=hand,
-            ),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
-        )
-        return _require_action(response.result)
-
-    async def release_item(
-        self,
-        *,
-        timeout_ms: int | None = None,
-    ) -> BotActionResult:
-        response = await self._live_client.release_item(
-            ReleaseItemRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-            ),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
-        )
-        return _require_action(response.result)
-
-    async def attack_entity(
-        self,
-        entity_id: int,
-        *,
-        sprinting: bool = False,
-        timeout_ms: int | None = None,
-    ) -> BotActionResult:
-        response = await self._live_client.attack_entity(
-            AttackEntityRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                entity_id=entity_id,
-                sprinting=sprinting,
-            ),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
-        )
-        return _require_action(response.result)
-
-    async def interact_entity(
-        self,
-        entity_id: int,
-        *,
-        hand: Hand = HAND_MAIN,
-        sneaking: bool = False,
-        timeout_ms: int | None = None,
-    ) -> BotActionResult:
-        response = await self._live_client.interact_entity(
-            InteractEntityRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                entity_id=entity_id,
-                hand=hand,
-                sneaking=sneaking,
-            ),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
-        )
-        return _require_action(response.result)
-
-    async def swing_arm(
-        self,
-        hand: Hand = HAND_MAIN,
-        *,
-        timeout_ms: int | None = None,
-    ) -> BotActionResult:
-        response = await self._live_client.swing_arm(
-            SwingArmRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                hand=hand,
-            ),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
-        )
-        return _require_action(response.result)
-
-    async def respawn(self, *, timeout_ms: int | None = None) -> BotActionResult:
-        response = await self._live_client.respawn(
-            RespawnRequest(instance_id=self.instance_id, bot_id=self.id),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
-        )
-        return _require_action(response.result)
-
-    async def sleep(
-        self,
-        bed: BlockPosition,
-        hand: Hand = HAND_MAIN,
-        *,
-        timeout_ms: int | None = None,
-    ) -> BotActionResult:
-        response = await self._live_client.sleep(
-            SleepRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                bed=bed,
-                hand=hand,
-            ),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
-        )
-        return _require_action(response.result)
-
-    async def wake(self, *, timeout_ms: int | None = None) -> BotActionResult:
-        response = await self._live_client.wake(
-            WakeRequest(instance_id=self.instance_id, bot_id=self.id),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
-        )
-        return _require_action(response.result)
-
-    async def mount(
-        self,
-        entity_id: int,
-        hand: Hand = HAND_MAIN,
-        *,
-        timeout_ms: int | None = None,
-    ) -> MountEntityResponse:
-        response = await self._live_client.mount_entity(
-            MountEntityRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                entity_id=entity_id,
-                hand=hand,
-            ),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
-        )
-        _require_action(response.result)
-        return response
-
-    async def dismount(self, *, timeout_ms: int | None = None) -> BotActionResult:
-        response = await self._live_client.dismount(
-            DismountRequest(instance_id=self.instance_id, bot_id=self.id),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
-        )
-        return _require_action(response.result)
-
-    async def set_vehicle_control(
-        self,
-        *,
-        forward: bool | None = None,
-        backward: bool | None = None,
-        left: bool | None = None,
-        right: bool | None = None,
-        jump: bool | None = None,
-        sneak: bool | None = None,
-        sprint: bool | None = None,
-        yaw: float | None = None,
-        pitch: float | None = None,
-        timeout_ms: int | None = None,
-    ) -> SetVehicleControlResponse:
-        request = SetVehicleControlRequest(
-            instance_id=self.instance_id,
-            bot_id=self.id,
-        )
-        _apply_vehicle_control(
-            request,
-            forward=forward,
-            backward=backward,
-            left=left,
-            right=right,
-            jump=jump,
-            sneak=sneak,
-            sprint=sprint,
-            yaw=yaw,
-            pitch=pitch,
-        )
-        response = await self._live_client.set_vehicle_control(
-            request,
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
-        )
-        _require_action(response.result)
-        return response
-
-    async def update_sign(
-        self,
-        position: BlockPosition,
-        lines: Iterable[str],
-        *,
-        front_text: bool = True,
-        timeout_ms: int | None = None,
-    ) -> BotActionResult:
-        response = await self._live_client.update_sign(
-            UpdateSignRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                position=position,
-                front_text=front_text,
-                lines=list(lines),
-            ),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
-        )
-        return _require_action(response.result)
-
-    async def write_book(
-        self,
-        inventory_slot: int,
-        pages: Iterable[str],
-        *,
-        title: str | None = None,
-        timeout_ms: int | None = None,
-    ) -> BotActionResult:
-        response = await self._live_client.write_book(
-            WriteBookRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                inventory_slot=inventory_slot,
-                pages=list(pages),
-                **({} if title is None else {"title": title}),
-            ),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
-        )
-        return _require_action(response.result)
-
-    async def respond_resource_pack(
-        self,
-        pack_id: str,
-        response: ResourcePackResponse,
-        *,
-        timeout_ms: int | None = None,
-    ) -> BotActionResult:
-        result = await self._live_client.respond_resource_pack(
-            RespondResourcePackRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                pack_id=pack_id,
-                response=response,
-            ),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
-        )
-        return _require_action(result.result)
-
-    async def set_flying(
-        self,
-        flying: bool,
-        *,
-        timeout_ms: int | None = None,
-    ) -> BotActionResult:
-        response = await self._live_client.set_flying(
-            SetFlyingRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                flying=flying,
-            ),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
-        )
-        return _require_action(response.result)
-
-    async def start_elytra_flight(
-        self,
-        *,
-        timeout_ms: int | None = None,
-    ) -> BotActionResult:
-        response = await self._live_client.start_elytra_flight(
-            StartElytraFlightRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-            ),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
-        )
-        return _require_action(response.result)
-
-    async def set_creative_slot(
-        self,
-        slot: int,
-        item_id: str | None = None,
-        *,
-        count: int = 1,
-        timeout_ms: int | None = None,
-    ) -> BotActionResult:
-        response = await self._live_client.set_creative_slot(
-            SetCreativeSlotRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                slot=slot,
-                **(
-                    {}
-                    if item_id is None
-                    else {"item": CreativeItemStack(item_id=item_id, count=count)}
-                ),
-            ),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
-        )
-        return _require_action(response.result)
-
-    async def wait_for_chunks(
-        self,
-        radius_chunks: int = 0,
-        *,
-        wait_timeout_ms: int = 0,
-        timeout_ms: int | None = None,
-    ) -> WaitForChunksResponse:
-        return await self._live_client.wait_for_chunks(
-            WaitForChunksRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                radius_chunks=radius_chunks,
-                timeout_ms=wait_timeout_ms,
-            ),
-            timeout_ms=timeout_ms,
-        )
-
-    def go_to(
-        self,
-        goal: PathfindGoal,
-        options: PathfindOptions | None = None,
-        *,
-        timeout_ms: int | None = None,
-    ) -> AsyncIterator[PathfindProgress]:
-        return self._live_client.go_to(
-            GoToRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                goal=goal,
-                options=options,
-            ),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
-        )
-
-    async def stop_pathfinding(self, *, timeout_ms: int | None = None) -> None:
-        await self._live_client.stop_pathfinding(
-            StopPathfindingRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-            ),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
-        )
-
-    async def inventory_state(self, *, timeout_ms: int | None = None) -> BotInventoryStateResponse:
-        return await self._bot_client.get_inventory_state(
-            BotInventoryStateRequest(instance_id=self.instance_id, bot_id=self.id),
-            timeout_ms=timeout_ms,
-        )
-
-    async def click_inventory(
-        self,
-        slot: int,
-        click_type: ClickType = LEFT_CLICK,
-        *,
-        hotbar_slot: int = 0,
-        timeout_ms: int | None = None,
-    ) -> None:
-        response = await self._bot_client.click_inventory_slot(
-            BotInventoryClickRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                slot=slot,
-                click_type=click_type,
-                hotbar_slot=hotbar_slot,
-            ),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
-        )
-        _require_success(response.success, response.error, "Inventory click failed")
-
-    async def transfer_inventory_slot(
-        self,
-        slot: int,
-        *,
-        timeout_ms: int | None = None,
-    ) -> None:
-        await self.click_inventory(slot, SHIFT_LEFT_CLICK, timeout_ms=timeout_ms)
-
-    async def drop_inventory_slot(
-        self,
-        slot: int,
-        *,
-        all: bool = True,
-        timeout_ms: int | None = None,
-    ) -> None:
-        await self.click_inventory(
-            slot,
-            DROP_ALL if all else DROP_ONE,
-            timeout_ms=timeout_ms,
-        )
-
-    async def move_inventory_stack(
-        self,
-        from_slot: int,
-        to_slot: int,
-        *,
-        timeout_ms: int | None = None,
-    ) -> None:
-        await self.click_inventory(from_slot, timeout_ms=timeout_ms)
-        await self.click_inventory(to_slot, timeout_ms=timeout_ms)
-        state = await self.inventory_state(timeout_ms=timeout_ms)
-        if state.HasField("carried_item") and state.carried_item.count > 0:
-            await self.click_inventory(from_slot, timeout_ms=timeout_ms)
-
-    async def select_hotbar(self, slot: int, *, timeout_ms: int | None = None) -> None:
-        response = await self._bot_client.set_hotbar_slot(
-            BotSetHotbarSlotRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                slot=slot,
-            ),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
-        )
-        _require_success(response.success, response.error, "Selecting a hotbar slot failed")
-
-    async def set_movement(
-        self,
-        *,
-        forward: bool | None = None,
-        backward: bool | None = None,
-        left: bool | None = None,
-        right: bool | None = None,
-        jump: bool | None = None,
-        sneak: bool | None = None,
-        sprint: bool | None = None,
-        timeout_ms: int | None = None,
-    ) -> None:
-        values = {
-            key: value
-            for key, value in {
-                "forward": forward,
-                "backward": backward,
-                "left": left,
-                "right": right,
-                "jump": jump,
-                "sneak": sneak,
-                "sprint": sprint,
-            }.items()
-            if value is not None
-        }
-        response = await self._bot_client.set_movement_state(
-            BotSetMovementStateRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                **values,
-            ),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
-        )
-        _require_success(response.success, response.error, "Updating movement failed")
-
-    async def reset_movement(self, *, timeout_ms: int | None = None) -> None:
-        response = await self._bot_client.reset_movement(
-            BotResetMovementRequest(instance_id=self.instance_id, bot_id=self.id),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
-        )
-        _require_success(response.success, response.error, "Resetting movement failed")
-
-    async def look(
-        self,
-        yaw: float,
-        pitch: float,
-        *,
-        timeout_ms: int | None = None,
-    ) -> None:
-        response = await self._bot_client.set_rotation(
-            BotSetRotationRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                yaw=yaw,
-                pitch=pitch,
-            ),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
-        )
-        _require_success(response.success, response.error, "Updating rotation failed")
-
-    async def open_inventory(self, *, timeout_ms: int | None = None) -> None:
-        response = await self._bot_client.open_inventory(
-            BotOpenInventoryRequest(instance_id=self.instance_id, bot_id=self.id),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
-        )
-        _require_success(response.success, "", "Opening inventory failed")
-
-    async def close_container(self, *, timeout_ms: int | None = None) -> None:
-        response = await self._bot_client.close_container(
-            BotCloseContainerRequest(instance_id=self.instance_id, bot_id=self.id),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
-        )
-        _require_success(response.success, "", "Closing container failed")
-
-    async def acquire_control(
-        self,
-        *,
-        ttl_seconds: int = 30,
-        timeout_ms: int | None = None,
-    ) -> AsyncSoulFireBotControlLease:
-        if self._control_token is not None:
-            raise RuntimeError(f"Bot {self.id} control is already leased by this client")
-        response = await self._live_client.acquire_bot_control(
-            AcquireBotControlRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                ttl_seconds=ttl_seconds,
-            ),
-            timeout_ms=timeout_ms,
-        )
-        if not response.HasField("lease"):
-            raise RuntimeError("SoulFire did not return the acquired control lease")
-        self._control_token = response.lease.token
-        return AsyncSoulFireBotControlLease(self, response.lease)
-
-    async def renew_control(
-        self,
-        lease: BotControlLease,
-        ttl_seconds: int,
-        timeout_ms: int | None,
-    ) -> BotControlLease:
-        response = await self._live_client.renew_bot_control(
-            RenewBotControlRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                token=lease.token,
-                ttl_seconds=ttl_seconds,
-            ),
-            timeout_ms=timeout_ms,
-        )
-        if not response.HasField("lease"):
-            raise RuntimeError("SoulFire did not return the renewed control lease")
-        self._control_token = response.lease.token
-        return response.lease
-
-    async def release_control(
-        self,
-        lease: BotControlLease,
-        timeout_ms: int | None,
-    ) -> None:
-        await self._live_client.release_bot_control(
-            ReleaseBotControlRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                token=lease.token,
-            ),
-            timeout_ms=timeout_ms,
-        )
-        if self._control_token == lease.token:
-            self._control_token = None
-
-
-class SoulFireBot:
-    def __init__(
-        self,
-        instance_id: str,
-        bot_id: str,
-        bot_client: BotServiceClientSync,
-        live_client: BotLiveServiceClientSync,
-        task_client: BotTaskServiceClientSync | None = None,
-        pathfinder_client: PathfinderServiceClientSync | None = None,
-        chat_client: ChatServiceClientSync | None = None,
-        inventory_client: InventoryServiceClientSync | None = None,
-        recipe_client: RecipeServiceClientSync | None = None,
-        registry_client: RegistryServiceClientSync | None = None,
-        world_client: WorldServiceClientSync | None = None,
-        protocol_client: BotProtocolServiceClientSync | None = None,
     ) -> None:
         self.instance_id = instance_id
         self.id = bot_id
@@ -1089,10 +191,7 @@ class SoulFireBot:
             self.id,
             _required_service(self._chat_client, "chat"),
             lambda headers: _action_headers(headers, self._control_token),
-            lambda event_filter, timeout_ms: self.events(
-                event_filter,
-                timeout_ms=timeout_ms,
-            ),
+            lambda event_filter, timeout_ms: self.events(event_filter, timeout_ms=timeout_ms),
         )
 
     @property
@@ -1115,17 +214,13 @@ class SoulFireBot:
     @property
     def registry(self) -> SoulFireRegistry:
         return SoulFireRegistry(
-            self.instance_id,
-            self.id,
-            _required_service(self._registry_client, "registry"),
+            self.instance_id, self.id, _required_service(self._registry_client, "registry")
         )
 
     @property
     def world(self) -> SoulFireWorld:
         return SoulFireWorld(
-            self.instance_id,
-            self.id,
-            _required_service(self._world_client, "world"),
+            self.instance_id, self.id, _required_service(self._world_client, "world")
         )
 
     @property
@@ -1135,131 +230,171 @@ class SoulFireBot:
     @property
     def protocol(self) -> SoulFireProtocol:
         return SoulFireProtocol(
-            self.instance_id,
-            self.id,
-            _required_service(self._protocol_client, "protocol"),
+            self.instance_id, self.id, _required_service(self._protocol_client, "protocol")
         )
 
-    def start(self, *, timeout_ms: int | None = None) -> BotStatus:
-        response = self._bot_client.set_bots_desired_state(
-            SetBotsDesiredStateRequest(
-                instance_id=self.instance_id,
-                bot_ids=[self.id],
-                desired_state=BOT_DESIRED_STATE_RUNNING,
-            ),
-            timeout_ms=timeout_ms,
-        )
-        return _required_status(response.bots, self.id)
-
-    def stop(self, *, timeout_ms: int | None = None) -> BotStatus:
-        response = self._bot_client.set_bots_desired_state(
-            SetBotsDesiredStateRequest(
-                instance_id=self.instance_id,
-                bot_ids=[self.id],
-                desired_state=BOT_DESIRED_STATE_STOPPED,
-            ),
-            timeout_ms=timeout_ms,
-        )
-        return _required_status(response.bots, self.id)
-
-    def restart(self, *, timeout_ms: int | None = None) -> BotStatus:
-        response = self._bot_client.restart_bots(
-            RestartBotsRequest(instance_id=self.instance_id, bot_ids=[self.id]),
-            timeout_ms=timeout_ms,
-        )
-        return _required_status(response.bots, self.id)
-
-    def status(self, *, timeout_ms: int | None = None) -> BotStatus:
-        return self.info(timeout_ms=timeout_ms).status
-
-    def info(self, *, timeout_ms: int | None = None) -> BotInfoResponse:
-        return self._bot_client.get_bot_info(
-            BotInfoRequest(instance_id=self.instance_id, bot_id=self.id),
-            timeout_ms=timeout_ms,
-        )
-
-    def wait_for_online(
-        self,
-        *,
-        timeout_ms: int | None = None,
-    ) -> BotStatus:
-        current = self.info(timeout_ms=timeout_ms)
-        latest_status = current.status
-        if current.HasField("live_state"):
-            return latest_status
-        for event in self.events(timeout_ms=timeout_ms):
-            event_type = event.WhichOneof("event")
-            if event_type == "status":
-                latest_status = event.status
-            elif event_type == "snapshot":
-                return latest_status
-        raise RuntimeError(f"Bot {self.id} event stream ended before it came online")
-
-    def events(
-        self,
-        event_filter: BotEventFilter | None = None,
-        *,
-        timeout_ms: int | None = None,
-    ) -> Iterator[BotEvent]:
-        return self._live_client.watch_bot_events(
-            WatchBotEventsRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                filter=event_filter or default_event_filter(),
-            ),
-            timeout_ms=timeout_ms,
-        )
-
-    def observe(
-        self,
-        options: BotSessionOptions | None = None,
-        *,
-        timeout_ms: int | None = None,
-    ) -> BotSession:
-        def stream(request: WatchBotEventsRequest) -> Iterator[BotEvent]:
-            request.instance_id = self.instance_id
-            request.bot_id = self.id
-            return self._live_client.watch_bot_events(
-                request,
+    @fn("SoulFireBot.start")
+    def start(
+        self, *, timeout_ms: int | None = None
+    ) -> EffectGen[BotStatus, SoulFireOperationError]:
+        response = yield from rpc(
+            "SoulFireBot.start",
+            lambda: self._bot_client.set_bots_desired_state(
+                SetBotsDesiredStateRequest(
+                    instance_id=self.instance_id,
+                    bot_ids=[self.id],
+                    desired_state=BOT_DESIRED_STATE_RUNNING,
+                ),
                 timeout_ms=timeout_ms,
+            ),
+        )
+        return (yield from validate(lambda: _required_status(response.bots, self.id)))
+
+    @fn("SoulFireBot.stop")
+    def stop(
+        self, *, timeout_ms: int | None = None
+    ) -> EffectGen[BotStatus, SoulFireOperationError]:
+        response = yield from rpc(
+            "SoulFireBot.stop",
+            lambda: self._bot_client.set_bots_desired_state(
+                SetBotsDesiredStateRequest(
+                    instance_id=self.instance_id,
+                    bot_ids=[self.id],
+                    desired_state=BOT_DESIRED_STATE_STOPPED,
+                ),
+                timeout_ms=timeout_ms,
+            ),
+        )
+        return (yield from validate(lambda: _required_status(response.bots, self.id)))
+
+    @fn("SoulFireBot.restart")
+    def restart(
+        self, *, timeout_ms: int | None = None
+    ) -> EffectGen[BotStatus, SoulFireOperationError]:
+        response = yield from rpc(
+            "SoulFireBot.restart",
+            lambda: self._bot_client.restart_bots(
+                RestartBotsRequest(instance_id=self.instance_id, bot_ids=[self.id]),
+                timeout_ms=timeout_ms,
+            ),
+        )
+        return (yield from validate(lambda: _required_status(response.bots, self.id)))
+
+    @fn("SoulFireBot.status")
+    def status(
+        self, *, timeout_ms: int | None = None
+    ) -> EffectGen[BotStatus, SoulFireOperationError]:
+        return (yield from self.info(timeout_ms=timeout_ms)).status
+
+    @fn("SoulFireBot.info")
+    def info(
+        self, *, timeout_ms: int | None = None
+    ) -> EffectGen[BotInfoResponse, SoulFireOperationError]:
+        return (
+            yield from rpc(
+                "SoulFireBot.info",
+                lambda: self._bot_client.get_bot_info(
+                    BotInfoRequest(instance_id=self.instance_id, bot_id=self.id),
+                    timeout_ms=timeout_ms,
+                ),
+            )
+        )
+
+    @fn("SoulFireBot.wait_for_online")
+    def wait_for_online(
+        self, *, timeout_ms: int | None = None
+    ) -> EffectGen[BotStatus, SoulFireOperationError]:
+        @gen
+        def wait() -> EffectGen[BotStatus, SoulFireOperationError, Scope]:
+            current = yield from self.info(timeout_ms=timeout_ms)
+            latest_status = current.status
+            if current.HasField("live_state"):
+                return latest_status
+            _cursor = yield from self.events(timeout_ms=timeout_ms).open
+            while True:
+                _item = yield from _cursor.next()
+                if isinstance(_item, End):
+                    break
+                event = _item.value
+                event_type = event.WhichOneof("event")
+                if event_type == "status":
+                    latest_status = event.status
+                elif event_type == "snapshot":
+                    return latest_status
+            return (
+                yield from fail(
+                    operation_error(
+                        "SoulFireBot.wait_for_online",
+                        RuntimeError(f"Bot {self.id} event stream ended before it came online"),
+                    )
+                )
             )
 
-        return BotSession(stream, options)
+        return (yield from scoped(wait))
 
+    def events(
+        self, event_filter: BotEventFilter | None = None, *, timeout_ms: int | None = None
+    ) -> Stream[BotEvent, SoulFireOperationError]:
+        return rpc_stream(
+            "SoulFireBot.events",
+            lambda: self._live_client.watch_bot_events(
+                WatchBotEventsRequest(
+                    instance_id=self.instance_id,
+                    bot_id=self.id,
+                    filter=event_filter or default_event_filter(),
+                ),
+                timeout_ms=timeout_ms,
+            ),
+        )
+
+    @fn("SoulFireBot.observe")
+    def observe(
+        self, options: BotSessionOptions | None = None, *, timeout_ms: int | None = None
+    ) -> EffectGen[BotSession, SoulFireOperationError, Scope]:
+
+        def stream(request: WatchBotEventsRequest) -> Stream[BotEvent, SoulFireOperationError]:
+            request.instance_id = self.instance_id
+            request.bot_id = self.id
+            return rpc_stream(
+                "SoulFireBot.observe",
+                lambda: self._live_client.watch_bot_events(request, timeout_ms=timeout_ms),
+            )
+
+        return (yield from BotSession.open(stream, options))
+
+    @fn("SoulFireBot.send_chat")
     def send_chat(
-        self,
-        message: str,
-        *,
-        timeout_ms: int | None = None,
-    ) -> BotActionResult:
+        self, message: str, *, timeout_ms: int | None = None
+    ) -> EffectGen[BotActionResult, SoulFireOperationError]:
         from .bot_live_pb2 import SendChatRequest
 
-        response = self._live_client.send_chat(
-            SendChatRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                message=message,
+        response = yield from rpc(
+            "SoulFireBot.send_chat",
+            lambda: self._live_client.send_chat(
+                SendChatRequest(instance_id=self.instance_id, bot_id=self.id, message=message),
+                headers=_action_headers(None, self._control_token),
+                timeout_ms=timeout_ms,
             ),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
         )
-        return _require_action(response.result)
+        return (yield from validate(lambda: _require_action(response.result)))
 
+    @fn("SoulFireBot.get_block")
     def get_block(
-        self,
-        position: BlockPosition,
-        *,
-        timeout_ms: int | None = None,
-    ) -> GetBlockResponse:
-        return self._live_client.get_block(
-            GetBlockRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                position=position,
-            ),
-            timeout_ms=timeout_ms,
+        self, position: BlockPosition, *, timeout_ms: int | None = None
+    ) -> EffectGen[GetBlockResponse, SoulFireOperationError]:
+        return (
+            yield from rpc(
+                "SoulFireBot.get_block",
+                lambda: self._live_client.get_block(
+                    GetBlockRequest(
+                        instance_id=self.instance_id, bot_id=self.id, position=position
+                    ),
+                    timeout_ms=timeout_ms,
+                ),
+            )
         )
 
+    @fn("SoulFireBot.find_blocks")
     def find_blocks(
         self,
         block_ids: Iterable[str],
@@ -1267,18 +402,24 @@ class SoulFireBot:
         max_distance: int,
         max_count: int,
         timeout_ms: int | None = None,
-    ) -> FindBlocksResponse:
-        return self._live_client.find_blocks(
-            FindBlocksRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                block_ids=block_ids,
-                max_distance=max_distance,
-                max_count=max_count,
-            ),
-            timeout_ms=timeout_ms,
+    ) -> EffectGen[FindBlocksResponse, SoulFireOperationError]:
+        return (
+            yield from rpc(
+                "SoulFireBot.find_blocks",
+                lambda: self._live_client.find_blocks(
+                    FindBlocksRequest(
+                        instance_id=self.instance_id,
+                        bot_id=self.id,
+                        block_ids=block_ids,
+                        max_distance=max_distance,
+                        max_count=max_count,
+                    ),
+                    timeout_ms=timeout_ms,
+                ),
+            )
         )
 
+    @fn("SoulFireBot.list_nearby_entities")
     def list_nearby_entities(
         self,
         radius: float,
@@ -1286,37 +427,40 @@ class SoulFireBot:
         entity_types: Iterable[str] = (),
         include_players: bool = True,
         timeout_ms: int | None = None,
-    ) -> ListNearbyEntitiesResponse:
-        return self._live_client.list_nearby_entities(
-            ListNearbyEntitiesRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                radius=radius,
-                entity_types=entity_types,
-                include_players=include_players,
-            ),
-            timeout_ms=timeout_ms,
+    ) -> EffectGen[ListNearbyEntitiesResponse, SoulFireOperationError]:
+        return (
+            yield from rpc(
+                "SoulFireBot.list_nearby_entities",
+                lambda: self._live_client.list_nearby_entities(
+                    ListNearbyEntitiesRequest(
+                        instance_id=self.instance_id,
+                        bot_id=self.id,
+                        radius=radius,
+                        entity_types=entity_types,
+                        include_players=include_players,
+                    ),
+                    timeout_ms=timeout_ms,
+                ),
+            )
         )
 
+    @fn("SoulFireBot.dig_block")
     def dig_block(
-        self,
-        position: BlockPosition,
-        *,
-        cancel: bool = False,
-        timeout_ms: int | None = None,
-    ) -> BotActionResult:
-        response = self._live_client.dig_block(
-            DigBlockRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                position=position,
-                cancel=cancel,
+        self, position: BlockPosition, *, cancel: bool = False, timeout_ms: int | None = None
+    ) -> EffectGen[BotActionResult, SoulFireOperationError]:
+        response = yield from rpc(
+            "SoulFireBot.dig_block",
+            lambda: self._live_client.dig_block(
+                DigBlockRequest(
+                    instance_id=self.instance_id, bot_id=self.id, position=position, cancel=cancel
+                ),
+                headers=_action_headers(None, self._control_token),
+                timeout_ms=timeout_ms,
             ),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
         )
-        return _require_action(response.result)
+        return (yield from validate(lambda: _require_action(response.result)))
 
+    @fn("SoulFireBot.place_block")
     def place_block(
         self,
         against: BlockPosition,
@@ -1324,20 +468,24 @@ class SoulFireBot:
         hand: Hand = HAND_MAIN,
         *,
         timeout_ms: int | None = None,
-    ) -> BotActionResult:
-        response = self._live_client.place_block(
-            PlaceBlockRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                against=against,
-                face=face,
-                hand=hand,
+    ) -> EffectGen[BotActionResult, SoulFireOperationError]:
+        response = yield from rpc(
+            "SoulFireBot.place_block",
+            lambda: self._live_client.place_block(
+                PlaceBlockRequest(
+                    instance_id=self.instance_id,
+                    bot_id=self.id,
+                    against=against,
+                    face=face,
+                    hand=hand,
+                ),
+                headers=_action_headers(None, self._control_token),
+                timeout_ms=timeout_ms,
             ),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
         )
-        return _require_action(response.result)
+        return (yield from validate(lambda: _require_action(response.result)))
 
+    @fn("SoulFireBot.interact_block")
     def interact_block(
         self,
         position: BlockPosition,
@@ -1346,72 +494,72 @@ class SoulFireBot:
         *,
         sneaking: bool = False,
         timeout_ms: int | None = None,
-    ) -> BotActionResult:
-        response = self._live_client.interact_block(
-            InteractBlockRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                position=position,
-                face=face,
-                hand=hand,
-                sneaking=sneaking,
+    ) -> EffectGen[BotActionResult, SoulFireOperationError]:
+        response = yield from rpc(
+            "SoulFireBot.interact_block",
+            lambda: self._live_client.interact_block(
+                InteractBlockRequest(
+                    instance_id=self.instance_id,
+                    bot_id=self.id,
+                    position=position,
+                    face=face,
+                    hand=hand,
+                    sneaking=sneaking,
+                ),
+                headers=_action_headers(None, self._control_token),
+                timeout_ms=timeout_ms,
             ),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
         )
-        return _require_action(response.result)
+        return (yield from validate(lambda: _require_action(response.result)))
 
+    @fn("SoulFireBot.use_item")
     def use_item(
-        self,
-        hand: Hand = HAND_MAIN,
-        *,
-        timeout_ms: int | None = None,
-    ) -> BotActionResult:
-        response = self._live_client.use_item(
-            UseItemRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                hand=hand,
+        self, hand: Hand = HAND_MAIN, *, timeout_ms: int | None = None
+    ) -> EffectGen[BotActionResult, SoulFireOperationError]:
+        response = yield from rpc(
+            "SoulFireBot.use_item",
+            lambda: self._live_client.use_item(
+                UseItemRequest(instance_id=self.instance_id, bot_id=self.id, hand=hand),
+                headers=_action_headers(None, self._control_token),
+                timeout_ms=timeout_ms,
             ),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
         )
-        return _require_action(response.result)
+        return (yield from validate(lambda: _require_action(response.result)))
 
+    @fn("SoulFireBot.release_item")
     def release_item(
-        self,
-        *,
-        timeout_ms: int | None = None,
-    ) -> BotActionResult:
-        response = self._live_client.release_item(
-            ReleaseItemRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
+        self, *, timeout_ms: int | None = None
+    ) -> EffectGen[BotActionResult, SoulFireOperationError]:
+        response = yield from rpc(
+            "SoulFireBot.release_item",
+            lambda: self._live_client.release_item(
+                ReleaseItemRequest(instance_id=self.instance_id, bot_id=self.id),
+                headers=_action_headers(None, self._control_token),
+                timeout_ms=timeout_ms,
             ),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
         )
-        return _require_action(response.result)
+        return (yield from validate(lambda: _require_action(response.result)))
 
+    @fn("SoulFireBot.attack_entity")
     def attack_entity(
-        self,
-        entity_id: int,
-        *,
-        sprinting: bool = False,
-        timeout_ms: int | None = None,
-    ) -> BotActionResult:
-        response = self._live_client.attack_entity(
-            AttackEntityRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                entity_id=entity_id,
-                sprinting=sprinting,
+        self, entity_id: int, *, sprinting: bool = False, timeout_ms: int | None = None
+    ) -> EffectGen[BotActionResult, SoulFireOperationError]:
+        response = yield from rpc(
+            "SoulFireBot.attack_entity",
+            lambda: self._live_client.attack_entity(
+                AttackEntityRequest(
+                    instance_id=self.instance_id,
+                    bot_id=self.id,
+                    entity_id=entity_id,
+                    sprinting=sprinting,
+                ),
+                headers=_action_headers(None, self._control_token),
+                timeout_ms=timeout_ms,
             ),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
         )
-        return _require_action(response.result)
+        return (yield from validate(lambda: _require_action(response.result)))
 
+    @fn("SoulFireBot.interact_entity")
     def interact_entity(
         self,
         entity_id: int,
@@ -1419,100 +567,111 @@ class SoulFireBot:
         hand: Hand = HAND_MAIN,
         sneaking: bool = False,
         timeout_ms: int | None = None,
-    ) -> BotActionResult:
-        response = self._live_client.interact_entity(
-            InteractEntityRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                entity_id=entity_id,
-                hand=hand,
-                sneaking=sneaking,
+    ) -> EffectGen[BotActionResult, SoulFireOperationError]:
+        response = yield from rpc(
+            "SoulFireBot.interact_entity",
+            lambda: self._live_client.interact_entity(
+                InteractEntityRequest(
+                    instance_id=self.instance_id,
+                    bot_id=self.id,
+                    entity_id=entity_id,
+                    hand=hand,
+                    sneaking=sneaking,
+                ),
+                headers=_action_headers(None, self._control_token),
+                timeout_ms=timeout_ms,
             ),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
         )
-        return _require_action(response.result)
+        return (yield from validate(lambda: _require_action(response.result)))
 
+    @fn("SoulFireBot.swing_arm")
     def swing_arm(
-        self,
-        hand: Hand = HAND_MAIN,
-        *,
-        timeout_ms: int | None = None,
-    ) -> BotActionResult:
-        response = self._live_client.swing_arm(
-            SwingArmRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                hand=hand,
+        self, hand: Hand = HAND_MAIN, *, timeout_ms: int | None = None
+    ) -> EffectGen[BotActionResult, SoulFireOperationError]:
+        response = yield from rpc(
+            "SoulFireBot.swing_arm",
+            lambda: self._live_client.swing_arm(
+                SwingArmRequest(instance_id=self.instance_id, bot_id=self.id, hand=hand),
+                headers=_action_headers(None, self._control_token),
+                timeout_ms=timeout_ms,
             ),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
         )
-        return _require_action(response.result)
+        return (yield from validate(lambda: _require_action(response.result)))
 
-    def respawn(self, *, timeout_ms: int | None = None) -> BotActionResult:
-        response = self._live_client.respawn(
-            RespawnRequest(instance_id=self.instance_id, bot_id=self.id),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
+    @fn("SoulFireBot.respawn")
+    def respawn(
+        self, *, timeout_ms: int | None = None
+    ) -> EffectGen[BotActionResult, SoulFireOperationError]:
+        response = yield from rpc(
+            "SoulFireBot.respawn",
+            lambda: self._live_client.respawn(
+                RespawnRequest(instance_id=self.instance_id, bot_id=self.id),
+                headers=_action_headers(None, self._control_token),
+                timeout_ms=timeout_ms,
+            ),
         )
-        return _require_action(response.result)
+        return (yield from validate(lambda: _require_action(response.result)))
 
+    @fn("SoulFireBot.sleep")
     def sleep(
-        self,
-        bed: BlockPosition,
-        hand: Hand = HAND_MAIN,
-        *,
-        timeout_ms: int | None = None,
-    ) -> BotActionResult:
-        response = self._live_client.sleep(
-            SleepRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                bed=bed,
-                hand=hand,
+        self, bed: BlockPosition, hand: Hand = HAND_MAIN, *, timeout_ms: int | None = None
+    ) -> EffectGen[BotActionResult, SoulFireOperationError]:
+        response = yield from rpc(
+            "SoulFireBot.sleep",
+            lambda: self._live_client.sleep(
+                SleepRequest(instance_id=self.instance_id, bot_id=self.id, bed=bed, hand=hand),
+                headers=_action_headers(None, self._control_token),
+                timeout_ms=timeout_ms,
             ),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
         )
-        return _require_action(response.result)
+        return (yield from validate(lambda: _require_action(response.result)))
 
-    def wake(self, *, timeout_ms: int | None = None) -> BotActionResult:
-        response = self._live_client.wake(
-            WakeRequest(instance_id=self.instance_id, bot_id=self.id),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
+    @fn("SoulFireBot.wake")
+    def wake(
+        self, *, timeout_ms: int | None = None
+    ) -> EffectGen[BotActionResult, SoulFireOperationError]:
+        response = yield from rpc(
+            "SoulFireBot.wake",
+            lambda: self._live_client.wake(
+                WakeRequest(instance_id=self.instance_id, bot_id=self.id),
+                headers=_action_headers(None, self._control_token),
+                timeout_ms=timeout_ms,
+            ),
         )
-        return _require_action(response.result)
+        return (yield from validate(lambda: _require_action(response.result)))
 
+    @fn("SoulFireBot.mount")
     def mount(
-        self,
-        entity_id: int,
-        hand: Hand = HAND_MAIN,
-        *,
-        timeout_ms: int | None = None,
-    ) -> MountEntityResponse:
-        response = self._live_client.mount_entity(
-            MountEntityRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                entity_id=entity_id,
-                hand=hand,
+        self, entity_id: int, hand: Hand = HAND_MAIN, *, timeout_ms: int | None = None
+    ) -> EffectGen[MountEntityResponse, SoulFireOperationError]:
+        response = yield from rpc(
+            "SoulFireBot.mount",
+            lambda: self._live_client.mount_entity(
+                MountEntityRequest(
+                    instance_id=self.instance_id, bot_id=self.id, entity_id=entity_id, hand=hand
+                ),
+                headers=_action_headers(None, self._control_token),
+                timeout_ms=timeout_ms,
             ),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
         )
         _require_action(response.result)
         return response
 
-    def dismount(self, *, timeout_ms: int | None = None) -> BotActionResult:
-        response = self._live_client.dismount(
-            DismountRequest(instance_id=self.instance_id, bot_id=self.id),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
+    @fn("SoulFireBot.dismount")
+    def dismount(
+        self, *, timeout_ms: int | None = None
+    ) -> EffectGen[BotActionResult, SoulFireOperationError]:
+        response = yield from rpc(
+            "SoulFireBot.dismount",
+            lambda: self._live_client.dismount(
+                DismountRequest(instance_id=self.instance_id, bot_id=self.id),
+                headers=_action_headers(None, self._control_token),
+                timeout_ms=timeout_ms,
+            ),
         )
-        return _require_action(response.result)
+        return (yield from validate(lambda: _require_action(response.result)))
 
+    @fn("SoulFireBot.set_vehicle_control")
     def set_vehicle_control(
         self,
         *,
@@ -1526,11 +685,8 @@ class SoulFireBot:
         yaw: float | None = None,
         pitch: float | None = None,
         timeout_ms: int | None = None,
-    ) -> SetVehicleControlResponse:
-        request = SetVehicleControlRequest(
-            instance_id=self.instance_id,
-            bot_id=self.id,
-        )
+    ) -> EffectGen[SetVehicleControlResponse, SoulFireOperationError]:
+        request = SetVehicleControlRequest(instance_id=self.instance_id, bot_id=self.id)
         _apply_vehicle_control(
             request,
             forward=forward,
@@ -1543,14 +699,16 @@ class SoulFireBot:
             yaw=yaw,
             pitch=pitch,
         )
-        response = self._live_client.set_vehicle_control(
-            request,
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
+        response = yield from rpc(
+            "SoulFireBot.set_vehicle_control",
+            lambda: self._live_client.set_vehicle_control(
+                request, headers=_action_headers(None, self._control_token), timeout_ms=timeout_ms
+            ),
         )
         _require_action(response.result)
         return response
 
+    @fn("SoulFireBot.update_sign")
     def update_sign(
         self,
         position: BlockPosition,
@@ -1558,20 +716,24 @@ class SoulFireBot:
         *,
         front_text: bool = True,
         timeout_ms: int | None = None,
-    ) -> BotActionResult:
-        response = self._live_client.update_sign(
-            UpdateSignRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                position=position,
-                front_text=front_text,
-                lines=list(lines),
+    ) -> EffectGen[BotActionResult, SoulFireOperationError]:
+        response = yield from rpc(
+            "SoulFireBot.update_sign",
+            lambda: self._live_client.update_sign(
+                UpdateSignRequest(
+                    instance_id=self.instance_id,
+                    bot_id=self.id,
+                    position=position,
+                    front_text=front_text,
+                    lines=list(lines),
+                ),
+                headers=_action_headers(None, self._control_token),
+                timeout_ms=timeout_ms,
             ),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
         )
-        return _require_action(response.result)
+        return (yield from validate(lambda: _require_action(response.result)))
 
+    @fn("SoulFireBot.write_book")
     def write_book(
         self,
         inventory_slot: int,
@@ -1579,71 +741,68 @@ class SoulFireBot:
         *,
         title: str | None = None,
         timeout_ms: int | None = None,
-    ) -> BotActionResult:
-        response = self._live_client.write_book(
-            WriteBookRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                inventory_slot=inventory_slot,
-                pages=list(pages),
-                **({} if title is None else {"title": title}),
+    ) -> EffectGen[BotActionResult, SoulFireOperationError]:
+        response = yield from rpc(
+            "SoulFireBot.write_book",
+            lambda: self._live_client.write_book(
+                WriteBookRequest(
+                    instance_id=self.instance_id,
+                    bot_id=self.id,
+                    inventory_slot=inventory_slot,
+                    pages=list(pages),
+                    **{} if title is None else {"title": title},
+                ),
+                headers=_action_headers(None, self._control_token),
+                timeout_ms=timeout_ms,
             ),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
         )
-        return _require_action(response.result)
+        return (yield from validate(lambda: _require_action(response.result)))
 
+    @fn("SoulFireBot.respond_resource_pack")
     def respond_resource_pack(
-        self,
-        pack_id: str,
-        response: ResourcePackResponse,
-        *,
-        timeout_ms: int | None = None,
-    ) -> BotActionResult:
-        result = self._live_client.respond_resource_pack(
-            RespondResourcePackRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                pack_id=pack_id,
-                response=response,
+        self, pack_id: str, response: ResourcePackResponse, *, timeout_ms: int | None = None
+    ) -> EffectGen[BotActionResult, SoulFireOperationError]:
+        result = yield from rpc(
+            "SoulFireBot.respond_resource_pack",
+            lambda: self._live_client.respond_resource_pack(
+                RespondResourcePackRequest(
+                    instance_id=self.instance_id, bot_id=self.id, pack_id=pack_id, response=response
+                ),
+                headers=_action_headers(None, self._control_token),
+                timeout_ms=timeout_ms,
             ),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
         )
         return _require_action(result.result)
 
+    @fn("SoulFireBot.set_flying")
     def set_flying(
-        self,
-        flying: bool,
-        *,
-        timeout_ms: int | None = None,
-    ) -> BotActionResult:
-        response = self._live_client.set_flying(
-            SetFlyingRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                flying=flying,
+        self, flying: bool, *, timeout_ms: int | None = None
+    ) -> EffectGen[BotActionResult, SoulFireOperationError]:
+        response = yield from rpc(
+            "SoulFireBot.set_flying",
+            lambda: self._live_client.set_flying(
+                SetFlyingRequest(instance_id=self.instance_id, bot_id=self.id, flying=flying),
+                headers=_action_headers(None, self._control_token),
+                timeout_ms=timeout_ms,
             ),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
         )
-        return _require_action(response.result)
+        return (yield from validate(lambda: _require_action(response.result)))
 
+    @fn("SoulFireBot.start_elytra_flight")
     def start_elytra_flight(
-        self,
-        *,
-        timeout_ms: int | None = None,
-    ) -> BotActionResult:
-        response = self._live_client.start_elytra_flight(
-            StartElytraFlightRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
+        self, *, timeout_ms: int | None = None
+    ) -> EffectGen[BotActionResult, SoulFireOperationError]:
+        response = yield from rpc(
+            "SoulFireBot.start_elytra_flight",
+            lambda: self._live_client.start_elytra_flight(
+                StartElytraFlightRequest(instance_id=self.instance_id, bot_id=self.id),
+                headers=_action_headers(None, self._control_token),
+                timeout_ms=timeout_ms,
             ),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
         )
-        return _require_action(response.result)
+        return (yield from validate(lambda: _require_action(response.result)))
 
+    @fn("SoulFireBot.set_creative_slot")
     def set_creative_slot(
         self,
         slot: int,
@@ -1651,38 +810,41 @@ class SoulFireBot:
         *,
         count: int = 1,
         timeout_ms: int | None = None,
-    ) -> BotActionResult:
-        response = self._live_client.set_creative_slot(
-            SetCreativeSlotRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                slot=slot,
-                **(
-                    {}
+    ) -> EffectGen[BotActionResult, SoulFireOperationError]:
+        response = yield from rpc(
+            "SoulFireBot.set_creative_slot",
+            lambda: self._live_client.set_creative_slot(
+                SetCreativeSlotRequest(
+                    instance_id=self.instance_id,
+                    bot_id=self.id,
+                    slot=slot,
+                    **{}
                     if item_id is None
-                    else {"item": CreativeItemStack(item_id=item_id, count=count)}
+                    else {"item": CreativeItemStack(item_id=item_id, count=count)},
                 ),
+                headers=_action_headers(None, self._control_token),
+                timeout_ms=timeout_ms,
             ),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
         )
-        return _require_action(response.result)
+        return (yield from validate(lambda: _require_action(response.result)))
 
+    @fn("SoulFireBot.wait_for_chunks")
     def wait_for_chunks(
-        self,
-        radius_chunks: int = 0,
-        *,
-        wait_timeout_ms: int = 0,
-        timeout_ms: int | None = None,
-    ) -> WaitForChunksResponse:
-        return self._live_client.wait_for_chunks(
-            WaitForChunksRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                radius_chunks=radius_chunks,
-                timeout_ms=wait_timeout_ms,
-            ),
-            timeout_ms=timeout_ms,
+        self, radius_chunks: int = 0, *, wait_timeout_ms: int = 0, timeout_ms: int | None = None
+    ) -> EffectGen[WaitForChunksResponse, SoulFireOperationError]:
+        return (
+            yield from rpc(
+                "SoulFireBot.wait_for_chunks",
+                lambda: self._live_client.wait_for_chunks(
+                    WaitForChunksRequest(
+                        instance_id=self.instance_id,
+                        bot_id=self.id,
+                        radius_chunks=radius_chunks,
+                        timeout_ms=wait_timeout_ms,
+                    ),
+                    timeout_ms=timeout_ms,
+                ),
+            )
         )
 
     def go_to(
@@ -1691,34 +853,46 @@ class SoulFireBot:
         options: PathfindOptions | None = None,
         *,
         timeout_ms: int | None = None,
-    ) -> Iterator[PathfindProgress]:
-        return self._live_client.go_to(
-            GoToRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                goal=goal,
-                options=options,
+    ) -> Stream[PathfindProgress, SoulFireOperationError]:
+        return rpc_stream(
+            "SoulFireBot.go_to",
+            lambda: self._live_client.go_to(
+                GoToRequest(
+                    instance_id=self.instance_id, bot_id=self.id, goal=goal, options=options
+                ),
+                headers=_action_headers(None, self._control_token),
+                timeout_ms=timeout_ms,
             ),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
         )
 
-    def stop_pathfinding(self, *, timeout_ms: int | None = None) -> None:
-        self._live_client.stop_pathfinding(
-            StopPathfindingRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
+    @fn("SoulFireBot.stop_pathfinding")
+    def stop_pathfinding(
+        self, *, timeout_ms: int | None = None
+    ) -> EffectGen[None, SoulFireOperationError]:
+        yield from rpc(
+            "SoulFireBot.stop_pathfinding",
+            lambda: self._live_client.stop_pathfinding(
+                StopPathfindingRequest(instance_id=self.instance_id, bot_id=self.id),
+                headers=_action_headers(None, self._control_token),
+                timeout_ms=timeout_ms,
             ),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
         )
 
-    def inventory_state(self, *, timeout_ms: int | None = None) -> BotInventoryStateResponse:
-        return self._bot_client.get_inventory_state(
-            BotInventoryStateRequest(instance_id=self.instance_id, bot_id=self.id),
-            timeout_ms=timeout_ms,
+    @fn("SoulFireBot.inventory_state")
+    def inventory_state(
+        self, *, timeout_ms: int | None = None
+    ) -> EffectGen[BotInventoryStateResponse, SoulFireOperationError]:
+        return (
+            yield from rpc(
+                "SoulFireBot.inventory_state",
+                lambda: self._bot_client.get_inventory_state(
+                    BotInventoryStateRequest(instance_id=self.instance_id, bot_id=self.id),
+                    timeout_ms=timeout_ms,
+                ),
+            )
         )
 
+    @fn("SoulFireBot.click_inventory")
     def click_inventory(
         self,
         slot: int,
@@ -1726,61 +900,66 @@ class SoulFireBot:
         *,
         hotbar_slot: int = 0,
         timeout_ms: int | None = None,
-    ) -> None:
-        response = self._bot_client.click_inventory_slot(
-            BotInventoryClickRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                slot=slot,
-                click_type=click_type,
-                hotbar_slot=hotbar_slot,
+    ) -> EffectGen[None, SoulFireOperationError]:
+        response = yield from rpc(
+            "SoulFireBot.click_inventory",
+            lambda: self._bot_client.click_inventory_slot(
+                BotInventoryClickRequest(
+                    instance_id=self.instance_id,
+                    bot_id=self.id,
+                    slot=slot,
+                    click_type=click_type,
+                    hotbar_slot=hotbar_slot,
+                ),
+                headers=_action_headers(None, self._control_token),
+                timeout_ms=timeout_ms,
             ),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
         )
-        _require_success(response.success, response.error, "Inventory click failed")
+        yield from validate(
+            lambda: _require_success(response.success, response.error, "Inventory click failed")
+        )
 
-    def transfer_inventory_slot(self, slot: int, *, timeout_ms: int | None = None) -> None:
-        self.click_inventory(slot, SHIFT_LEFT_CLICK, timeout_ms=timeout_ms)
+    @fn("SoulFireBot.transfer_inventory_slot")
+    def transfer_inventory_slot(
+        self, slot: int, *, timeout_ms: int | None = None
+    ) -> EffectGen[None, SoulFireOperationError]:
+        yield from self.click_inventory(slot, SHIFT_LEFT_CLICK, timeout_ms=timeout_ms)
 
+    @fn("SoulFireBot.drop_inventory_slot")
     def drop_inventory_slot(
-        self,
-        slot: int,
-        *,
-        all: bool = True,
-        timeout_ms: int | None = None,
-    ) -> None:
-        self.click_inventory(
-            slot,
-            DROP_ALL if all else DROP_ONE,
-            timeout_ms=timeout_ms,
-        )
+        self, slot: int, *, all: bool = True, timeout_ms: int | None = None
+    ) -> EffectGen[None, SoulFireOperationError]:
+        yield from self.click_inventory(slot, DROP_ALL if all else DROP_ONE, timeout_ms=timeout_ms)
 
+    @fn("SoulFireBot.move_inventory_stack")
     def move_inventory_stack(
-        self,
-        from_slot: int,
-        to_slot: int,
-        *,
-        timeout_ms: int | None = None,
-    ) -> None:
-        self.click_inventory(from_slot, timeout_ms=timeout_ms)
-        self.click_inventory(to_slot, timeout_ms=timeout_ms)
-        state = self.inventory_state(timeout_ms=timeout_ms)
+        self, from_slot: int, to_slot: int, *, timeout_ms: int | None = None
+    ) -> EffectGen[None, SoulFireOperationError]:
+        yield from self.click_inventory(from_slot, timeout_ms=timeout_ms)
+        yield from self.click_inventory(to_slot, timeout_ms=timeout_ms)
+        state = yield from self.inventory_state(timeout_ms=timeout_ms)
         if state.HasField("carried_item") and state.carried_item.count > 0:
-            self.click_inventory(from_slot, timeout_ms=timeout_ms)
+            yield from self.click_inventory(from_slot, timeout_ms=timeout_ms)
 
-    def select_hotbar(self, slot: int, *, timeout_ms: int | None = None) -> None:
-        response = self._bot_client.set_hotbar_slot(
-            BotSetHotbarSlotRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                slot=slot,
+    @fn("SoulFireBot.select_hotbar")
+    def select_hotbar(
+        self, slot: int, *, timeout_ms: int | None = None
+    ) -> EffectGen[None, SoulFireOperationError]:
+        response = yield from rpc(
+            "SoulFireBot.select_hotbar",
+            lambda: self._bot_client.set_hotbar_slot(
+                BotSetHotbarSlotRequest(instance_id=self.instance_id, bot_id=self.id, slot=slot),
+                headers=_action_headers(None, self._control_token),
+                timeout_ms=timeout_ms,
             ),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
         )
-        _require_success(response.success, response.error, "Selecting a hotbar slot failed")
+        yield from validate(
+            lambda: _require_success(
+                response.success, response.error, "Selecting a hotbar slot failed"
+            )
+        )
 
+    @fn("SoulFireBot.set_movement")
     def set_movement(
         self,
         *,
@@ -1792,7 +971,7 @@ class SoulFireBot:
         sneak: bool | None = None,
         sprint: bool | None = None,
         timeout_ms: int | None = None,
-    ) -> None:
+    ) -> EffectGen[None, SoulFireOperationError]:
         values = {
             key: value
             for key, value in {
@@ -1806,149 +985,169 @@ class SoulFireBot:
             }.items()
             if value is not None
         }
-        response = self._bot_client.set_movement_state(
-            BotSetMovementStateRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                **values,
+        response = yield from rpc(
+            "SoulFireBot.set_movement",
+            lambda: self._bot_client.set_movement_state(
+                BotSetMovementStateRequest(instance_id=self.instance_id, bot_id=self.id, **values),
+                headers=_action_headers(None, self._control_token),
+                timeout_ms=timeout_ms,
             ),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
         )
-        _require_success(response.success, response.error, "Updating movement failed")
-
-    def reset_movement(self, *, timeout_ms: int | None = None) -> None:
-        response = self._bot_client.reset_movement(
-            BotResetMovementRequest(instance_id=self.instance_id, bot_id=self.id),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
+        yield from validate(
+            lambda: _require_success(response.success, response.error, "Updating movement failed")
         )
-        _require_success(response.success, response.error, "Resetting movement failed")
 
+    @fn("SoulFireBot.reset_movement")
+    def reset_movement(
+        self, *, timeout_ms: int | None = None
+    ) -> EffectGen[None, SoulFireOperationError]:
+        response = yield from rpc(
+            "SoulFireBot.reset_movement",
+            lambda: self._bot_client.reset_movement(
+                BotResetMovementRequest(instance_id=self.instance_id, bot_id=self.id),
+                headers=_action_headers(None, self._control_token),
+                timeout_ms=timeout_ms,
+            ),
+        )
+        yield from validate(
+            lambda: _require_success(response.success, response.error, "Resetting movement failed")
+        )
+
+    @fn("SoulFireBot.look")
     def look(
-        self,
-        yaw: float,
-        pitch: float,
-        *,
-        timeout_ms: int | None = None,
-    ) -> None:
-        response = self._bot_client.set_rotation(
-            BotSetRotationRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                yaw=yaw,
-                pitch=pitch,
+        self, yaw: float, pitch: float, *, timeout_ms: int | None = None
+    ) -> EffectGen[None, SoulFireOperationError]:
+        response = yield from rpc(
+            "SoulFireBot.look",
+            lambda: self._bot_client.set_rotation(
+                BotSetRotationRequest(
+                    instance_id=self.instance_id, bot_id=self.id, yaw=yaw, pitch=pitch
+                ),
+                headers=_action_headers(None, self._control_token),
+                timeout_ms=timeout_ms,
             ),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
         )
-        _require_success(response.success, response.error, "Updating rotation failed")
+        yield from validate(
+            lambda: _require_success(response.success, response.error, "Updating rotation failed")
+        )
 
-    def open_inventory(self, *, timeout_ms: int | None = None) -> None:
-        response = self._bot_client.open_inventory(
-            BotOpenInventoryRequest(instance_id=self.instance_id, bot_id=self.id),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
+    @fn("SoulFireBot.open_inventory")
+    def open_inventory(
+        self, *, timeout_ms: int | None = None
+    ) -> EffectGen[None, SoulFireOperationError]:
+        response = yield from rpc(
+            "SoulFireBot.open_inventory",
+            lambda: self._bot_client.open_inventory(
+                BotOpenInventoryRequest(instance_id=self.instance_id, bot_id=self.id),
+                headers=_action_headers(None, self._control_token),
+                timeout_ms=timeout_ms,
+            ),
         )
-        _require_success(response.success, "", "Opening inventory failed")
+        yield from validate(
+            lambda: _require_success(response.success, "", "Opening inventory failed")
+        )
 
-    def close_container(self, *, timeout_ms: int | None = None) -> None:
-        response = self._bot_client.close_container(
-            BotCloseContainerRequest(instance_id=self.instance_id, bot_id=self.id),
-            headers=_action_headers(None, self._control_token),
-            timeout_ms=timeout_ms,
+    @fn("SoulFireBot.close_container")
+    def close_container(
+        self, *, timeout_ms: int | None = None
+    ) -> EffectGen[None, SoulFireOperationError]:
+        response = yield from rpc(
+            "SoulFireBot.close_container",
+            lambda: self._bot_client.close_container(
+                BotCloseContainerRequest(instance_id=self.instance_id, bot_id=self.id),
+                headers=_action_headers(None, self._control_token),
+                timeout_ms=timeout_ms,
+            ),
         )
-        _require_success(response.success, "", "Closing container failed")
+        yield from validate(
+            lambda: _require_success(response.success, "", "Closing container failed")
+        )
 
     def acquire_control(
-        self,
-        *,
-        ttl_seconds: int = 30,
-        timeout_ms: int | None = None,
-    ) -> SoulFireBotControlLease:
+        self, *, ttl_seconds: int = 30, timeout_ms: int | None = None
+    ) -> Effect[SoulFireBotControlLease, SoulFireOperationError, Scope]:
+        return acquire_release(
+            self._acquire_control(ttl_seconds=ttl_seconds, timeout_ms=timeout_ms),
+            lambda lease, _: lease.release(timeout_ms=timeout_ms).or_die(),
+        )
+
+    @fn("SoulFireBot.acquire_control")
+    def _acquire_control(
+        self, *, ttl_seconds: int = 30, timeout_ms: int | None = None
+    ) -> EffectGen[SoulFireBotControlLease, SoulFireOperationError]:
         if self._control_token is not None:
-            raise RuntimeError(f"Bot {self.id} control is already leased by this client")
-        response = self._live_client.acquire_bot_control(
-            AcquireBotControlRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                ttl_seconds=ttl_seconds,
+            return (
+                yield from fail(
+                    operation_error(
+                        "SoulFireBot.acquire_control",
+                        RuntimeError(f"Bot {self.id} control is already leased by this client"),
+                    )
+                )
+            )
+        response = yield from rpc(
+            "SoulFireBot.acquire_control",
+            lambda: self._live_client.acquire_bot_control(
+                AcquireBotControlRequest(
+                    instance_id=self.instance_id, bot_id=self.id, ttl_seconds=ttl_seconds
+                ),
+                timeout_ms=timeout_ms,
             ),
-            timeout_ms=timeout_ms,
         )
         if not response.HasField("lease"):
-            raise RuntimeError("SoulFire did not return the acquired control lease")
+            return (
+                yield from fail(
+                    operation_error(
+                        "SoulFireBot.acquire_control",
+                        RuntimeError("SoulFire did not return the acquired control lease"),
+                    )
+                )
+            )
         self._control_token = response.lease.token
         return SoulFireBotControlLease(self, response.lease)
 
+    @fn("SoulFireBot.renew_control")
     def renew_control(
-        self,
-        lease: BotControlLease,
-        ttl_seconds: int,
-        timeout_ms: int | None,
-    ) -> BotControlLease:
-        response = self._live_client.renew_bot_control(
-            RenewBotControlRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                token=lease.token,
-                ttl_seconds=ttl_seconds,
+        self, lease: BotControlLease, ttl_seconds: int, timeout_ms: int | None
+    ) -> EffectGen[BotControlLease, SoulFireOperationError]:
+        response = yield from rpc(
+            "SoulFireBot.renew_control",
+            lambda: self._live_client.renew_bot_control(
+                RenewBotControlRequest(
+                    instance_id=self.instance_id,
+                    bot_id=self.id,
+                    token=lease.token,
+                    ttl_seconds=ttl_seconds,
+                ),
+                timeout_ms=timeout_ms,
             ),
-            timeout_ms=timeout_ms,
         )
         if not response.HasField("lease"):
-            raise RuntimeError("SoulFire did not return the renewed control lease")
+            return (
+                yield from fail(
+                    operation_error(
+                        "SoulFireBot.renew_control",
+                        RuntimeError("SoulFire did not return the renewed control lease"),
+                    )
+                )
+            )
         self._control_token = response.lease.token
         return response.lease
 
+    @fn("SoulFireBot.release_control")
     def release_control(
-        self,
-        lease: BotControlLease,
-        timeout_ms: int | None,
-    ) -> None:
-        self._live_client.release_bot_control(
-            ReleaseBotControlRequest(
-                instance_id=self.instance_id,
-                bot_id=self.id,
-                token=lease.token,
+        self, lease: BotControlLease, timeout_ms: int | None
+    ) -> EffectGen[None, SoulFireOperationError]:
+        yield from rpc(
+            "SoulFireBot.release_control",
+            lambda: self._live_client.release_bot_control(
+                ReleaseBotControlRequest(
+                    instance_id=self.instance_id, bot_id=self.id, token=lease.token
+                ),
+                timeout_ms=timeout_ms,
             ),
-            timeout_ms=timeout_ms,
         )
         if self._control_token == lease.token:
             self._control_token = None
-
-
-class AsyncSoulFireBotControlLease:
-    def __init__(self, bot: AsyncSoulFireBot, lease: BotControlLease) -> None:
-        self._bot = bot
-        self._lease: BotControlLease | None = lease
-
-    @property
-    def value(self) -> BotControlLease:
-        if self._lease is None:
-            raise RuntimeError("The bot control lease has been released")
-        return self._lease
-
-    async def renew(
-        self,
-        *,
-        ttl_seconds: int = 30,
-        timeout_ms: int | None = None,
-    ) -> BotControlLease:
-        self._lease = await self._bot.renew_control(self.value, ttl_seconds, timeout_ms)
-        return self._lease
-
-    async def release(self, *, timeout_ms: int | None = None) -> None:
-        if self._lease is None:
-            return
-        await self._bot.release_control(self._lease, timeout_ms)
-        self._lease = None
-
-    async def __aenter__(self) -> AsyncSoulFireBotControlLease:
-        return self
-
-    async def __aexit__(self, *_: object) -> None:
-        await self.release()
 
 
 class SoulFireBotControlLease:
@@ -1962,26 +1161,21 @@ class SoulFireBotControlLease:
             raise RuntimeError("The bot control lease has been released")
         return self._lease
 
+    @fn("SoulFireBotControlLease.renew")
     def renew(
-        self,
-        *,
-        ttl_seconds: int = 30,
-        timeout_ms: int | None = None,
-    ) -> BotControlLease:
-        self._lease = self._bot.renew_control(self.value, ttl_seconds, timeout_ms)
+        self, *, ttl_seconds: int = 30, timeout_ms: int | None = None
+    ) -> EffectGen[BotControlLease, SoulFireOperationError]:
+        self._lease = yield from self._bot.renew_control(
+            (yield from validate(lambda: self.value)), ttl_seconds, timeout_ms
+        )
         return self._lease
 
-    def release(self, *, timeout_ms: int | None = None) -> None:
+    @fn("SoulFireBotControlLease.release")
+    def release(self, *, timeout_ms: int | None = None) -> EffectGen[None, SoulFireOperationError]:
         if self._lease is None:
             return
-        self._bot.release_control(self._lease, timeout_ms)
+        yield from self._bot.release_control(self._lease, timeout_ms)
         self._lease = None
-
-    def __enter__(self) -> SoulFireBotControlLease:
-        return self
-
-    def __exit__(self, *_: object) -> None:
-        self.release()
 
 
 def _apply_vehicle_control(

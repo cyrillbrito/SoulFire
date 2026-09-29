@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import base64
-from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
 
-from .bot_connect import BotServiceClient, BotServiceClientSync
+from effect_py import EffectGen, fn
+
+from .bot_connect import BotServiceClient
 from .bot_pb2 import (
     BotPovFrame,
     BotRenderPovRequest,
@@ -13,6 +14,9 @@ from .bot_pb2 import (
     BotWorldMapRequest,
     BotWorldMapResponse,
 )
+from .errors import SoulFireOperationError
+from .streams import Stream
+from .transport import rpc, rpc_stream
 
 type Headers = dict[str, str] | None
 
@@ -46,40 +50,42 @@ _DEFAULT_CAMERA_OPTIONS = CameraRenderOptions()
 _DEFAULT_WORLD_MAP_OPTIONS = WorldMapOptions()
 
 
-class AsyncSoulFireCamera:
+class SoulFireCamera:
     """Async camera, frame-stream, and map-view access for one bot."""
 
-    def __init__(
-        self,
-        instance_id: str,
-        bot_id: str,
-        client: BotServiceClient,
-    ) -> None:
+    def __init__(self, instance_id: str, bot_id: str, client: BotServiceClient) -> None:
         self._instance_id = instance_id
         self._bot_id = bot_id
         self._client = client
 
-    async def capture(
+    @fn("SoulFireCamera.capture")
+    def capture(
         self,
         options: CameraRenderOptions = _DEFAULT_CAMERA_OPTIONS,
         *,
         headers: Headers = None,
         timeout_ms: int | None = None,
-    ) -> BotRenderPovResponse:
-        return await self._client.render_bot_pov(
-            _render_request(self._instance_id, self._bot_id, options),
-            headers=headers,
-            timeout_ms=timeout_ms,
+    ) -> EffectGen[BotRenderPovResponse, SoulFireOperationError]:
+        return (
+            yield from rpc(
+                "SoulFireCamera.capture",
+                lambda: self._client.render_bot_pov(
+                    _render_request(self._instance_id, self._bot_id, options),
+                    headers=headers,
+                    timeout_ms=timeout_ms,
+                ),
+            )
         )
 
-    async def capture_bytes(
+    @fn("SoulFireCamera.capture_bytes")
+    def capture_bytes(
         self,
         options: CameraRenderOptions = _DEFAULT_CAMERA_OPTIONS,
         *,
         headers: Headers = None,
         timeout_ms: int | None = None,
-    ) -> bytes:
-        capture = await self.capture(options, headers=headers, timeout_ms=timeout_ms)
+    ) -> EffectGen[bytes, SoulFireOperationError]:
+        capture = yield from self.capture(options, headers=headers, timeout_ms=timeout_ms)
         return decode_camera_image(capture)
 
     def frames(
@@ -89,87 +95,33 @@ class AsyncSoulFireCamera:
         interval_ms: int = 0,
         headers: Headers = None,
         timeout_ms: int | None = None,
-    ) -> AsyncIterator[BotPovFrame]:
-        return self._client.watch_bot_pov(
-            _watch_request(self._instance_id, self._bot_id, options, interval_ms),
-            headers=headers,
-            timeout_ms=timeout_ms,
+    ) -> Stream[BotPovFrame, SoulFireOperationError]:
+        return rpc_stream(
+            "SoulFireCamera.frames",
+            lambda: self._client.watch_bot_pov(
+                _watch_request(self._instance_id, self._bot_id, options, interval_ms),
+                headers=headers,
+                timeout_ms=timeout_ms,
+            ),
         )
 
-    async def world_map(
-        self,
-        options: WorldMapOptions = _DEFAULT_WORLD_MAP_OPTIONS,
-        *,
-        headers: Headers = None,
-        timeout_ms: int | None = None,
-    ) -> BotWorldMapResponse:
-        return await self._client.get_bot_world_map(
-            _world_map_request(self._instance_id, self._bot_id, options),
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-
-class SoulFireCamera:
-    """Synchronous camera, frame-stream, and map-view access for one bot."""
-
-    def __init__(
-        self,
-        instance_id: str,
-        bot_id: str,
-        client: BotServiceClientSync,
-    ) -> None:
-        self._instance_id = instance_id
-        self._bot_id = bot_id
-        self._client = client
-
-    def capture(
-        self,
-        options: CameraRenderOptions = _DEFAULT_CAMERA_OPTIONS,
-        *,
-        headers: Headers = None,
-        timeout_ms: int | None = None,
-    ) -> BotRenderPovResponse:
-        return self._client.render_bot_pov(
-            _render_request(self._instance_id, self._bot_id, options),
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    def capture_bytes(
-        self,
-        options: CameraRenderOptions = _DEFAULT_CAMERA_OPTIONS,
-        *,
-        headers: Headers = None,
-        timeout_ms: int | None = None,
-    ) -> bytes:
-        return decode_camera_image(self.capture(options, headers=headers, timeout_ms=timeout_ms))
-
-    def frames(
-        self,
-        options: CameraRenderOptions = _DEFAULT_CAMERA_OPTIONS,
-        *,
-        interval_ms: int = 0,
-        headers: Headers = None,
-        timeout_ms: int | None = None,
-    ) -> Iterator[BotPovFrame]:
-        return self._client.watch_bot_pov(
-            _watch_request(self._instance_id, self._bot_id, options, interval_ms),
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
+    @fn("SoulFireCamera.world_map")
     def world_map(
         self,
         options: WorldMapOptions = _DEFAULT_WORLD_MAP_OPTIONS,
         *,
         headers: Headers = None,
         timeout_ms: int | None = None,
-    ) -> BotWorldMapResponse:
-        return self._client.get_bot_world_map(
-            _world_map_request(self._instance_id, self._bot_id, options),
-            headers=headers,
-            timeout_ms=timeout_ms,
+    ) -> EffectGen[BotWorldMapResponse, SoulFireOperationError]:
+        return (
+            yield from rpc(
+                "SoulFireCamera.world_map",
+                lambda: self._client.get_bot_world_map(
+                    _world_map_request(self._instance_id, self._bot_id, options),
+                    headers=headers,
+                    timeout_ms=timeout_ms,
+                ),
+            )
         )
 
 
@@ -179,9 +131,7 @@ def decode_camera_image(image: BotRenderPovResponse) -> bytes:
 
 
 def _render_request(
-    instance_id: str,
-    bot_id: str,
-    options: CameraRenderOptions,
+    instance_id: str, bot_id: str, options: CameraRenderOptions
 ) -> BotRenderPovRequest:
     request = BotRenderPovRequest(
         instance_id=instance_id,
@@ -195,10 +145,7 @@ def _render_request(
 
 
 def _watch_request(
-    instance_id: str,
-    bot_id: str,
-    options: CameraRenderOptions,
-    interval_ms: int,
+    instance_id: str, bot_id: str, options: CameraRenderOptions, interval_ms: int
 ) -> BotWatchPovRequest:
     request = BotWatchPovRequest(
         instance_id=instance_id,
@@ -213,8 +160,7 @@ def _watch_request(
 
 
 def _apply_render_options(
-    request: BotRenderPovRequest | BotWatchPovRequest,
-    options: CameraRenderOptions,
+    request: BotRenderPovRequest | BotWatchPovRequest, options: CameraRenderOptions
 ) -> None:
     if options.max_distance is not None:
         request.max_distance = options.max_distance
@@ -237,9 +183,7 @@ def _apply_render_options(
 
 
 def _world_map_request(
-    instance_id: str,
-    bot_id: str,
-    options: WorldMapOptions,
+    instance_id: str, bot_id: str, options: WorldMapOptions
 ) -> BotWorldMapRequest:
     request = BotWorldMapRequest(
         instance_id=instance_id,

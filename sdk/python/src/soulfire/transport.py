@@ -4,9 +4,19 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Protocol, runtime_checkable
 
 from connectrpc.errors import ConnectError
-from effect_py import Effect, EffectGen, Scope, acquire_release, from_async, gen, try_, try_async
+from effect_py import (
+    Effect,
+    EffectGen,
+    Scope,
+    acquire_release,
+    from_async,
+    gen,
+    try_,
+    try_async,
+    with_span,
+)
 
-from .errors import SoulFireRpcError, SoulFireValidationError, rpc_error
+from .errors import SoulFireOperationError, SoulFireRpcError, operation_error, rpc_error
 from .streams import END, Cursor, End, Item, Stream
 
 
@@ -23,21 +33,21 @@ def rpc[A](operation: str, call: Callable[[], Awaitable[A]]) -> Effect[A, SoulFi
             return rpc_error(operation, error)
         raise error
 
-    return try_async(call, on_error)
+    return try_async(call, on_error).pipe(with_span(operation))
 
 
-def validate[A](call: Callable[[], A]) -> Effect[A, SoulFireValidationError]:
-    def on_error(error: Exception) -> SoulFireValidationError:
-        if isinstance(error, (ValueError, TypeError, RuntimeError)):
-            return SoulFireValidationError(str(error))
-        raise error
+def validate[A](call: Callable[[], A]) -> Effect[A, SoulFireOperationError]:
+    def on_error(error: Exception) -> SoulFireOperationError:
+        return operation_error("validation", error)
 
     return try_(call, on_error)
 
 
-def rpc_stream[A](operation: str, factory: Callable[[], AsyncIterator[A]]) -> Stream[A, SoulFireRpcError]:
+def rpc_stream[A](
+    operation: str, factory: Callable[[], AsyncIterator[A]]
+) -> Stream[A, SoulFireOperationError]:
     @gen
-    def acquire() -> EffectGen[Cursor[A, SoulFireRpcError], SoulFireRpcError, Scope]:
+    def acquire() -> EffectGen[Cursor[A, SoulFireOperationError], SoulFireOperationError, Scope]:
         def create() -> AsyncIterator[A]:
             return factory()
 
@@ -46,7 +56,7 @@ def rpc_stream[A](operation: str, factory: Callable[[], AsyncIterator[A]]) -> St
                 await iterator.aclose()
 
         iterator = yield from acquire_release(
-            try_(create, lambda error: rpc_error(operation, error)),
+            try_(create, lambda error: operation_error(operation, error)),
             lambda iterator, _: from_async(lambda: close(iterator)),
         )
 
@@ -58,4 +68,4 @@ def rpc_stream[A](operation: str, factory: Callable[[], AsyncIterator[A]]) -> St
 
         return Cursor(lambda: rpc(operation, pull))
 
-    return Stream(acquire())
+    return Stream(acquire)

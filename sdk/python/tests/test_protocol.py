@@ -1,9 +1,10 @@
 from typing import Any, cast
 
 import pytest
+from effect_py import gen, run_async, scoped, succeed
 
-from soulfire.protocol import AsyncSoulFireProtocol, SoulFireProtocol
-from soulfire.protocol_connect import BotProtocolServiceClient, BotProtocolServiceClientSync
+from soulfire.protocol import SoulFireProtocol
+from soulfire.protocol_connect import BotProtocolServiceClient
 from soulfire.protocol_pb2 import (
     PACKET_DIRECTION_CLIENTBOUND,
     BotProtocolInfo,
@@ -26,15 +27,11 @@ class FakeAsyncProtocolClient:
         assert request.instance_id == "instance-id"
         assert request.bot_id == "bot-id"
         return BotProtocolInfo(
-            minecraft_protocol_version=772,
-            minecraft_version_name="26.2",
-            protocol_state="play",
+            minecraft_protocol_version=772, minecraft_version_name="26.2", protocol_state="play"
         )
 
     async def list_packet_schemas(
-        self,
-        request: ListPacketSchemasRequest,
-        **_options: Any,
+        self, request: ListPacketSchemasRequest, **_options: Any
     ) -> ListPacketSchemasResponse:
         self.schemas_request = request
         return ListPacketSchemasResponse(
@@ -48,46 +45,33 @@ class FakeAsyncProtocolClient:
             ]
         )
 
-    def watch_packets(
-        self,
-        request: WatchPacketsRequest,
-        **_options: Any,
-    ):
+    def watch_packets(self, request: WatchPacketsRequest, **_options: Any):
         self.watch_request = request
 
         async def events():
             yield RawPacketEvent(
-                sequence=1,
-                direction=PACKET_DIRECTION_CLIENTBOUND,
-                name="minecraft:game_event",
+                sequence=1, direction=PACKET_DIRECTION_CLIENTBOUND, name="minecraft:game_event"
             )
 
         return events()
 
     async def send_raw_packet(
-        self,
-        request: SendRawPacketRequest,
-        **_options: Any,
+        self, request: SendRawPacketRequest, **_options: Any
     ) -> SendRawPacketResponse:
         self.send_request = request
         return SendRawPacketResponse(
-            name=request.expected_name,
-            encoded_bytes=len(request.encoded_packet),
+            name=request.expected_name, encoded_bytes=len(request.encoded_packet)
         )
 
 
 class FakeSyncProtocolClient:
-    def get_protocol_info(self, request: Any, **_options: Any) -> BotProtocolInfo:
+    async def get_protocol_info(self, request: Any, **_options: Any) -> BotProtocolInfo:
         return BotProtocolInfo(
-            minecraft_protocol_version=772,
-            minecraft_version_name="26.2",
-            protocol_state="play",
+            minecraft_protocol_version=772, minecraft_version_name="26.2", protocol_state="play"
         )
 
-    def list_packet_schemas(
-        self,
-        request: ListPacketSchemasRequest,
-        **_options: Any,
+    async def list_packet_schemas(
+        self, request: ListPacketSchemasRequest, **_options: Any
     ) -> ListPacketSchemasResponse:
         return ListPacketSchemasResponse(
             packets=[
@@ -100,78 +84,70 @@ class FakeSyncProtocolClient:
             ]
         )
 
-    def watch_packets(self, request: WatchPacketsRequest, **_options: Any):
-        return iter(
-            [
-                RawPacketEvent(
-                    sequence=1,
-                    direction=request.directions[0],
-                    name=request.names[0],
-                )
-            ]
-        )
+    async def watch_packets(self, request: WatchPacketsRequest, **_options: Any):
+        for item in [
+            RawPacketEvent(sequence=1, direction=request.directions[0], name=request.names[0])
+        ]:
+            yield item
 
-    def send_raw_packet(
-        self,
-        request: SendRawPacketRequest,
-        **_options: Any,
+    async def send_raw_packet(
+        self, request: SendRawPacketRequest, **_options: Any
     ) -> SendRawPacketResponse:
         return SendRawPacketResponse(
-            name=request.expected_name,
-            encoded_bytes=len(request.encoded_packet),
+            name=request.expected_name, encoded_bytes=len(request.encoded_packet)
         )
 
 
 @pytest.mark.asyncio
-async def test_async_protocol_scopes_queries_streams_and_raw_sends() -> None:
-    client = FakeAsyncProtocolClient()
-    protocol = AsyncSoulFireProtocol(
-        "instance-id",
-        "bot-id",
-        cast(BotProtocolServiceClient, client),
-    )
+async def test_protocol_scopes_queries_streams_and_raw_sends() -> None:
 
-    info = await protocol.info()
-    schemas = await protocol.schemas(PACKET_DIRECTION_CLIENTBOUND)
-    events = [
-        event
-        async for event in protocol.packets(
-            directions=[PACKET_DIRECTION_CLIENTBOUND],
-            names=["minecraft:game_event"],
-            include_encoded_packet=True,
-            maximum_encoded_bytes=128,
+    @gen
+    def workflow():
+        yield from succeed(None)
+        client = FakeAsyncProtocolClient()
+        protocol = SoulFireProtocol("instance-id", "bot-id", cast(BotProtocolServiceClient, client))
+        info = yield from protocol.info()
+        schemas = yield from protocol.schemas(PACKET_DIRECTION_CLIENTBOUND)
+        events = list(
+            (
+                yield from protocol.packets(
+                    directions=[PACKET_DIRECTION_CLIENTBOUND],
+                    names=["minecraft:game_event"],
+                    include_encoded_packet=True,
+                    maximum_encoded_bytes=128,
+                ).run_collect()
+            )
         )
-    ]
-    sent = await protocol.send(b"\x01\x02", expected_name="minecraft:game_event")
+        sent = yield from protocol.send(b"\x01\x02", expected_name="minecraft:game_event")
+        assert info.minecraft_protocol_version == 772
+        assert schemas[0].network_id == 31
+        assert events[0].sequence == 1
+        assert sent.encoded_bytes == 2
+        assert client.schemas_request is not None
+        assert client.schemas_request.instance_id == "instance-id"
+        assert client.watch_request is not None
+        assert client.watch_request.maximum_encoded_bytes == 128
+        assert client.send_request is not None
+        assert client.send_request.bot_id == "bot-id"
 
-    assert info.minecraft_protocol_version == 772
-    assert schemas[0].network_id == 31
-    assert events[0].sequence == 1
-    assert sent.encoded_bytes == 2
-    assert client.schemas_request is not None
-    assert client.schemas_request.instance_id == "instance-id"
-    assert client.watch_request is not None
-    assert client.watch_request.maximum_encoded_bytes == 128
-    assert client.send_request is not None
-    assert client.send_request.bot_id == "bot-id"
+    await run_async(scoped(workflow).or_die())
 
 
-def test_sync_protocol_preserves_filters_and_packet_bytes() -> None:
-    protocol = SoulFireProtocol(
-        "instance-id",
-        "bot-id",
-        cast(BotProtocolServiceClientSync, FakeSyncProtocolClient()),
-    )
+async def test_effect_protocol_preserves_filters_and_packet_bytes() -> None:
 
-    events = list(
-        protocol.packets(
-            directions=[PACKET_DIRECTION_CLIENTBOUND],
-            names=["minecraft:game_event"],
+    @gen
+    def workflow():
+        yield from succeed(None)
+        protocol = SoulFireProtocol(
+            "instance-id", "bot-id", cast(BotProtocolServiceClient, FakeSyncProtocolClient())
         )
-    )
-    sent = protocol.send(b"\x01\x02", expected_name="minecraft:game_event")
+        events = yield from protocol.packets(
+            directions=[PACKET_DIRECTION_CLIENTBOUND], names=["minecraft:game_event"]
+        ).run_collect()
+        sent = yield from protocol.send(b"\x01\x02", expected_name="minecraft:game_event")
+        assert events[0].direction == PACKET_DIRECTION_CLIENTBOUND
+        assert events[0].name == "minecraft:game_event"
+        assert sent.name == "minecraft:game_event"
+        assert sent.encoded_bytes == 2
 
-    assert events[0].direction == PACKET_DIRECTION_CLIENTBOUND
-    assert events[0].name == "minecraft:game_event"
-    assert sent.name == "minecraft:game_event"
-    assert sent.encoded_bytes == 2
+    await run_async(scoped(workflow).or_die())

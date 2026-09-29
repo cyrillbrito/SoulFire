@@ -608,7 +608,7 @@ requires-python = ">=3.14"
 license = ${JSON.stringify(model.metadata.license)}
 dependencies = [
   "soulfire>=${SDK_VERSION},<${nextMinorVersion(SDK_VERSION)}",
-  "connectrpc>=0.11.1,<0.12",
+  "connectrpc>=0.12.1,<0.13",
   "googleapis-common-protos>=1.70,<2",
   "protobuf>=6.31.1,<8",
 ]
@@ -790,8 +790,7 @@ import {
   type SoulFirePluginModule,
   SoulFirePluginError,
   rpcStream,
-  type SoulFireRpcError,
-  type SoulFireTaskFailed,
+  type SoulFireOperationError,
   type TaskStartOptions,
   type TypedPluginEvent,
   type WatchPluginEventOptions,
@@ -881,7 +880,7 @@ function taskMethodSources(tasks: readonly TaskModel[]): string {
     options: TaskStartOptions = {},
   ): Effect.Effect<
     SoulFireTask<typeof ${task.resultType.typescriptSchemaName}>,
-    SoulFireRpcError | SoulFireTaskFailed
+    SoulFireOperationError
   > {
     return tasks.start(
       ${task.inputType.typescriptSchemaName},
@@ -953,49 +952,24 @@ ${methods}
 }
 
 function pythonSdkSource(model: GenerationModel): string {
-  const imports = pythonImports(model);
-  const runtimeImports = pythonRuntimeImports(model);
-  const clients = model.services.map(pythonServiceSource).join("\n\n\n");
   const className = `${pascalCase(model.metadata.pluginId)}PluginClient`;
-  const asyncClass = pythonPluginClientClass(model, className, true);
-  const syncClass = pythonPluginClientClass(model, className, false);
-  const compatibility = pythonCompatibilityReturn(model);
   const definitions = [
-    clients,
-    asyncClass,
-    syncClass,
+    ...model.services.map(pythonServiceSource),
+    pythonPluginClientClass(model, className),
     `def _is_compatible(descriptor: PluginApiDescriptor) -> bool:
-${compatibility}`,
-  ]
-    .filter((value) => value.length > 0)
-    .join("\n\n\n");
-
+${pythonCompatibilityReturn(model)}`,
+  ].join("\n\n\n");
   return `from __future__ import annotations
 
-${runtimeImports}
+${pythonRuntimeImports(model)}
 
-${imports}
+${pythonImports(model)}
 
 PLUGIN_ID = ${JSON.stringify(model.metadata.pluginId)}
 API_MAJOR_VERSION = ${model.metadata.apiMajorVersion}
 
 
 ${definitions}
-
-
-class _AsyncPluginModule:
-    plugin_id = PLUGIN_ID
-
-    @staticmethod
-    def is_compatible(descriptor: PluginApiDescriptor) -> bool:
-        return _is_compatible(descriptor)
-
-    @staticmethod
-    def create(
-        catalog: AsyncPluginCatalog,
-        _: PluginApiDescriptor,
-    ) -> Async${className}:
-        return Async${className}(catalog)
 
 
 class _PluginModule:
@@ -1006,63 +980,28 @@ class _PluginModule:
         return _is_compatible(descriptor)
 
     @staticmethod
-    def create(
-        catalog: PluginCatalog,
-        _: PluginApiDescriptor,
-    ) -> ${className}:
+    def create(catalog: PluginCatalog, _: PluginApiDescriptor) -> ${className}:
         return ${className}(catalog)
 
 
-async_plugin = _AsyncPluginModule()
 plugin = _PluginModule()
 `;
 }
 
-function pythonPluginClientClass(
-  model: GenerationModel,
-  className: string,
-  asynchronous: boolean,
-): string {
-  const catalog = asynchronous ? "AsyncPluginCatalog" : "PluginCatalog";
-  const prefix = asynchronous ? "Async" : "";
-  const fields = model.services
-    .map((service) => pythonPluginClientField(service, asynchronous))
-    .join("\n");
-  const constructor = `    def __init__(self, catalog: ${catalog}) -> None:
-        self._catalog = catalog${fields.length === 0 ? "" : `\n${fields}`}`;
+function pythonPluginClientClass(model: GenerationModel, className: string): string {
+  const fields = model.services.map((service) =>
+    `        self.${service.pythonName} = ${service.name}Effects(catalog.service(${service.name}Client))`
+  ).join("\n");
   const sections = [
-    constructor,
-    pythonEventMethods(model.events, asynchronous),
-    pythonTaskMethods(model.tasks, asynchronous),
-  ]
-    .filter((value) => value.length > 0)
-    .join("\n\n");
-  return `class ${prefix}${className}:
+    `    def __init__(self, catalog: PluginCatalog) -> None:
+        self._catalog = catalog${fields.length === 0 ? "" : `\n${fields}`}`,
+    pythonEventMethods(model.events),
+    pythonTaskMethods(model.tasks),
+  ].filter((value) => value.length > 0).join("\n\n");
+  return `class ${className}:
     __slots__ = (${pythonSlots(model.services)})
 
 ${sections}`;
-}
-
-function pythonPluginClientField(
-  service: ServiceModel,
-  asynchronous: boolean,
-): string {
-  const type = asynchronous
-    ? `Async${service.name}Client`
-    : `${service.name}ClientFacade`;
-  const client = asynchronous
-    ? `${service.name}Client`
-    : `${service.name}ClientSync`;
-  const invocation = `${type}(catalog.service(${client}))`;
-  const value =
-    invocation.length <= 88
-      ? invocation
-      : `${type}(
-                catalog.service(${client})
-            )`;
-  return `        self.${service.pythonName}: ${type} = (
-            ${value}
-        )`;
 }
 
 function pythonCompatibilityReturn(model: GenerationModel): string {
@@ -1132,47 +1071,19 @@ ${indent})`;
 }
 
 function pythonRuntimeImports(model: GenerationModel): string {
-  const hasIterators =
-    model.events.length > 0 ||
-    model.services.some((service) =>
-      service.methods.some((method) => method.serverStreaming),
-    );
-  const collectionImports = hasIterators
-    ? "from collections.abc import AsyncIterator, Iterator"
-    : "";
-  const typingImports =
-    model.tasks.length > 0 ? "from typing import Unpack" : "";
-  const pluginImports =
-    model.events.length > 0
-      ? `from soulfire.plugins import (
-    AsyncPluginCatalog,
-    PluginCatalog,
-    TypedPluginEvent,
-)`
-      : "from soulfire.plugins import AsyncPluginCatalog, PluginCatalog";
-  const taskImports =
-    model.tasks.length > 0
-      ? `from soulfire.tasks import (
-    AsyncSoulFireTask,
-    AsyncSoulFireTasks,
-    SoulFireTask,
-    SoulFireTasks,
-    TaskStartOptions,
-)`
-      : "";
-  const standardLibrary = [collectionImports, typingImports]
-    .filter((value) => value.length > 0)
-    .join("\n");
-  const soulfire = [
+  const imports = [
+    model.tasks.length > 0 ? "from typing import Unpack" : "",
+    model.services.some((service) => service.methods.some((method) => !method.serverStreaming)) ? "from effect_py import EffectGen, fn" : "",
+    model.tasks.length > 0 ? "from effect_py import Effect" : "",
+    "from soulfire.errors import SoulFireOperationError",
     "from soulfire.plugin_api_pb2 import PluginApiDescriptor",
-    pluginImports,
-    taskImports,
-  ]
-    .filter((value) => value.length > 0)
-    .join("\n");
-  return [standardLibrary, soulfire]
-    .filter((value) => value.length > 0)
-    .join("\n\n");
+    model.events.length > 0 ? "from soulfire.plugins import PluginCatalog, TypedPluginEvent" : "from soulfire.plugins import PluginCatalog",
+    model.tasks.length > 0 ? "from soulfire.tasks import SoulFireTask, SoulFireTasks, TaskStartOptions" : "",
+    model.events.length > 0 || model.services.some((service) => service.methods.some((method) => method.serverStreaming)) ? "from soulfire.streams import Stream" : "",
+    model.services.some((service) => service.methods.some((method) => !method.serverStreaming)) ? "from soulfire.transport import rpc" : "",
+    model.services.some((service) => service.methods.some((method) => method.serverStreaming)) ? "from soulfire.transport import rpc_stream" : "",
+  ];
+  return imports.filter((value) => value.length > 0).join("\n");
 }
 
 function pythonImports(model: GenerationModel): string {
@@ -1183,7 +1094,6 @@ function pythonImports(model: GenerationModel): string {
       protoPythonConnectModule(service.fileName),
     );
     addImport(groups, connect, `${service.name}Client`);
-    addImport(groups, connect, `${service.name}ClientSync`);
     for (const method of service.methods) {
       addImport(
         groups,
@@ -1245,127 +1155,55 @@ function addImport(
 }
 
 function pythonServiceSource(service: ServiceModel): string {
-  const asyncMethods = service.methods
-    .map((method) => {
-      const returnType = method.serverStreaming
-        ? `AsyncIterator[${method.outputType.expression}]`
-        : method.outputType.expression;
-      const prefix = method.serverStreaming ? "def" : "async def";
-      const await_ = method.serverStreaming ? "" : "await ";
-      return `    ${prefix} ${method.pythonName}(
-        self,
-        request: ${method.inputType.expression},
-        *,
-        timeout_ms: int | None = None,
-    ) -> ${returnType}:
-        return ${await_}self._client.${method.pythonName}(
-            request,
-            timeout_ms=timeout_ms,
-        )`;
-    })
-    .join("\n\n");
-  const syncMethods = service.methods
-    .map((method) => {
-      const returnType = method.serverStreaming
-        ? `Iterator[${method.outputType.expression}]`
-        : method.outputType.expression;
-      return `    def ${method.pythonName}(
-        self,
-        request: ${method.inputType.expression},
-        *,
-        timeout_ms: int | None = None,
-    ) -> ${returnType}:
-        return self._client.${method.pythonName}(
-            request,
-            timeout_ms=timeout_ms,
-        )`;
-    })
-    .join("\n\n");
-  return `class Async${service.name}Client:
+  const methods = service.methods.map((method) => {
+    const operation = `${service.fullName}/${method.name}`;
+    return method.serverStreaming ? `    def ${method.pythonName}(
+        self, request: ${method.inputType.expression}, *, timeout_ms: int | None = None,
+    ) -> Stream[${method.outputType.expression}, SoulFireOperationError]:
+        return rpc_stream(
+            ${JSON.stringify(operation)},
+            lambda: self._client.${method.pythonName}(request, timeout_ms=timeout_ms),
+        )` : `    @fn(${JSON.stringify(operation)})
+    def ${method.pythonName}(
+        self, request: ${method.inputType.expression}, *, timeout_ms: int | None = None,
+    ) -> EffectGen[${method.outputType.expression}, SoulFireOperationError]:
+        return (yield from rpc(
+            ${JSON.stringify(operation)},
+            lambda: self._client.${method.pythonName}(request, timeout_ms=timeout_ms),
+        ))`;
+  }).join("\n\n");
+  return `class ${service.name}Effects:
     __slots__ = ("_client",)
 
     def __init__(self, client: ${service.name}Client) -> None:
         self._client = client
 
-${asyncMethods}
-
-
-class ${service.name}ClientFacade:
-    __slots__ = ("_client",)
-
-    def __init__(self, client: ${service.name}ClientSync) -> None:
-        self._client = client
-
-${syncMethods}`;
+${methods}`;
 }
 
-function pythonEventMethods(
-  events: readonly EventModel[],
-  asynchronous: boolean,
-): string {
-  const iterator = asynchronous ? "AsyncIterator" : "Iterator";
-  return events
-    .map(
-      (event) =>
-        `    def ${event.pythonName}(
-        self,
-        *,
-        instance_id: str | None = None,
-        bot_id: str | None = None,
-        task_id: str | None = None,
-        after_sequence: int = 0,
-        timeout_ms: int | None = None,
-    ) -> ${iterator}[TypedPluginEvent[${event.messageType.expression}]]:
+function pythonEventMethods(events: readonly EventModel[]): string {
+  return events.map((event) => `    def ${event.pythonName}(
+        self, *, instance_id: str | None = None, bot_id: str | None = None,
+        task_id: str | None = None, after_sequence: int = 0, timeout_ms: int | None = None,
+    ) -> Stream[TypedPluginEvent[${event.messageType.expression}], SoulFireOperationError]:
         return self._catalog.typed_events(
-            PLUGIN_ID,
-            ${event.messageType.expression},
-            instance_id=instance_id,
-            bot_id=bot_id,
-            task_id=task_id,
-            after_sequence=after_sequence,
-            timeout_ms=timeout_ms,
-        )`,
-    )
-    .join("\n\n");
+            PLUGIN_ID, ${event.messageType.expression}, instance_id=instance_id,
+            bot_id=bot_id, task_id=task_id, after_sequence=after_sequence, timeout_ms=timeout_ms,
+        )`).join("\n\n");
 }
 
-function pythonTaskMethods(
-  tasks: readonly TaskModel[],
-  asynchronous: boolean,
-): string {
-  const tasksType = asynchronous ? "AsyncSoulFireTasks" : "SoulFireTasks";
-  const taskType = asynchronous ? "AsyncSoulFireTask" : "SoulFireTask";
-  const prefix = asynchronous ? "async def" : "def";
-  const await_ = asynchronous ? "await " : "";
-  return tasks
-    .map(
-      (task) =>
-        `    ${prefix} ${task.pythonName}(
-        self,
-        tasks: ${tasksType},
-        task_input: ${task.inputType.expression},
+function pythonTaskMethods(tasks: readonly TaskModel[]): string {
+  return tasks.map((task) => `    def ${task.pythonName}(
+        self, tasks: SoulFireTasks, task_input: ${task.inputType.expression},
         **options: Unpack[TaskStartOptions],
-    ) -> ${taskType}[${task.resultType.expression}]:
-        return ${await_}tasks.start(
-            task_input,
-            ${task.resultType.expression},
-            **options,
-        )`,
-    )
-    .join("\n\n");
+    ) -> Effect[SoulFireTask[${task.resultType.expression}], SoulFireOperationError]:
+        return tasks.start(task_input, ${task.resultType.expression}, **options)`).join("\n\n");
 }
 
 function pythonInitSource(model: GenerationModel): string {
-  const className = `${pascalCase(model.metadata.pluginId)}PluginClient`;
   const exports = [
-    `Async${className}`,
-    className,
-    "async_plugin",
-    "plugin",
-    ...model.services.flatMap((service) => [
-      `Async${service.name}Client`,
-      `${service.name}ClientFacade`,
-    ]),
+    `${pascalCase(model.metadata.pluginId)}PluginClient`, "plugin",
+    ...model.services.map((service) => `${service.name}Effects`),
   ].sort();
   return `from .sdk import (
 ${exports.map((name) => `    ${name},`).join("\n")}
@@ -1410,13 +1248,12 @@ function pythonReadme(model: GenerationModel): string {
 
 Typed Python 3.14 companion SDK for the SoulFire \`${model.metadata.pluginId}\` plugin.
 
-Both async and sync plugin modules are available:
+The companion API returns native effect-py effects and scoped streams:
 
 \`\`\`python
-from ${model.pythonModuleName} import async_plugin, plugin
+from ${model.pythonModuleName} import plugin
 
 extension = client.plugins.require(plugin)
-async_extension = async_client.plugins.require(async_plugin)
 \`\`\`
 
 This package requires plugin API major version ${model.metadata.apiMajorVersion}. Regenerate it whenever the plugin descriptor changes.

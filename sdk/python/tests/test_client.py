@@ -3,9 +3,10 @@ from typing import Any, cast
 
 import pytest
 from connectrpc.protocol import ProtocolType
+from effect_py import gen, run_async, scoped, succeed
 from google.protobuf.struct_pb2 import Value
 
-from soulfire import AsyncSoulFire, RequiredPlugin, SoulFire
+from soulfire import RequiredPlugin, SoulFire
 from soulfire.bot_connect import BotServiceClient
 from soulfire.bot_live_connect import BotLiveServiceClient
 from soulfire.bot_pb2 import (
@@ -21,13 +22,10 @@ from soulfire.bot_pb2 import (
     SetBotsDesiredStateRequest,
     SetBotsDesiredStateResponse,
 )
-from soulfire.client import AsyncSoulFireInstance, SoulFireInstance
+from soulfire.client import SoulFireInstance
 from soulfire.common_pb2 import ADMIN, SettingsNamespace
 from soulfire.instance_connect import InstanceServiceClient
-from soulfire.instance_live_connect import (
-    InstanceLiveServiceClient,
-    InstanceLiveServiceClientSync,
-)
+from soulfire.instance_live_connect import InstanceLiveServiceClient
 from soulfire.instance_live_pb2 import InstanceEvent, WatchInstanceEventsRequest
 from soulfire.instance_pb2 import InstanceConfig, InstanceInfo, InstanceInfoResponse
 from soulfire.plugin_api_pb2 import PluginApiDescriptor
@@ -69,14 +67,14 @@ class FakeGeneratedClientSync:
         self.options = options
         self.closed = False
 
-    def close(self) -> None:
+    async def close(self) -> None:
         self.closed = True
 
 
 class FakeSdkClientSync(FakeGeneratedClientSync):
     request = None
 
-    def handshake(self, request: object) -> SdkHandshakeResponse:
+    async def handshake(self, request: object) -> SdkHandshakeResponse:
         self.__class__.request = request
         return handshake_response()
 
@@ -104,9 +102,7 @@ class FakeBotService:
         )
 
     async def set_bots_desired_state(
-        self,
-        request: SetBotsDesiredStateRequest,
-        **_kwargs: object,
+        self, request: SetBotsDesiredStateRequest, **_kwargs: object
     ) -> SetBotsDesiredStateResponse:
         self.desired_state_request = request
         return SetBotsDesiredStateResponse()
@@ -122,8 +118,7 @@ class FakeInstanceService:
                             namespace="account",
                             entries=[
                                 SettingsNamespace.SettingsEntry(
-                                    key="shuffle-accounts",
-                                    value=Value(bool_value=True),
+                                    key="shuffle-accounts", value=Value(bool_value=True)
                                 )
                             ],
                         )
@@ -159,9 +154,7 @@ class FakeMixedBotService(FakeBotService):
         )
 
     async def restart_bots(
-        self,
-        request: RestartBotsRequest,
-        **_kwargs: object,
+        self, request: RestartBotsRequest, **_kwargs: object
     ) -> RestartBotsResponse:
         self.restart_request = request
         return RestartBotsResponse()
@@ -171,9 +164,7 @@ class FakeInstanceLiveService:
     request: WatchInstanceEventsRequest | None = None
 
     def watch_instance_events(
-        self,
-        request: WatchInstanceEventsRequest,
-        **_kwargs: object,
+        self, request: WatchInstanceEventsRequest, **_kwargs: object
     ) -> AsyncIterator[InstanceEvent]:
         self.request = request
 
@@ -186,10 +177,8 @@ class FakeInstanceLiveService:
 class FakeInstanceLiveServiceSync:
     request: WatchInstanceEventsRequest | None = None
 
-    def watch_instance_events(
-        self,
-        request: WatchInstanceEventsRequest,
-        **_kwargs: object,
+    async def watch_instance_events(
+        self, request: WatchInstanceEventsRequest, **_kwargs: object
     ) -> Iterator[InstanceEvent]:
         self.request = request
         yield InstanceEvent(bot_profile_id="bot-id")
@@ -197,142 +186,166 @@ class FakeInstanceLiveServiceSync:
 
 @pytest.mark.asyncio
 async def test_connect_creates_the_public_instance_bot_hierarchy() -> None:
-    soulfire = AsyncSoulFire.unauthenticated(
-        "https://soulfire.example.com/",
-        token="token",
-    )
 
-    bot = soulfire.instance("instance-id").bot("bot-id")
+    @gen
+    def workflow():
+        yield from succeed(None)
+        soulfire = yield from SoulFire.unauthenticated(
+            "https://soulfire.example.com/", token="token"
+        )
+        bot = soulfire.instance("instance-id").bot("bot-id")
+        assert bot.instance_id == "instance-id"
+        assert bot.id == "bot-id"
+        assert soulfire.local_server is None
+        yield from soulfire.close()
 
-    assert bot.instance_id == "instance-id"
-    assert bot.id == "bot-id"
-    assert soulfire.local_server is None
-    await soulfire.close()
+    await run_async(scoped(workflow).or_die())
 
 
 @pytest.mark.asyncio
 async def test_generated_services_always_use_grpc_web() -> None:
-    soulfire = AsyncSoulFire.unauthenticated("https://soulfire.example.com")
 
-    service = soulfire.service(FakeGeneratedClient)
+    @gen
+    def workflow():
+        yield from succeed(None)
+        soulfire = yield from SoulFire.unauthenticated("https://soulfire.example.com")
+        service = soulfire.service(FakeGeneratedClient)
+        assert service.address == "https://soulfire.example.com"
+        assert service.options["protocol"] is ProtocolType.GRPC_WEB
+        yield from soulfire.close()
+        assert service.closed
 
-    assert service.address == "https://soulfire.example.com"
-    assert service.options["protocol"] is ProtocolType.GRPC_WEB
-    await soulfire.close()
-    assert service.closed
+    await run_async(scoped(workflow).or_die())
 
 
 @pytest.mark.asyncio
-async def test_async_connect_negotiates_before_entering_context(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr("soulfire.client.SdkServiceClient", FakeSdkClient)
-    monkeypatch.setattr("soulfire.client.PluginApiServiceClient", FakePluginApiClient)
+async def test_connect_negotiates_before_entering_context(monkeypatch: pytest.MonkeyPatch) -> None:
 
-    async with AsyncSoulFire.connect(
-        "https://soulfire.example.com",
-        token="token",
-        required_capabilities=["plugin.rpc.v1"],
-        required_plugins=[RequiredPlugin("example", "^1.0.0")],
-    ) as soulfire:
+    @gen
+    def workflow():
+        yield from succeed(None)
+        monkeypatch.setattr("soulfire.client.SdkServiceClient", FakeSdkClient)
+        monkeypatch.setattr("soulfire.client.PluginApiServiceClient", FakePluginApiClient)
+        soulfire = yield from SoulFire.connect(
+            "https://soulfire.example.com",
+            token="token",
+            required_capabilities=["plugin.rpc.v1"],
+            required_plugins=[RequiredPlugin("example", "^1.0.0")],
+        )
         assert soulfire.server.id == "server-id"
         assert soulfire.capabilities.supports("plugin.rpc.v1")
         assert soulfire.plugins.require_descriptor("example").api_major_version == 1
+        assert FakeSdkClient.request is not None
+        assert list(FakeSdkClient.request.required_capabilities) == ["plugin.rpc.v1"]
+        assert FakeSdkClient.request.required_plugins[0].version_range == "^1.0.0"
 
-    assert FakeSdkClient.request is not None
-    assert list(FakeSdkClient.request.required_capabilities) == ["plugin.rpc.v1"]
-    assert FakeSdkClient.request.required_plugins[0].version_range == "^1.0.0"
+    await run_async(scoped(workflow).or_die())
 
 
-def test_sync_connect_negotiates_before_returning(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr("soulfire.client.SdkServiceClientSync", FakeSdkClientSync)
-    monkeypatch.setattr("soulfire.client.PluginApiServiceClientSync", FakePluginApiClientSync)
+async def test_effect_connect_negotiates_before_returning(monkeypatch: pytest.MonkeyPatch) -> None:
 
-    with SoulFire.connect(
-        "https://soulfire.example.com",
-        token="token",
-    ) as soulfire:
+    @gen
+    def workflow():
+        yield from succeed(None)
+        monkeypatch.setattr("soulfire.client.SdkServiceClient", FakeSdkClientSync)
+        monkeypatch.setattr("soulfire.client.PluginApiServiceClient", FakePluginApiClientSync)
+        soulfire = yield from SoulFire.connect("https://soulfire.example.com", token="token")
         assert soulfire.identity.username == "developer"
         assert soulfire.limits["grpc.request_bytes"] == 1024
+        assert FakeSdkClientSync.request is not None
+        assert FakeSdkClientSync.request.minimum_api_version.major == 1
 
-    assert FakeSdkClientSync.request is not None
-    assert FakeSdkClientSync.request.minimum_api_version.major == 1
+    await run_async(scoped(workflow).or_die())
 
 
 @pytest.mark.asyncio
 async def test_count_selection_honors_shuffle_accounts(monkeypatch: pytest.MonkeyPatch) -> None:
-    bot_service = FakeBotService()
-    monkeypatch.setattr("soulfire.client.random.shuffle", lambda values: values.reverse())
-    instance = AsyncSoulFireInstance(
-        "instance-id",
-        cast(BotServiceClient, bot_service),
-        cast(BotLiveServiceClient, object()),
-        cast(InstanceServiceClient, FakeInstanceService()),
-    )
 
-    await instance.start(count=1)
+    @gen
+    def workflow():
+        yield from succeed(None)
+        bot_service = FakeBotService()
+        monkeypatch.setattr("soulfire.client.random.shuffle", lambda values: values.reverse())
+        instance = SoulFireInstance(
+            "instance-id",
+            cast(BotServiceClient, bot_service),
+            cast(BotLiveServiceClient, object()),
+            cast(InstanceServiceClient, FakeInstanceService()),
+        )
+        yield from instance.start(count=1)
+        assert bot_service.desired_state_request is not None
+        assert list(bot_service.desired_state_request.bot_ids) == ["third"]
+        assert bot_service.desired_state_request.desired_state == BOT_DESIRED_STATE_RUNNING
 
-    assert bot_service.desired_state_request is not None
-    assert list(bot_service.desired_state_request.bot_ids) == ["third"]
-    assert bot_service.desired_state_request.desired_state == BOT_DESIRED_STATE_RUNNING
+    await run_async(scoped(workflow).or_die())
 
 
 @pytest.mark.asyncio
 async def test_restart_without_selection_only_restarts_desired_bots() -> None:
-    bot_service = FakeMixedBotService()
-    instance = AsyncSoulFireInstance(
-        "instance-id",
-        cast(BotServiceClient, bot_service),
-        cast(BotLiveServiceClient, object()),
-        cast(InstanceServiceClient, FakeInstanceService()),
-    )
 
-    await instance.restart()
+    @gen
+    def workflow():
+        yield from succeed(None)
+        bot_service = FakeMixedBotService()
+        instance = SoulFireInstance(
+            "instance-id",
+            cast(BotServiceClient, bot_service),
+            cast(BotLiveServiceClient, object()),
+            cast(InstanceServiceClient, FakeInstanceService()),
+        )
+        yield from instance.restart()
+        assert bot_service.restart_request is not None
+        assert list(bot_service.restart_request.bot_ids) == ["desired"]
 
-    assert bot_service.restart_request is not None
-    assert list(bot_service.restart_request.bot_ids) == ["desired"]
+    await run_async(scoped(workflow).or_die())
 
 
 @pytest.mark.asyncio
-async def test_async_instance_events_scope_and_default_filter() -> None:
-    live = FakeInstanceLiveService()
-    instance = AsyncSoulFireInstance(
-        "instance-id",
-        cast(BotServiceClient, object()),
-        cast(BotLiveServiceClient, object()),
-        cast(InstanceServiceClient, object()),
-        instance_live=cast(InstanceLiveServiceClient, live),
-    )
+async def test_instance_events_scope_and_default_filter() -> None:
 
-    event = await anext(instance.events(bot_ids=["bot-id", "bot-id"]))
+    @gen
+    def workflow():
+        yield from succeed(None)
+        live = FakeInstanceLiveService()
+        instance = SoulFireInstance(
+            "instance-id",
+            cast(BotServiceClient, object()),
+            cast(BotLiveServiceClient, object()),
+            cast(InstanceServiceClient, object()),
+            instance_live=cast(InstanceLiveServiceClient, live),
+        )
+        event = yield from instance.events(bot_ids=["bot-id", "bot-id"]).run_head()
+        assert event.bot_profile_id == "bot-id"
+        assert live.request is not None
+        assert live.request.instance_id == "instance-id"
+        assert list(live.request.filter.bot_ids) == ["bot-id"]
+        assert live.request.filter.bot_events.include_entity_events
+        assert live.request.filter.bot_events.include_resource_packs
+        assert live.request.filter.bot_events.include_titles
 
-    assert event.bot_profile_id == "bot-id"
-    assert live.request is not None
-    assert live.request.instance_id == "instance-id"
-    assert list(live.request.filter.bot_ids) == ["bot-id"]
-    assert live.request.filter.bot_events.include_entity_events
-    assert live.request.filter.bot_events.include_resource_packs
-    assert live.request.filter.bot_events.include_titles
+    await run_async(scoped(workflow).or_die())
 
 
-def test_sync_instance_events_scope_and_default_filter() -> None:
-    live = FakeInstanceLiveServiceSync()
-    instance = SoulFireInstance(
-        "instance-id",
-        cast(Any, object()),
-        cast(Any, object()),
-        cast(Any, object()),
-        instance_live=cast(InstanceLiveServiceClientSync, live),
-    )
+async def test_effect_instance_events_scope_and_default_filter() -> None:
 
-    event = next(instance.events(bot_ids=["bot-id"]))
+    @gen
+    def workflow():
+        yield from succeed(None)
+        live = FakeInstanceLiveServiceSync()
+        instance = SoulFireInstance(
+            "instance-id",
+            cast(Any, object()),
+            cast(Any, object()),
+            cast(Any, object()),
+            instance_live=cast(InstanceLiveServiceClient, live),
+        )
+        event = yield from instance.events(bot_ids=["bot-id"]).run_head()
+        assert event.bot_profile_id == "bot-id"
+        assert live.request is not None
+        assert live.request.instance_id == "instance-id"
+        assert live.request.filter.bot_events.include_scoreboard
 
-    assert event.bot_profile_id == "bot-id"
-    assert live.request is not None
-    assert live.request.instance_id == "instance-id"
-    assert live.request.filter.bot_events.include_scoreboard
+    await run_async(scoped(workflow).or_die())
 
 
 def handshake_response() -> SdkHandshakeResponse:
@@ -347,11 +360,7 @@ def handshake_response() -> SdkHandshakeResponse:
         transports=[SDK_TRANSPORT_GRPC_WEB],
         capabilities=[SdkCapability(id="plugin.rpc.v1", revision=1)],
         plugins=[
-            PluginApiDescriptor(
-                plugin_id="example",
-                plugin_version="1.0.0",
-                api_major_version=1,
-            )
+            PluginApiDescriptor(plugin_id="example", plugin_version="1.0.0", api_major_version=1)
         ],
         limits=[SdkLimit(id="grpc.request_bytes", value=1024)],
         identity=SdkIdentity(

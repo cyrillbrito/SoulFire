@@ -1,13 +1,5 @@
-from .bot_live_pb2 import (
-    BOT_ACTION_STATUS_COMPLETED,
-    BotActionResult,
-)
-
-
-class SoulFireActionError(RuntimeError):
-    def __init__(self, result: BotActionResult) -> None:
-        self.result = result
-        super().__init__(result.error or f"Bot action {result.action_id} did not complete")
+from .bot_live_pb2 import BOT_ACTION_STATUS_COMPLETED, BotActionResult
+from .errors import SoulFireActionError
 
 
 def require_action(result: BotActionResult) -> BotActionResult:
@@ -16,10 +8,7 @@ def require_action(result: BotActionResult) -> BotActionResult:
     return result
 
 
-def action_headers(
-    headers: dict[str, str] | None,
-    token: str | None,
-) -> dict[str, str] | None:
+def action_headers(headers: dict[str, str] | None, token: str | None) -> dict[str, str] | None:
     if token is None:
         return headers
     result = dict(headers or {})

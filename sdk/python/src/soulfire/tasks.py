@@ -1,17 +1,19 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from math import isfinite
 from typing import NotRequired, Protocol, TypedDict
 
+from effect_py import EffectGen, fail, fn, sync
 from google.protobuf.any_pb2 import Any as AnyMessage
 from google.protobuf.message import Message
 
 from .bot_live_pb2 import PathfindGoal, PathfindOptions
 from .common_pb2 import BlockPosition
 from .domain_pb2 import EntityReference
+from .errors import SoulFireOperationError, SoulFireTaskError, operation_error
 from .inventory_pb2 import ItemSelector
 from .recipe_pb2 import (
     BrewTask,
@@ -23,7 +25,8 @@ from .recipe_pb2 import (
     VillagerTradeTask,
     VillagerTradeTaskResult,
 )
-from .task_connect import BotTaskServiceClient, BotTaskServiceClientSync
+from .streams import Stream
+from .task_connect import BotTaskServiceClient
 from .task_pb2 import (
     BOT_TASK_CONFLICT_POLICY_UNSPECIFIED,
     BOT_TASK_DISCONNECT_POLICY_CANCEL_WITH_CALL,
@@ -102,6 +105,7 @@ from .task_pb2 import (
     WatchBotTaskRequest,
     WatchBotTasksRequest,
 )
+from .transport import rpc, rpc_stream, validate
 from .world_pb2 import EntitySelector, IntRange
 
 type HeaderFactory = Callable[[dict[str, str] | None], dict[str, str] | None]
@@ -165,2184 +169,10 @@ def is_terminal_task_status(status: BotTaskStatus) -> bool:
     }
 
 
-class SoulFireTaskError(RuntimeError):
-    def __init__(self, task: BotTask) -> None:
-        self.task = task
-        message = task.failure.message if task.HasField("failure") else ""
-        super().__init__(message or f"Task {task.task_id} ended in status {task.status}")
-
-
-class AsyncSoulFireTask[ResultT: Message]:
-    def __init__(
-        self,
-        client: BotTaskServiceClient,
-        snapshot: BotTask,
-        result_type: type[ResultT],
-        header_factory: HeaderFactory,
-    ) -> None:
-        self._client = client
-        self._snapshot = snapshot
-        self._result_type = result_type
-        self._header_factory = header_factory
-
-    @property
-    def id(self) -> str:
-        return self._snapshot.task_id
-
-    @property
-    def snapshot(self) -> BotTask:
-        return self._snapshot
-
-    @property
-    def terminal(self) -> bool:
-        return is_terminal_task_status(self._snapshot.status)
-
-    async def refresh(
-        self,
-        *,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> BotTask:
-        self._snapshot = await self._client.get_bot_task(
-            GetBotTaskRequest(task_id=self.id),
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-        return self._snapshot
-
-    def events(
-        self,
-        *,
-        after_revision: int | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncIterator[BotTaskEvent]:
-        return self._client.watch_bot_task(
-            WatchBotTaskRequest(
-                task_id=self.id,
-                after_revision=(
-                    self._snapshot.revision if after_revision is None else after_revision
-                ),
-                follow=True,
-            ),
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    async def wait(
-        self,
-        *,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> BotTask:
-        if self.terminal:
-            return self._snapshot
-        async for event in self.events(headers=headers, timeout_ms=timeout_ms):
-            if event.HasField("task"):
-                self._snapshot = event.task
-        if not self.terminal:
-            await self.refresh(headers=headers, timeout_ms=timeout_ms)
-        return self._snapshot
-
-    async def cancel(
-        self,
-        reason: str = "",
-        *,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> BotTask:
-        self._snapshot = await self._client.cancel_bot_task(
-            CancelBotTaskRequest(task_id=self.id, reason=reason),
-            headers=self._header_factory(headers),
-            timeout_ms=timeout_ms,
-        )
-        return self._snapshot
-
-    async def result(
-        self,
-        *,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> ResultT:
-        task = await self.wait(headers=headers, timeout_ms=timeout_ms)
-        if task.status != BOT_TASK_STATUS_COMPLETED or not task.HasField("result"):
-            raise SoulFireTaskError(task)
-        result = self._result_type()
-        if not task.result.Unpack(result):
-            raise SoulFireTaskError(_result_type_failure(task, result.DESCRIPTOR.full_name))
-        return result
-
-
-class AsyncSoulFireTasks:
-    def __init__(
-        self,
-        instance_id: str,
-        bot_id: str,
-        client: BotTaskServiceClient,
-        header_factory: HeaderFactory,
-    ) -> None:
-        self._instance_id = instance_id
-        self._bot_id = bot_id
-        self._client = client
-        self._header_factory = header_factory
-
-    async def start[ResultT: Message](
-        self,
-        task_input: Message,
-        result_type: type[ResultT],
-        *,
-        conflict_policy: BotTaskConflictPolicy = BOT_TASK_CONFLICT_POLICY_UNSPECIFIED,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        disconnect_policy: BotTaskDisconnectPolicy = BOT_TASK_DISCONNECT_POLICY_UNSPECIFIED,
-        priority: BotTaskPriority = BOT_TASK_PRIORITY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        parent_task_id: str | None = None,
-        causation_id: str | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncSoulFireTask[ResultT]:
-        packed = AnyMessage()
-        packed.Pack(task_input)
-        request = _start_request(
-            instance_id=self._instance_id,
-            bot_id=self._bot_id,
-            input=packed,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            disconnect_policy=disconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            parent_task_id=parent_task_id,
-            causation_id=causation_id,
-            idempotency_key=idempotency_key,
-        )
-        task = await self._client.start_bot_task(
-            request,
-            headers=self._header_factory(headers),
-            timeout_ms=timeout_ms,
-        )
-        return AsyncSoulFireTask(
-            self._client,
-            task,
-            result_type,
-            self._header_factory,
-        )
-
-    def run(
-        self,
-        task_input: Message,
-        *,
-        conflict_policy: BotTaskConflictPolicy = BOT_TASK_CONFLICT_POLICY_UNSPECIFIED,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        disconnect_policy: BotTaskDisconnectPolicy = BOT_TASK_DISCONNECT_POLICY_CANCEL_WITH_CALL,
-        priority: BotTaskPriority = BOT_TASK_PRIORITY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        parent_task_id: str | None = None,
-        causation_id: str | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncIterator[BotTaskEvent]:
-        packed = AnyMessage()
-        packed.Pack(task_input)
-        return self._client.run_bot_task(
-            _start_request(
-                instance_id=self._instance_id,
-                bot_id=self._bot_id,
-                input=packed,
-                conflict_policy=conflict_policy,
-                reconnect_policy=reconnect_policy,
-                disconnect_policy=disconnect_policy,
-                priority=priority,
-                deadline=deadline,
-                parent_task_id=parent_task_id,
-                causation_id=causation_id,
-                idempotency_key=idempotency_key,
-            ),
-            headers=self._header_factory(headers),
-            timeout_ms=timeout_ms,
-        )
-
-    def run_go_to(
-        self,
-        goal: PathfindGoal,
-        *,
-        options: PathfindOptions | None = None,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncIterator[BotTaskEvent]:
-        return self.run(
-            GoToTask(goal=goal, **({} if options is None else {"options": options})),
-            reconnect_policy=reconnect_policy,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    async def go_to(
-        self,
-        goal: PathfindGoal,
-        *,
-        options: PathfindOptions | None = None,
-        conflict_policy: BotTaskConflictPolicy = BOT_TASK_CONFLICT_POLICY_UNSPECIFIED,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        priority: BotTaskPriority = BOT_TASK_PRIORITY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncSoulFireTask[GoToTaskResult]:
-        return await self.start(
-            GoToTask(goal=goal, **({} if options is None else {"options": options})),
-            GoToTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    def run_follow_entity(
-        self,
-        target: FollowEntityTarget,
-        *,
-        distance: float = 3,
-        options: PathfindOptions | None = None,
-        target_unavailable_timeout_seconds: int = 0,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncIterator[BotTaskEvent]:
-        return self.run(
-            _follow_entity_task(
-                target,
-                distance,
-                options,
-                target_unavailable_timeout_seconds,
-            ),
-            reconnect_policy=reconnect_policy,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    async def follow_entity(
-        self,
-        target: FollowEntityTarget,
-        *,
-        distance: float = 3,
-        options: PathfindOptions | None = None,
-        target_unavailable_timeout_seconds: int = 0,
-        conflict_policy: BotTaskConflictPolicy = BOT_TASK_CONFLICT_POLICY_UNSPECIFIED,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        priority: BotTaskPriority = BOT_TASK_PRIORITY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncSoulFireTask[FollowEntityTaskResult]:
-        return await self.start(
-            _follow_entity_task(
-                target,
-                distance,
-                options,
-                target_unavailable_timeout_seconds,
-            ),
-            FollowEntityTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    def run_attack_entity(
-        self,
-        target: AttackEntityTarget,
-        *,
-        attack_range: float = 3,
-        sprinting: bool = False,
-        maximum_attacks: int = 0,
-        options: PathfindOptions | None = None,
-        target_unavailable_timeout_seconds: int = 0,
-        select_best_weapon: bool = True,
-        weapon: ItemSelector | None = None,
-        restore_selected_slot: bool = True,
-        use_offhand_shield: bool = False,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncIterator[BotTaskEvent]:
-        return self.run(
-            _attack_entity_task(
-                target,
-                attack_range,
-                sprinting,
-                maximum_attacks,
-                options,
-                target_unavailable_timeout_seconds,
-                select_best_weapon,
-                weapon,
-                restore_selected_slot,
-                use_offhand_shield,
-            ),
-            reconnect_policy=reconnect_policy,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    async def attack_entity(
-        self,
-        target: AttackEntityTarget,
-        *,
-        attack_range: float = 3,
-        sprinting: bool = False,
-        maximum_attacks: int = 0,
-        options: PathfindOptions | None = None,
-        target_unavailable_timeout_seconds: int = 0,
-        select_best_weapon: bool = True,
-        weapon: ItemSelector | None = None,
-        restore_selected_slot: bool = True,
-        use_offhand_shield: bool = False,
-        conflict_policy: BotTaskConflictPolicy = BOT_TASK_CONFLICT_POLICY_UNSPECIFIED,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        priority: BotTaskPriority = BOT_TASK_PRIORITY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncSoulFireTask[AttackEntityTaskResult]:
-        return await self.start(
-            _attack_entity_task(
-                target,
-                attack_range,
-                sprinting,
-                maximum_attacks,
-                options,
-                target_unavailable_timeout_seconds,
-                select_best_weapon,
-                weapon,
-                restore_selected_slot,
-                use_offhand_shield,
-            ),
-            AttackEntityTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    def run_attack_nearest(
-        self,
-        selector: EntitySelector,
-        *,
-        radius: float = 32,
-        attack_range: float = 3,
-        sprinting: bool = False,
-        maximum_attacks: int = 0,
-        maximum_targets: int = 0,
-        no_target_timeout_seconds: int = 0,
-        complete_when_no_target: bool = False,
-        select_best_weapon: bool = True,
-        weapon: ItemSelector | None = None,
-        restore_selected_slot: bool = True,
-        options: PathfindOptions | None = None,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncIterator[BotTaskEvent]:
-        return self.run(
-            _attack_nearest_task(
-                selector,
-                radius,
-                attack_range,
-                sprinting,
-                maximum_attacks,
-                maximum_targets,
-                no_target_timeout_seconds,
-                complete_when_no_target,
-                select_best_weapon,
-                weapon,
-                restore_selected_slot,
-                options,
-            ),
-            reconnect_policy=reconnect_policy,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    async def attack_nearest(
-        self,
-        selector: EntitySelector,
-        *,
-        radius: float = 32,
-        attack_range: float = 3,
-        sprinting: bool = False,
-        maximum_attacks: int = 0,
-        maximum_targets: int = 1,
-        no_target_timeout_seconds: int = 0,
-        complete_when_no_target: bool = True,
-        select_best_weapon: bool = True,
-        weapon: ItemSelector | None = None,
-        restore_selected_slot: bool = True,
-        options: PathfindOptions | None = None,
-        conflict_policy: BotTaskConflictPolicy = BOT_TASK_CONFLICT_POLICY_UNSPECIFIED,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        priority: BotTaskPriority = BOT_TASK_PRIORITY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncSoulFireTask[AttackNearestTaskResult]:
-        return await self.start(
-            _attack_nearest_task(
-                selector,
-                radius,
-                attack_range,
-                sprinting,
-                maximum_attacks,
-                maximum_targets,
-                no_target_timeout_seconds,
-                complete_when_no_target,
-                select_best_weapon,
-                weapon,
-                restore_selected_slot,
-                options,
-            ),
-            AttackNearestTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    def run_ranged_attack(
-        self,
-        target: AttackEntityTarget,
-        *,
-        minimum_range: float = 8,
-        maximum_range: float = 24,
-        maximum_shots: int = 0,
-        target_unavailable_timeout_seconds: int = 10,
-        weapon: ItemSelector | None = None,
-        bow_draw_ticks: int = 20,
-        lead_target: bool = True,
-        compensate_gravity: bool = True,
-        strafe: bool = True,
-        restore_selected_slot: bool = True,
-        options: PathfindOptions | None = None,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncIterator[BotTaskEvent]:
-        return self.run(
-            _ranged_attack_task(
-                target,
-                minimum_range,
-                maximum_range,
-                maximum_shots,
-                target_unavailable_timeout_seconds,
-                weapon,
-                bow_draw_ticks,
-                lead_target,
-                compensate_gravity,
-                strafe,
-                restore_selected_slot,
-                options,
-            ),
-            reconnect_policy=reconnect_policy,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    async def ranged_attack(
-        self,
-        target: AttackEntityTarget,
-        *,
-        minimum_range: float = 8,
-        maximum_range: float = 24,
-        maximum_shots: int = 0,
-        target_unavailable_timeout_seconds: int = 10,
-        weapon: ItemSelector | None = None,
-        bow_draw_ticks: int = 20,
-        lead_target: bool = True,
-        compensate_gravity: bool = True,
-        strafe: bool = True,
-        restore_selected_slot: bool = True,
-        options: PathfindOptions | None = None,
-        conflict_policy: BotTaskConflictPolicy = BOT_TASK_CONFLICT_POLICY_UNSPECIFIED,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        priority: BotTaskPriority = BOT_TASK_PRIORITY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncSoulFireTask[RangedAttackTaskResult]:
-        return await self.start(
-            _ranged_attack_task(
-                target,
-                minimum_range,
-                maximum_range,
-                maximum_shots,
-                target_unavailable_timeout_seconds,
-                weapon,
-                bow_draw_ticks,
-                lead_target,
-                compensate_gravity,
-                strafe,
-                restore_selected_slot,
-                options,
-            ),
-            RangedAttackTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    def run_flee(
-        self,
-        threats: EntitySelector,
-        *,
-        trigger_radius: float = 8,
-        safe_distance: float = 16,
-        safe_seconds: int = 2,
-        complete_when_safe: bool = False,
-        maximum_escapes: int = 0,
-        options: PathfindOptions | None = None,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncIterator[BotTaskEvent]:
-        return self.run(
-            _flee_task(
-                threats,
-                trigger_radius,
-                safe_distance,
-                safe_seconds,
-                complete_when_safe,
-                maximum_escapes,
-                options,
-            ),
-            reconnect_policy=reconnect_policy,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    async def flee(
-        self,
-        threats: EntitySelector,
-        *,
-        trigger_radius: float = 8,
-        safe_distance: float = 16,
-        safe_seconds: int = 2,
-        complete_when_safe: bool = True,
-        maximum_escapes: int = 0,
-        options: PathfindOptions | None = None,
-        conflict_policy: BotTaskConflictPolicy = BOT_TASK_CONFLICT_POLICY_UNSPECIFIED,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        priority: BotTaskPriority = BOT_TASK_PRIORITY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncSoulFireTask[FleeTaskResult]:
-        return await self.start(
-            _flee_task(
-                threats,
-                trigger_radius,
-                safe_distance,
-                safe_seconds,
-                complete_when_safe,
-                maximum_escapes,
-                options,
-            ),
-            FleeTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    def run_guard(
-        self,
-        position: BlockPosition,
-        threats: EntitySelector,
-        *,
-        guard_radius: float = 16,
-        maximum_pursuit_distance: float = 24,
-        return_radius: float = 3,
-        attack_range: float = 3,
-        sprinting: bool = False,
-        maximum_attacks: int = 0,
-        maximum_targets: int = 0,
-        complete_when_clear: bool = False,
-        clear_seconds: int = 3,
-        select_best_weapon: bool = True,
-        weapon: ItemSelector | None = None,
-        restore_selected_slot: bool = True,
-        options: PathfindOptions | None = None,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncIterator[BotTaskEvent]:
-        return self.run(
-            _guard_task(
-                position,
-                None,
-                threats,
-                guard_radius,
-                maximum_pursuit_distance,
-                return_radius,
-                attack_range,
-                sprinting,
-                maximum_attacks,
-                maximum_targets,
-                complete_when_clear,
-                clear_seconds,
-                select_best_weapon,
-                weapon,
-                restore_selected_slot,
-                options,
-            ),
-            reconnect_policy=reconnect_policy,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    async def guard(
-        self,
-        position: BlockPosition,
-        threats: EntitySelector,
-        *,
-        guard_radius: float = 16,
-        maximum_pursuit_distance: float = 24,
-        return_radius: float = 3,
-        attack_range: float = 3,
-        sprinting: bool = False,
-        maximum_attacks: int = 0,
-        maximum_targets: int = 0,
-        complete_when_clear: bool = True,
-        clear_seconds: int = 3,
-        select_best_weapon: bool = True,
-        weapon: ItemSelector | None = None,
-        restore_selected_slot: bool = True,
-        options: PathfindOptions | None = None,
-        conflict_policy: BotTaskConflictPolicy = BOT_TASK_CONFLICT_POLICY_UNSPECIFIED,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        priority: BotTaskPriority = BOT_TASK_PRIORITY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncSoulFireTask[GuardTaskResult]:
-        return await self.start(
-            _guard_task(
-                position,
-                None,
-                threats,
-                guard_radius,
-                maximum_pursuit_distance,
-                return_radius,
-                attack_range,
-                sprinting,
-                maximum_attacks,
-                maximum_targets,
-                complete_when_clear,
-                clear_seconds,
-                select_best_weapon,
-                weapon,
-                restore_selected_slot,
-                options,
-            ),
-            GuardTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    def run_protect(
-        self,
-        entity: AttackEntityTarget,
-        threats: EntitySelector,
-        *,
-        guard_radius: float = 16,
-        maximum_pursuit_distance: float = 24,
-        return_radius: float = 3,
-        attack_range: float = 3,
-        sprinting: bool = False,
-        maximum_attacks: int = 0,
-        maximum_targets: int = 0,
-        complete_when_clear: bool = False,
-        clear_seconds: int = 3,
-        select_best_weapon: bool = True,
-        weapon: ItemSelector | None = None,
-        restore_selected_slot: bool = True,
-        options: PathfindOptions | None = None,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncIterator[BotTaskEvent]:
-        return self.run(
-            _guard_task(
-                None,
-                entity,
-                threats,
-                guard_radius,
-                maximum_pursuit_distance,
-                return_radius,
-                attack_range,
-                sprinting,
-                maximum_attacks,
-                maximum_targets,
-                complete_when_clear,
-                clear_seconds,
-                select_best_weapon,
-                weapon,
-                restore_selected_slot,
-                options,
-            ),
-            reconnect_policy=reconnect_policy,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    async def protect(
-        self,
-        entity: AttackEntityTarget,
-        threats: EntitySelector,
-        *,
-        guard_radius: float = 16,
-        maximum_pursuit_distance: float = 24,
-        return_radius: float = 3,
-        attack_range: float = 3,
-        sprinting: bool = False,
-        maximum_attacks: int = 0,
-        maximum_targets: int = 0,
-        complete_when_clear: bool = True,
-        clear_seconds: int = 3,
-        select_best_weapon: bool = True,
-        weapon: ItemSelector | None = None,
-        restore_selected_slot: bool = True,
-        options: PathfindOptions | None = None,
-        conflict_policy: BotTaskConflictPolicy = BOT_TASK_CONFLICT_POLICY_UNSPECIFIED,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        priority: BotTaskPriority = BOT_TASK_PRIORITY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncSoulFireTask[GuardTaskResult]:
-        return await self.start(
-            _guard_task(
-                None,
-                entity,
-                threats,
-                guard_radius,
-                maximum_pursuit_distance,
-                return_radius,
-                attack_range,
-                sprinting,
-                maximum_attacks,
-                maximum_targets,
-                complete_when_clear,
-                clear_seconds,
-                select_best_weapon,
-                weapon,
-                restore_selected_slot,
-                options,
-            ),
-            GuardTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    def run_sleep(
-        self,
-        bed: BlockPosition | None = None,
-        *,
-        search_radius: int = 24,
-        wait_until_possible: bool = True,
-        retry_interval_ticks: int = 20,
-        options: PathfindOptions | None = None,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncIterator[BotTaskEvent]:
-        return self.run(
-            _sleep_task(
-                bed,
-                search_radius,
-                wait_until_possible,
-                retry_interval_ticks,
-                options,
-            ),
-            reconnect_policy=reconnect_policy,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    async def sleep(
-        self,
-        bed: BlockPosition | None = None,
-        *,
-        search_radius: int = 24,
-        wait_until_possible: bool = False,
-        retry_interval_ticks: int = 20,
-        options: PathfindOptions | None = None,
-        conflict_policy: BotTaskConflictPolicy = BOT_TASK_CONFLICT_POLICY_UNSPECIFIED,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        priority: BotTaskPriority = BOT_TASK_PRIORITY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncSoulFireTask[SleepTaskResult]:
-        return await self.start(
-            _sleep_task(
-                bed,
-                search_radius,
-                wait_until_possible,
-                retry_interval_ticks,
-                options,
-            ),
-            SleepTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    def run_fish(
-        self,
-        *,
-        maximum_catches: int = 0,
-        maximum_failed_casts: int = 0,
-        rod: ItemSelector | None = None,
-        cast_timeout_ticks: int = 100,
-        bite_timeout_ticks: int = 12_000,
-        complete_when_no_rod: bool = False,
-        restore_selected_slot: bool = True,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncIterator[BotTaskEvent]:
-        return self.run(
-            _fish_task(
-                maximum_catches,
-                maximum_failed_casts,
-                rod,
-                cast_timeout_ticks,
-                bite_timeout_ticks,
-                complete_when_no_rod,
-                restore_selected_slot,
-            ),
-            reconnect_policy=reconnect_policy,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    async def fish(
-        self,
-        *,
-        maximum_catches: int = 1,
-        maximum_failed_casts: int = 0,
-        rod: ItemSelector | None = None,
-        cast_timeout_ticks: int = 100,
-        bite_timeout_ticks: int = 12_000,
-        complete_when_no_rod: bool = True,
-        restore_selected_slot: bool = True,
-        conflict_policy: BotTaskConflictPolicy = BOT_TASK_CONFLICT_POLICY_UNSPECIFIED,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        priority: BotTaskPriority = BOT_TASK_PRIORITY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncSoulFireTask[FishTaskResult]:
-        return await self.start(
-            _fish_task(
-                maximum_catches,
-                maximum_failed_casts,
-                rod,
-                cast_timeout_ticks,
-                bite_timeout_ticks,
-                complete_when_no_rod,
-                restore_selected_slot,
-            ),
-            FishTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    def run_farm(
-        self,
-        crop_ids: Iterable[str] = (),
-        *,
-        center: BlockPosition | None = None,
-        radius: int = 24,
-        maximum_harvests: int = 0,
-        replant: bool = True,
-        complete_when_no_mature_crops: bool = False,
-        options: PathfindOptions | None = None,
-        rescan_interval_ticks: int = 100,
-        restore_selected_slot: bool = True,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncIterator[BotTaskEvent]:
-        return self.run(
-            _farm_task(
-                crop_ids,
-                center,
-                radius,
-                maximum_harvests,
-                replant,
-                complete_when_no_mature_crops,
-                options,
-                rescan_interval_ticks,
-                restore_selected_slot,
-            ),
-            reconnect_policy=reconnect_policy,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    async def farm(
-        self,
-        crop_ids: Iterable[str] = (),
-        *,
-        center: BlockPosition | None = None,
-        radius: int = 24,
-        maximum_harvests: int = 1,
-        replant: bool = True,
-        complete_when_no_mature_crops: bool = True,
-        options: PathfindOptions | None = None,
-        rescan_interval_ticks: int = 100,
-        restore_selected_slot: bool = True,
-        conflict_policy: BotTaskConflictPolicy = BOT_TASK_CONFLICT_POLICY_UNSPECIFIED,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        priority: BotTaskPriority = BOT_TASK_PRIORITY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncSoulFireTask[FarmTaskResult]:
-        return await self.start(
-            _farm_task(
-                crop_ids,
-                center,
-                radius,
-                maximum_harvests,
-                replant,
-                complete_when_no_mature_crops,
-                options,
-                rescan_interval_ticks,
-                restore_selected_slot,
-            ),
-            FarmTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    def run_breed(
-        self,
-        animals: EntitySelector | None = None,
-        *,
-        food: ItemSelector | None = None,
-        center: BlockPosition | None = None,
-        radius: int = 24,
-        maximum_pairs: int = 0,
-        complete_when_no_pair: bool = False,
-        complete_when_no_food: bool = False,
-        options: PathfindOptions | None = None,
-        rescan_interval_ticks: int = 100,
-        breeding_timeout_ticks: int = 100,
-        restore_selected_slot: bool = True,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncIterator[BotTaskEvent]:
-        return self.run(
-            _breed_task(
-                animals,
-                food,
-                center,
-                radius,
-                maximum_pairs,
-                complete_when_no_pair,
-                complete_when_no_food,
-                options,
-                rescan_interval_ticks,
-                breeding_timeout_ticks,
-                restore_selected_slot,
-            ),
-            reconnect_policy=reconnect_policy,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    async def breed(
-        self,
-        animals: EntitySelector | None = None,
-        *,
-        food: ItemSelector | None = None,
-        center: BlockPosition | None = None,
-        radius: int = 24,
-        maximum_pairs: int = 1,
-        complete_when_no_pair: bool = True,
-        complete_when_no_food: bool = True,
-        options: PathfindOptions | None = None,
-        rescan_interval_ticks: int = 100,
-        breeding_timeout_ticks: int = 100,
-        restore_selected_slot: bool = True,
-        conflict_policy: BotTaskConflictPolicy = BOT_TASK_CONFLICT_POLICY_UNSPECIFIED,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        priority: BotTaskPriority = BOT_TASK_PRIORITY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncSoulFireTask[BreedTaskResult]:
-        return await self.start(
-            _breed_task(
-                animals,
-                food,
-                center,
-                radius,
-                maximum_pairs,
-                complete_when_no_pair,
-                complete_when_no_food,
-                options,
-                rescan_interval_ticks,
-                breeding_timeout_ticks,
-                restore_selected_slot,
-            ),
-            BreedTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    def run_explore(
-        self,
-        *,
-        origin: BlockPosition | None = None,
-        radius: int = 256,
-        waypoint_spacing: int = 64,
-        maximum_waypoints: int = 0,
-        options: PathfindOptions | None = None,
-        return_to_origin: bool = False,
-        purpose: str = "sdk-explore",
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncIterator[BotTaskEvent]:
-        return self.run(
-            _explore_task(
-                origin,
-                radius,
-                waypoint_spacing,
-                maximum_waypoints,
-                options,
-                return_to_origin,
-                purpose,
-            ),
-            reconnect_policy=reconnect_policy,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    async def explore(
-        self,
-        *,
-        origin: BlockPosition | None = None,
-        radius: int = 256,
-        waypoint_spacing: int = 64,
-        maximum_waypoints: int = 1,
-        options: PathfindOptions | None = None,
-        return_to_origin: bool = False,
-        purpose: str = "sdk-explore",
-        conflict_policy: BotTaskConflictPolicy = BOT_TASK_CONFLICT_POLICY_UNSPECIFIED,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        priority: BotTaskPriority = BOT_TASK_PRIORITY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncSoulFireTask[ExploreTaskResult]:
-        return await self.start(
-            _explore_task(
-                origin,
-                radius,
-                waypoint_spacing,
-                maximum_waypoints,
-                options,
-                return_to_origin,
-                purpose,
-            ),
-            ExploreTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    def run_stash(
-        self,
-        container: BlockPosition,
-        operations: Iterable[ContainerTransferSpec | ContainerTransferOperation],
-        *,
-        options: PathfindOptions | None = None,
-        close_container: bool = True,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncIterator[BotTaskEvent]:
-        return self.run(
-            _container_transfer_task(
-                container,
-                CONTAINER_TRANSFER_DIRECTION_DEPOSIT,
-                operations,
-                options,
-                close_container,
-            ),
-            reconnect_policy=reconnect_policy,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    async def stash(
-        self,
-        container: BlockPosition,
-        operations: Iterable[ContainerTransferSpec | ContainerTransferOperation],
-        *,
-        options: PathfindOptions | None = None,
-        close_container: bool = True,
-        conflict_policy: BotTaskConflictPolicy = BOT_TASK_CONFLICT_POLICY_UNSPECIFIED,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        priority: BotTaskPriority = BOT_TASK_PRIORITY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncSoulFireTask[ContainerTransferTaskResult]:
-        return await self.start(
-            _container_transfer_task(
-                container,
-                CONTAINER_TRANSFER_DIRECTION_DEPOSIT,
-                operations,
-                options,
-                close_container,
-            ),
-            ContainerTransferTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    def run_withdraw(
-        self,
-        container: BlockPosition,
-        operations: Iterable[ContainerTransferSpec | ContainerTransferOperation],
-        *,
-        options: PathfindOptions | None = None,
-        close_container: bool = True,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncIterator[BotTaskEvent]:
-        return self.run(
-            _container_transfer_task(
-                container,
-                CONTAINER_TRANSFER_DIRECTION_WITHDRAW,
-                operations,
-                options,
-                close_container,
-            ),
-            reconnect_policy=reconnect_policy,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    async def withdraw(
-        self,
-        container: BlockPosition,
-        operations: Iterable[ContainerTransferSpec | ContainerTransferOperation],
-        *,
-        options: PathfindOptions | None = None,
-        close_container: bool = True,
-        conflict_policy: BotTaskConflictPolicy = BOT_TASK_CONFLICT_POLICY_UNSPECIFIED,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        priority: BotTaskPriority = BOT_TASK_PRIORITY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncSoulFireTask[ContainerTransferTaskResult]:
-        return await self.start(
-            _container_transfer_task(
-                container,
-                CONTAINER_TRANSFER_DIRECTION_WITHDRAW,
-                operations,
-                options,
-                close_container,
-            ),
-            ContainerTransferTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    def run_maintain_loadout(
-        self,
-        container: BlockPosition,
-        requirements: Iterable[LoadoutRequirementSpec | LoadoutRequirement],
-        *,
-        options: PathfindOptions | None = None,
-        check_interval_ticks: int = 100,
-        maximum_rebalances: int = 0,
-        complete_when_satisfied: bool = False,
-        close_container: bool = True,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncIterator[BotTaskEvent]:
-        return self.run(
-            _maintain_loadout_task(
-                container,
-                requirements,
-                options,
-                check_interval_ticks,
-                maximum_rebalances,
-                complete_when_satisfied,
-                close_container,
-            ),
-            reconnect_policy=reconnect_policy,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    async def maintain_loadout(
-        self,
-        container: BlockPosition,
-        requirements: Iterable[LoadoutRequirementSpec | LoadoutRequirement],
-        *,
-        options: PathfindOptions | None = None,
-        check_interval_ticks: int = 100,
-        maximum_rebalances: int = 0,
-        complete_when_satisfied: bool = False,
-        close_container: bool = True,
-        conflict_policy: BotTaskConflictPolicy = BOT_TASK_CONFLICT_POLICY_UNSPECIFIED,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        priority: BotTaskPriority = BOT_TASK_PRIORITY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncSoulFireTask[MaintainLoadoutTaskResult]:
-        return await self.start(
-            _maintain_loadout_task(
-                container,
-                requirements,
-                options,
-                check_interval_ticks,
-                maximum_rebalances,
-                complete_when_satisfied,
-                close_container,
-            ),
-            MaintainLoadoutTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    async def balance_loadout(
-        self,
-        container: BlockPosition,
-        requirements: Iterable[LoadoutRequirementSpec | LoadoutRequirement],
-        *,
-        options: PathfindOptions | None = None,
-        check_interval_ticks: int = 100,
-        close_container: bool = True,
-        conflict_policy: BotTaskConflictPolicy = BOT_TASK_CONFLICT_POLICY_UNSPECIFIED,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        priority: BotTaskPriority = BOT_TASK_PRIORITY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncSoulFireTask[MaintainLoadoutTaskResult]:
-        return await self.maintain_loadout(
-            container,
-            requirements,
-            options=options,
-            check_interval_ticks=check_interval_ticks,
-            maximum_rebalances=1,
-            complete_when_satisfied=True,
-            close_container=close_container,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    def run_auto_eat(
-        self,
-        food_item_ids: Iterable[str] = (),
-        *,
-        food_level: int = 14,
-        check_interval_ticks: int = 20,
-        maximum_meals: int = 0,
-        complete_when_no_food: bool = False,
-        restore_selected_slot: bool = True,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncIterator[BotTaskEvent]:
-        return self.run(
-            _auto_eat_task(
-                food_item_ids,
-                food_level,
-                check_interval_ticks,
-                maximum_meals,
-                complete_when_no_food,
-                restore_selected_slot,
-            ),
-            reconnect_policy=reconnect_policy,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    async def auto_eat(
-        self,
-        food_item_ids: Iterable[str] = (),
-        *,
-        food_level: int = 14,
-        check_interval_ticks: int = 20,
-        maximum_meals: int = 0,
-        complete_when_no_food: bool = False,
-        restore_selected_slot: bool = True,
-        conflict_policy: BotTaskConflictPolicy = BOT_TASK_CONFLICT_POLICY_UNSPECIFIED,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        priority: BotTaskPriority = BOT_TASK_PRIORITY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncSoulFireTask[AutoEatTaskResult]:
-        return await self.start(
-            _auto_eat_task(
-                food_item_ids,
-                food_level,
-                check_interval_ticks,
-                maximum_meals,
-                complete_when_no_food,
-                restore_selected_slot,
-            ),
-            AutoEatTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    def run_auto_respawn(
-        self,
-        *,
-        respawn_delay_ticks: int = 0,
-        maximum_respawns: int = 0,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncIterator[BotTaskEvent]:
-        return self.run(
-            _auto_respawn_task(respawn_delay_ticks, maximum_respawns),
-            reconnect_policy=reconnect_policy,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    async def auto_respawn(
-        self,
-        *,
-        respawn_delay_ticks: int = 0,
-        maximum_respawns: int = 0,
-        conflict_policy: BotTaskConflictPolicy = BOT_TASK_CONFLICT_POLICY_UNSPECIFIED,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        priority: BotTaskPriority = BOT_TASK_PRIORITY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncSoulFireTask[AutoRespawnTaskResult]:
-        return await self.start(
-            _auto_respawn_task(respawn_delay_ticks, maximum_respawns),
-            AutoRespawnTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    def run_auto_totem(
-        self,
-        *,
-        check_interval_ticks: int = 20,
-        maximum_equips: int = 0,
-        complete_when_no_totem: bool = False,
-        replace_occupied_offhand: bool = False,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncIterator[BotTaskEvent]:
-        return self.run(
-            _auto_totem_task(
-                check_interval_ticks,
-                maximum_equips,
-                complete_when_no_totem,
-                replace_occupied_offhand,
-            ),
-            reconnect_policy=reconnect_policy,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    async def auto_totem(
-        self,
-        *,
-        check_interval_ticks: int = 20,
-        maximum_equips: int = 0,
-        complete_when_no_totem: bool = False,
-        replace_occupied_offhand: bool = False,
-        conflict_policy: BotTaskConflictPolicy = BOT_TASK_CONFLICT_POLICY_UNSPECIFIED,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        priority: BotTaskPriority = BOT_TASK_PRIORITY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncSoulFireTask[AutoTotemTaskResult]:
-        return await self.start(
-            _auto_totem_task(
-                check_interval_ticks,
-                maximum_equips,
-                complete_when_no_totem,
-                replace_occupied_offhand,
-            ),
-            AutoTotemTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    def run_auto_armor(
-        self,
-        *,
-        check_interval_ticks: int = 20,
-        maximum_equips: int = 0,
-        complete_when_no_upgrade: bool = False,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncIterator[BotTaskEvent]:
-        return self.run(
-            _auto_armor_task(
-                check_interval_ticks,
-                maximum_equips,
-                complete_when_no_upgrade,
-            ),
-            reconnect_policy=reconnect_policy,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    async def auto_armor(
-        self,
-        *,
-        check_interval_ticks: int = 20,
-        maximum_equips: int = 0,
-        complete_when_no_upgrade: bool = False,
-        conflict_policy: BotTaskConflictPolicy = BOT_TASK_CONFLICT_POLICY_UNSPECIFIED,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        priority: BotTaskPriority = BOT_TASK_PRIORITY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncSoulFireTask[AutoArmorTaskResult]:
-        return await self.start(
-            _auto_armor_task(
-                check_interval_ticks,
-                maximum_equips,
-                complete_when_no_upgrade,
-            ),
-            AutoArmorTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    def run_collect_blocks(
-        self,
-        block_ids: Iterable[str] = (),
-        *,
-        tags: Iterable[str] = (),
-        count: int = 1,
-        search_radius: int = 32,
-        avoid_submerged_targets: bool = False,
-        require_line_of_sight: bool = False,
-        target_y_range: IntRange | None = None,
-        options: PathfindOptions | None = None,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncIterator[BotTaskEvent]:
-        return self.run(
-            _collect_blocks_task(
-                block_ids,
-                tags,
-                count,
-                search_radius,
-                avoid_submerged_targets,
-                require_line_of_sight,
-                target_y_range,
-                options,
-            ),
-            reconnect_policy=reconnect_policy,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    async def collect_blocks(
-        self,
-        block_ids: Iterable[str] = (),
-        *,
-        tags: Iterable[str] = (),
-        count: int = 1,
-        search_radius: int = 32,
-        avoid_submerged_targets: bool = False,
-        require_line_of_sight: bool = False,
-        target_y_range: IntRange | None = None,
-        options: PathfindOptions | None = None,
-        conflict_policy: BotTaskConflictPolicy = BOT_TASK_CONFLICT_POLICY_UNSPECIFIED,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        priority: BotTaskPriority = BOT_TASK_PRIORITY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncSoulFireTask[CollectBlocksTaskResult]:
-        return await self.start(
-            _collect_blocks_task(
-                block_ids,
-                tags,
-                count,
-                search_radius,
-                avoid_submerged_targets,
-                require_line_of_sight,
-                target_y_range,
-                options,
-            ),
-            CollectBlocksTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    def run_excavate(
-        self,
-        from_position: BlockPosition,
-        to_position: BlockPosition,
-        *,
-        options: PathfindOptions | None = None,
-        maximum_blocks: int = 0,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncIterator[BotTaskEvent]:
-        return self.run(
-            _excavate_task(from_position, to_position, options, maximum_blocks),
-            reconnect_policy=reconnect_policy,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    async def excavate(
-        self,
-        from_position: BlockPosition,
-        to_position: BlockPosition,
-        *,
-        options: PathfindOptions | None = None,
-        maximum_blocks: int = 0,
-        conflict_policy: BotTaskConflictPolicy = BOT_TASK_CONFLICT_POLICY_UNSPECIFIED,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        priority: BotTaskPriority = BOT_TASK_PRIORITY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncSoulFireTask[ExcavateTaskResult]:
-        return await self.start(
-            _excavate_task(from_position, to_position, options, maximum_blocks),
-            ExcavateTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    def run_build(
-        self,
-        origin: BlockPosition,
-        blocks: Iterable[SchematicBlock],
-        *,
-        rotation: BuildRotation = BUILD_ROTATION_NONE,
-        mirror: BuildMirror = BUILD_MIRROR_NONE,
-        substitutions: Mapping[str, Iterable[str]] | None = None,
-        options: PathfindOptions | None = None,
-        break_incorrect_blocks: bool = True,
-        restore_selected_slot: bool = True,
-        partition_index: int = 0,
-        partition_count: int = 1,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncIterator[BotTaskEvent]:
-        return self.run(
-            _build_task(
-                origin,
-                blocks,
-                rotation,
-                mirror,
-                substitutions,
-                options,
-                break_incorrect_blocks,
-                restore_selected_slot,
-                partition_index,
-                partition_count,
-            ),
-            reconnect_policy=reconnect_policy,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    async def build(
-        self,
-        origin: BlockPosition,
-        blocks: Iterable[SchematicBlock],
-        *,
-        rotation: BuildRotation = BUILD_ROTATION_NONE,
-        mirror: BuildMirror = BUILD_MIRROR_NONE,
-        substitutions: Mapping[str, Iterable[str]] | None = None,
-        options: PathfindOptions | None = None,
-        break_incorrect_blocks: bool = True,
-        restore_selected_slot: bool = True,
-        partition_index: int = 0,
-        partition_count: int = 1,
-        conflict_policy: BotTaskConflictPolicy = BOT_TASK_CONFLICT_POLICY_UNSPECIFIED,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        priority: BotTaskPriority = BOT_TASK_PRIORITY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncSoulFireTask[BuildTaskResult]:
-        return await self.start(
-            _build_task(
-                origin,
-                blocks,
-                rotation,
-                mirror,
-                substitutions,
-                options,
-                break_incorrect_blocks,
-                restore_selected_slot,
-                partition_index,
-                partition_count,
-            ),
-            BuildTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    def run_craft(
-        self,
-        recipe_id: str,
-        *,
-        count: int = 1,
-        station: BlockPosition | None = None,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncIterator[BotTaskEvent]:
-        return self.run(
-            _craft_task(recipe_id, count, station),
-            reconnect_policy=reconnect_policy,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    async def craft(
-        self,
-        recipe_id: str,
-        *,
-        count: int = 1,
-        station: BlockPosition | None = None,
-        conflict_policy: BotTaskConflictPolicy = BOT_TASK_CONFLICT_POLICY_UNSPECIFIED,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        priority: BotTaskPriority = BOT_TASK_PRIORITY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncSoulFireTask[CraftTaskResult]:
-        return await self.start(
-            _craft_task(recipe_id, count, station),
-            CraftTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    def run_smelt(
-        self,
-        input: ItemSelector,
-        *,
-        count: int = 1,
-        fuel: ItemSelector | None = None,
-        station: BlockPosition | None = None,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncIterator[BotTaskEvent]:
-        return self.run(
-            _smelt_task(input, count, fuel, station),
-            reconnect_policy=reconnect_policy,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    async def smelt(
-        self,
-        input: ItemSelector,
-        *,
-        count: int = 1,
-        fuel: ItemSelector | None = None,
-        station: BlockPosition | None = None,
-        conflict_policy: BotTaskConflictPolicy = BOT_TASK_CONFLICT_POLICY_UNSPECIFIED,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        priority: BotTaskPriority = BOT_TASK_PRIORITY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncSoulFireTask[SmeltTaskResult]:
-        return await self.start(
-            _smelt_task(input, count, fuel, station),
-            SmeltTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    def run_brew(
-        self,
-        input: ItemSelector,
-        ingredient: ItemSelector,
-        *,
-        count: int = 1,
-        fuel: ItemSelector | None = None,
-        station: BlockPosition | None = None,
-        expected_result: ItemSelector | None = None,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncIterator[BotTaskEvent]:
-        return self.run(
-            _brew_task(
-                input,
-                ingredient,
-                count,
-                fuel,
-                station,
-                expected_result,
-            ),
-            reconnect_policy=reconnect_policy,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    async def brew(
-        self,
-        input: ItemSelector,
-        ingredient: ItemSelector,
-        *,
-        count: int = 1,
-        fuel: ItemSelector | None = None,
-        station: BlockPosition | None = None,
-        expected_result: ItemSelector | None = None,
-        conflict_policy: BotTaskConflictPolicy = BOT_TASK_CONFLICT_POLICY_UNSPECIFIED,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        priority: BotTaskPriority = BOT_TASK_PRIORITY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncSoulFireTask[BrewTaskResult]:
-        return await self.start(
-            _brew_task(
-                input,
-                ingredient,
-                count,
-                fuel,
-                station,
-                expected_result,
-            ),
-            BrewTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    def run_villager_trade(
-        self,
-        offer_index: int,
-        *,
-        count: int = 1,
-        expected_result: ItemSelector | None = None,
-        close_when_done: bool = False,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncIterator[BotTaskEvent]:
-        return self.run(
-            _villager_trade_task(
-                offer_index,
-                count,
-                expected_result,
-                close_when_done,
-            ),
-            reconnect_policy=reconnect_policy,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    async def villager_trade(
-        self,
-        offer_index: int,
-        *,
-        count: int = 1,
-        expected_result: ItemSelector | None = None,
-        close_when_done: bool = False,
-        conflict_policy: BotTaskConflictPolicy = BOT_TASK_CONFLICT_POLICY_UNSPECIFIED,
-        reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
-        priority: BotTaskPriority = BOT_TASK_PRIORITY_UNSPECIFIED,
-        deadline: datetime | None = None,
-        idempotency_key: str | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncSoulFireTask[VillagerTradeTaskResult]:
-        return await self.start(
-            _villager_trade_task(
-                offer_index,
-                count,
-                expected_result,
-                close_when_done,
-            ),
-            VillagerTradeTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-    async def get[ResultT: Message](
-        self,
-        task_id: str,
-        result_type: type[ResultT],
-        *,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncSoulFireTask[ResultT]:
-        task = await self._client.get_bot_task(
-            GetBotTaskRequest(task_id=task_id),
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-        _require_task_scope(task, self._instance_id, self._bot_id)
-        return AsyncSoulFireTask(
-            self._client,
-            task,
-            result_type,
-            self._header_factory,
-        )
-
-    async def list(
-        self,
-        *,
-        statuses: Iterable[BotTaskStatus] = (),
-        include_terminal: bool = False,
-        page_size: int = 100,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> list[BotTask]:
-        tasks: list[BotTask] = []
-        requested_statuses = tuple(statuses)
-        page_token = ""
-        while True:
-            response = await self._client.list_bot_tasks(
-                ListBotTasksRequest(
-                    instance_id=self._instance_id,
-                    bot_id=self._bot_id,
-                    statuses=requested_statuses,
-                    include_terminal=include_terminal,
-                    page_size=page_size,
-                    page_token=page_token,
-                ),
-                headers=headers,
-                timeout_ms=timeout_ms,
-            )
-            tasks.extend(response.tasks)
-            page_token = response.next_page_token
-            if not page_token:
-                return tasks
-
-    def watch(
-        self,
-        *,
-        statuses: Iterable[BotTaskStatus] = (),
-        after_sequence: int = 0,
-        include_snapshot: bool = True,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> AsyncIterator[BotTaskEvent]:
-        return self._client.watch_bot_tasks(
-            WatchBotTasksRequest(
-                instance_id=self._instance_id,
-                bot_id=self._bot_id,
-                statuses=statuses,
-                after_sequence=after_sequence,
-                include_snapshot=include_snapshot,
-            ),
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
-
 class SoulFireTask[ResultT: Message]:
     def __init__(
         self,
-        client: BotTaskServiceClientSync,
+        client: BotTaskServiceClient,
         snapshot: BotTask,
         result_type: type[ResultT],
         header_factory: HeaderFactory,
@@ -2364,16 +194,15 @@ class SoulFireTask[ResultT: Message]:
     def terminal(self) -> bool:
         return is_terminal_task_status(self._snapshot.status)
 
+    @fn("SoulFireTask.refresh")
     def refresh(
-        self,
-        *,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> BotTask:
-        self._snapshot = self._client.get_bot_task(
-            GetBotTaskRequest(task_id=self.id),
-            headers=headers,
-            timeout_ms=timeout_ms,
+        self, *, headers: dict[str, str] | None = None, timeout_ms: int | None = None
+    ) -> EffectGen[BotTask, SoulFireOperationError]:
+        self._snapshot = yield from rpc(
+            "SoulFireTask.refresh",
+            lambda: self._client.get_bot_task(
+                GetBotTaskRequest(task_id=self.id), headers=headers, timeout_ms=timeout_ms
+            ),
         )
         return self._snapshot
 
@@ -2383,60 +212,77 @@ class SoulFireTask[ResultT: Message]:
         after_revision: int | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> Iterator[BotTaskEvent]:
-        return self._client.watch_bot_task(
-            WatchBotTaskRequest(
-                task_id=self.id,
-                after_revision=(
-                    self._snapshot.revision if after_revision is None else after_revision
+    ) -> Stream[BotTaskEvent, SoulFireOperationError]:
+        return rpc_stream(
+            "SoulFireTask.events",
+            lambda: self._client.watch_bot_task(
+                WatchBotTaskRequest(
+                    task_id=self.id,
+                    after_revision=self._snapshot.revision
+                    if after_revision is None
+                    else after_revision,
+                    follow=True,
                 ),
-                follow=True,
+                headers=headers,
+                timeout_ms=timeout_ms,
             ),
-            headers=headers,
-            timeout_ms=timeout_ms,
         )
 
+    @fn("SoulFireTask.wait")
     def wait(
-        self,
-        *,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> BotTask:
+        self, *, headers: dict[str, str] | None = None, timeout_ms: int | None = None
+    ) -> EffectGen[BotTask, SoulFireOperationError]:
         if self.terminal:
             return self._snapshot
-        for event in self.events(headers=headers, timeout_ms=timeout_ms):
+
+        def update(event: BotTaskEvent) -> None:
             if event.HasField("task"):
                 self._snapshot = event.task
+
+        yield from self.events(headers=headers, timeout_ms=timeout_ms).run_for_each(
+            lambda event: sync(lambda: update(event))
+        )
         if not self.terminal:
-            self.refresh(headers=headers, timeout_ms=timeout_ms)
+            yield from self.refresh(headers=headers, timeout_ms=timeout_ms)
         return self._snapshot
 
+    @fn("SoulFireTask.cancel")
     def cancel(
         self,
         reason: str = "",
         *,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> BotTask:
-        self._snapshot = self._client.cancel_bot_task(
-            CancelBotTaskRequest(task_id=self.id, reason=reason),
-            headers=self._header_factory(headers),
-            timeout_ms=timeout_ms,
+    ) -> EffectGen[BotTask, SoulFireOperationError]:
+        self._snapshot = yield from rpc(
+            "SoulFireTask.cancel",
+            lambda: self._client.cancel_bot_task(
+                CancelBotTaskRequest(task_id=self.id, reason=reason),
+                headers=self._header_factory(headers),
+                timeout_ms=timeout_ms,
+            ),
         )
         return self._snapshot
 
+    @fn("SoulFireTask.result")
     def result(
-        self,
-        *,
-        headers: dict[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> ResultT:
-        task = self.wait(headers=headers, timeout_ms=timeout_ms)
+        self, *, headers: dict[str, str] | None = None, timeout_ms: int | None = None
+    ) -> EffectGen[ResultT, SoulFireOperationError]:
+        task = yield from self.wait(headers=headers, timeout_ms=timeout_ms)
         if task.status != BOT_TASK_STATUS_COMPLETED or not task.HasField("result"):
-            raise SoulFireTaskError(task)
+            return (
+                yield from fail(operation_error("SoulFireTask.result", SoulFireTaskError(task)))
+            )
         result = self._result_type()
         if not task.result.Unpack(result):
-            raise SoulFireTaskError(_result_type_failure(task, result.DESCRIPTOR.full_name))
+            return (
+                yield from fail(
+                    operation_error(
+                        "SoulFireTask.result",
+                        SoulFireTaskError(_result_type_failure(task, result.DESCRIPTOR.full_name)),
+                    )
+                )
+            )
         return result
 
 
@@ -2445,7 +291,7 @@ class SoulFireTasks:
         self,
         instance_id: str,
         bot_id: str,
-        client: BotTaskServiceClientSync,
+        client: BotTaskServiceClient,
         header_factory: HeaderFactory,
     ) -> None:
         self._instance_id = instance_id
@@ -2453,6 +299,7 @@ class SoulFireTasks:
         self._client = client
         self._header_factory = header_factory
 
+    @fn("SoulFireTasks.start")
     def start[ResultT: Message](
         self,
         task_input: Message,
@@ -2468,33 +315,31 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> SoulFireTask[ResultT]:
+    ) -> EffectGen[SoulFireTask[ResultT], SoulFireOperationError]:
         packed = AnyMessage()
         packed.Pack(task_input)
-        request = _start_request(
-            instance_id=self._instance_id,
-            bot_id=self._bot_id,
-            input=packed,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            disconnect_policy=disconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            parent_task_id=parent_task_id,
-            causation_id=causation_id,
-            idempotency_key=idempotency_key,
+        request = yield from validate(
+            lambda: _start_request(
+                instance_id=self._instance_id,
+                bot_id=self._bot_id,
+                input=packed,
+                conflict_policy=conflict_policy,
+                reconnect_policy=reconnect_policy,
+                disconnect_policy=disconnect_policy,
+                priority=priority,
+                deadline=deadline,
+                parent_task_id=parent_task_id,
+                causation_id=causation_id,
+                idempotency_key=idempotency_key,
+            )
         )
-        task = self._client.start_bot_task(
-            request,
-            headers=self._header_factory(headers),
-            timeout_ms=timeout_ms,
+        task = yield from rpc(
+            "SoulFireTasks.start",
+            lambda: self._client.start_bot_task(
+                request, headers=self._header_factory(headers), timeout_ms=timeout_ms
+            ),
         )
-        return SoulFireTask(
-            self._client,
-            task,
-            result_type,
-            self._header_factory,
-        )
+        return SoulFireTask(self._client, task, result_type, self._header_factory)
 
     def run(
         self,
@@ -2510,25 +355,28 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> Iterator[BotTaskEvent]:
+    ) -> Stream[BotTaskEvent, SoulFireOperationError]:
         packed = AnyMessage()
         packed.Pack(task_input)
-        return self._client.run_bot_task(
-            _start_request(
-                instance_id=self._instance_id,
-                bot_id=self._bot_id,
-                input=packed,
-                conflict_policy=conflict_policy,
-                reconnect_policy=reconnect_policy,
-                disconnect_policy=disconnect_policy,
-                priority=priority,
-                deadline=deadline,
-                parent_task_id=parent_task_id,
-                causation_id=causation_id,
-                idempotency_key=idempotency_key,
+        return rpc_stream(
+            "SoulFireTasks.run",
+            lambda: self._client.run_bot_task(
+                _start_request(
+                    instance_id=self._instance_id,
+                    bot_id=self._bot_id,
+                    input=packed,
+                    conflict_policy=conflict_policy,
+                    reconnect_policy=reconnect_policy,
+                    disconnect_policy=disconnect_policy,
+                    priority=priority,
+                    deadline=deadline,
+                    parent_task_id=parent_task_id,
+                    causation_id=causation_id,
+                    idempotency_key=idempotency_key,
+                ),
+                headers=self._header_factory(headers),
+                timeout_ms=timeout_ms,
             ),
-            headers=self._header_factory(headers),
-            timeout_ms=timeout_ms,
         )
 
     def run_go_to(
@@ -2541,9 +389,9 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> Iterator[BotTaskEvent]:
+    ) -> Stream[BotTaskEvent, SoulFireOperationError]:
         return self.run(
-            GoToTask(goal=goal, **({} if options is None else {"options": options})),
+            GoToTask(goal=goal, **{} if options is None else {"options": options}),
             reconnect_policy=reconnect_policy,
             deadline=deadline,
             idempotency_key=idempotency_key,
@@ -2551,6 +399,7 @@ class SoulFireTasks:
             timeout_ms=timeout_ms,
         )
 
+    @fn("SoulFireTasks.go_to")
     def go_to(
         self,
         goal: PathfindGoal,
@@ -2563,17 +412,19 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> SoulFireTask[GoToTaskResult]:
-        return self.start(
-            GoToTask(goal=goal, **({} if options is None else {"options": options})),
-            GoToTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
+    ) -> EffectGen[SoulFireTask[GoToTaskResult], SoulFireOperationError]:
+        return (
+            yield from self.start(
+                GoToTask(goal=goal, **{} if options is None else {"options": options}),
+                GoToTaskResult,
+                conflict_policy=conflict_policy,
+                reconnect_policy=reconnect_policy,
+                priority=priority,
+                deadline=deadline,
+                idempotency_key=idempotency_key,
+                headers=headers,
+                timeout_ms=timeout_ms,
+            )
         )
 
     def run_follow_entity(
@@ -2588,14 +439,9 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> Iterator[BotTaskEvent]:
+    ) -> Stream[BotTaskEvent, SoulFireOperationError]:
         return self.run(
-            _follow_entity_task(
-                target,
-                distance,
-                options,
-                target_unavailable_timeout_seconds,
-            ),
+            _follow_entity_task(target, distance, options, target_unavailable_timeout_seconds),
             reconnect_policy=reconnect_policy,
             deadline=deadline,
             idempotency_key=idempotency_key,
@@ -2603,6 +449,7 @@ class SoulFireTasks:
             timeout_ms=timeout_ms,
         )
 
+    @fn("SoulFireTasks.follow_entity")
     def follow_entity(
         self,
         target: FollowEntityTarget,
@@ -2617,22 +464,25 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> SoulFireTask[FollowEntityTaskResult]:
-        return self.start(
-            _follow_entity_task(
-                target,
-                distance,
-                options,
-                target_unavailable_timeout_seconds,
-            ),
-            FollowEntityTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
+    ) -> EffectGen[SoulFireTask[FollowEntityTaskResult], SoulFireOperationError]:
+        return (
+            yield from self.start(
+                (
+                    yield from validate(
+                        lambda: _follow_entity_task(
+                            target, distance, options, target_unavailable_timeout_seconds
+                        )
+                    )
+                ),
+                FollowEntityTaskResult,
+                conflict_policy=conflict_policy,
+                reconnect_policy=reconnect_policy,
+                priority=priority,
+                deadline=deadline,
+                idempotency_key=idempotency_key,
+                headers=headers,
+                timeout_ms=timeout_ms,
+            )
         )
 
     def run_attack_entity(
@@ -2653,7 +503,7 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> Iterator[BotTaskEvent]:
+    ) -> Stream[BotTaskEvent, SoulFireOperationError]:
         return self.run(
             _attack_entity_task(
                 target,
@@ -2674,6 +524,7 @@ class SoulFireTasks:
             timeout_ms=timeout_ms,
         )
 
+    @fn("SoulFireTasks.attack_entity")
     def attack_entity(
         self,
         target: AttackEntityTarget,
@@ -2694,28 +545,34 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> SoulFireTask[AttackEntityTaskResult]:
-        return self.start(
-            _attack_entity_task(
-                target,
-                attack_range,
-                sprinting,
-                maximum_attacks,
-                options,
-                target_unavailable_timeout_seconds,
-                select_best_weapon,
-                weapon,
-                restore_selected_slot,
-                use_offhand_shield,
-            ),
-            AttackEntityTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
+    ) -> EffectGen[SoulFireTask[AttackEntityTaskResult], SoulFireOperationError]:
+        return (
+            yield from self.start(
+                (
+                    yield from validate(
+                        lambda: _attack_entity_task(
+                            target,
+                            attack_range,
+                            sprinting,
+                            maximum_attacks,
+                            options,
+                            target_unavailable_timeout_seconds,
+                            select_best_weapon,
+                            weapon,
+                            restore_selected_slot,
+                            use_offhand_shield,
+                        )
+                    )
+                ),
+                AttackEntityTaskResult,
+                conflict_policy=conflict_policy,
+                reconnect_policy=reconnect_policy,
+                priority=priority,
+                deadline=deadline,
+                idempotency_key=idempotency_key,
+                headers=headers,
+                timeout_ms=timeout_ms,
+            )
         )
 
     def run_attack_nearest(
@@ -2738,7 +595,7 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> Iterator[BotTaskEvent]:
+    ) -> Stream[BotTaskEvent, SoulFireOperationError]:
         return self.run(
             _attack_nearest_task(
                 selector,
@@ -2761,6 +618,7 @@ class SoulFireTasks:
             timeout_ms=timeout_ms,
         )
 
+    @fn("SoulFireTasks.attack_nearest")
     def attack_nearest(
         self,
         selector: EntitySelector,
@@ -2783,30 +641,36 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> SoulFireTask[AttackNearestTaskResult]:
-        return self.start(
-            _attack_nearest_task(
-                selector,
-                radius,
-                attack_range,
-                sprinting,
-                maximum_attacks,
-                maximum_targets,
-                no_target_timeout_seconds,
-                complete_when_no_target,
-                select_best_weapon,
-                weapon,
-                restore_selected_slot,
-                options,
-            ),
-            AttackNearestTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
+    ) -> EffectGen[SoulFireTask[AttackNearestTaskResult], SoulFireOperationError]:
+        return (
+            yield from self.start(
+                (
+                    yield from validate(
+                        lambda: _attack_nearest_task(
+                            selector,
+                            radius,
+                            attack_range,
+                            sprinting,
+                            maximum_attacks,
+                            maximum_targets,
+                            no_target_timeout_seconds,
+                            complete_when_no_target,
+                            select_best_weapon,
+                            weapon,
+                            restore_selected_slot,
+                            options,
+                        )
+                    )
+                ),
+                AttackNearestTaskResult,
+                conflict_policy=conflict_policy,
+                reconnect_policy=reconnect_policy,
+                priority=priority,
+                deadline=deadline,
+                idempotency_key=idempotency_key,
+                headers=headers,
+                timeout_ms=timeout_ms,
+            )
         )
 
     def run_ranged_attack(
@@ -2829,7 +693,7 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> Iterator[BotTaskEvent]:
+    ) -> Stream[BotTaskEvent, SoulFireOperationError]:
         return self.run(
             _ranged_attack_task(
                 target,
@@ -2852,6 +716,7 @@ class SoulFireTasks:
             timeout_ms=timeout_ms,
         )
 
+    @fn("SoulFireTasks.ranged_attack")
     def ranged_attack(
         self,
         target: AttackEntityTarget,
@@ -2874,30 +739,36 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> SoulFireTask[RangedAttackTaskResult]:
-        return self.start(
-            _ranged_attack_task(
-                target,
-                minimum_range,
-                maximum_range,
-                maximum_shots,
-                target_unavailable_timeout_seconds,
-                weapon,
-                bow_draw_ticks,
-                lead_target,
-                compensate_gravity,
-                strafe,
-                restore_selected_slot,
-                options,
-            ),
-            RangedAttackTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
+    ) -> EffectGen[SoulFireTask[RangedAttackTaskResult], SoulFireOperationError]:
+        return (
+            yield from self.start(
+                (
+                    yield from validate(
+                        lambda: _ranged_attack_task(
+                            target,
+                            minimum_range,
+                            maximum_range,
+                            maximum_shots,
+                            target_unavailable_timeout_seconds,
+                            weapon,
+                            bow_draw_ticks,
+                            lead_target,
+                            compensate_gravity,
+                            strafe,
+                            restore_selected_slot,
+                            options,
+                        )
+                    )
+                ),
+                RangedAttackTaskResult,
+                conflict_policy=conflict_policy,
+                reconnect_policy=reconnect_policy,
+                priority=priority,
+                deadline=deadline,
+                idempotency_key=idempotency_key,
+                headers=headers,
+                timeout_ms=timeout_ms,
+            )
         )
 
     def run_flee(
@@ -2915,7 +786,7 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> Iterator[BotTaskEvent]:
+    ) -> Stream[BotTaskEvent, SoulFireOperationError]:
         return self.run(
             _flee_task(
                 threats,
@@ -2933,6 +804,7 @@ class SoulFireTasks:
             timeout_ms=timeout_ms,
         )
 
+    @fn("SoulFireTasks.flee")
     def flee(
         self,
         threats: EntitySelector,
@@ -2950,25 +822,31 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> SoulFireTask[FleeTaskResult]:
-        return self.start(
-            _flee_task(
-                threats,
-                trigger_radius,
-                safe_distance,
-                safe_seconds,
-                complete_when_safe,
-                maximum_escapes,
-                options,
-            ),
-            FleeTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
+    ) -> EffectGen[SoulFireTask[FleeTaskResult], SoulFireOperationError]:
+        return (
+            yield from self.start(
+                (
+                    yield from validate(
+                        lambda: _flee_task(
+                            threats,
+                            trigger_radius,
+                            safe_distance,
+                            safe_seconds,
+                            complete_when_safe,
+                            maximum_escapes,
+                            options,
+                        )
+                    )
+                ),
+                FleeTaskResult,
+                conflict_policy=conflict_policy,
+                reconnect_policy=reconnect_policy,
+                priority=priority,
+                deadline=deadline,
+                idempotency_key=idempotency_key,
+                headers=headers,
+                timeout_ms=timeout_ms,
+            )
         )
 
     def run_guard(
@@ -2994,7 +872,7 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> Iterator[BotTaskEvent]:
+    ) -> Stream[BotTaskEvent, SoulFireOperationError]:
         return self.run(
             _guard_task(
                 position,
@@ -3021,6 +899,7 @@ class SoulFireTasks:
             timeout_ms=timeout_ms,
         )
 
+    @fn("SoulFireTasks.guard")
     def guard(
         self,
         position: BlockPosition,
@@ -3046,34 +925,40 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> SoulFireTask[GuardTaskResult]:
-        return self.start(
-            _guard_task(
-                position,
-                None,
-                threats,
-                guard_radius,
-                maximum_pursuit_distance,
-                return_radius,
-                attack_range,
-                sprinting,
-                maximum_attacks,
-                maximum_targets,
-                complete_when_clear,
-                clear_seconds,
-                select_best_weapon,
-                weapon,
-                restore_selected_slot,
-                options,
-            ),
-            GuardTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
+    ) -> EffectGen[SoulFireTask[GuardTaskResult], SoulFireOperationError]:
+        return (
+            yield from self.start(
+                (
+                    yield from validate(
+                        lambda: _guard_task(
+                            position,
+                            None,
+                            threats,
+                            guard_radius,
+                            maximum_pursuit_distance,
+                            return_radius,
+                            attack_range,
+                            sprinting,
+                            maximum_attacks,
+                            maximum_targets,
+                            complete_when_clear,
+                            clear_seconds,
+                            select_best_weapon,
+                            weapon,
+                            restore_selected_slot,
+                            options,
+                        )
+                    )
+                ),
+                GuardTaskResult,
+                conflict_policy=conflict_policy,
+                reconnect_policy=reconnect_policy,
+                priority=priority,
+                deadline=deadline,
+                idempotency_key=idempotency_key,
+                headers=headers,
+                timeout_ms=timeout_ms,
+            )
         )
 
     def run_protect(
@@ -3099,7 +984,7 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> Iterator[BotTaskEvent]:
+    ) -> Stream[BotTaskEvent, SoulFireOperationError]:
         return self.run(
             _guard_task(
                 None,
@@ -3126,6 +1011,7 @@ class SoulFireTasks:
             timeout_ms=timeout_ms,
         )
 
+    @fn("SoulFireTasks.protect")
     def protect(
         self,
         entity: AttackEntityTarget,
@@ -3151,34 +1037,40 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> SoulFireTask[GuardTaskResult]:
-        return self.start(
-            _guard_task(
-                None,
-                entity,
-                threats,
-                guard_radius,
-                maximum_pursuit_distance,
-                return_radius,
-                attack_range,
-                sprinting,
-                maximum_attacks,
-                maximum_targets,
-                complete_when_clear,
-                clear_seconds,
-                select_best_weapon,
-                weapon,
-                restore_selected_slot,
-                options,
-            ),
-            GuardTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
+    ) -> EffectGen[SoulFireTask[GuardTaskResult], SoulFireOperationError]:
+        return (
+            yield from self.start(
+                (
+                    yield from validate(
+                        lambda: _guard_task(
+                            None,
+                            entity,
+                            threats,
+                            guard_radius,
+                            maximum_pursuit_distance,
+                            return_radius,
+                            attack_range,
+                            sprinting,
+                            maximum_attacks,
+                            maximum_targets,
+                            complete_when_clear,
+                            clear_seconds,
+                            select_best_weapon,
+                            weapon,
+                            restore_selected_slot,
+                            options,
+                        )
+                    )
+                ),
+                GuardTaskResult,
+                conflict_policy=conflict_policy,
+                reconnect_policy=reconnect_policy,
+                priority=priority,
+                deadline=deadline,
+                idempotency_key=idempotency_key,
+                headers=headers,
+                timeout_ms=timeout_ms,
+            )
         )
 
     def run_sleep(
@@ -3194,15 +1086,9 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> Iterator[BotTaskEvent]:
+    ) -> Stream[BotTaskEvent, SoulFireOperationError]:
         return self.run(
-            _sleep_task(
-                bed,
-                search_radius,
-                wait_until_possible,
-                retry_interval_ticks,
-                options,
-            ),
+            _sleep_task(bed, search_radius, wait_until_possible, retry_interval_ticks, options),
             reconnect_policy=reconnect_policy,
             deadline=deadline,
             idempotency_key=idempotency_key,
@@ -3210,6 +1096,7 @@ class SoulFireTasks:
             timeout_ms=timeout_ms,
         )
 
+    @fn("SoulFireTasks.sleep")
     def sleep(
         self,
         bed: BlockPosition | None = None,
@@ -3225,23 +1112,25 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> SoulFireTask[SleepTaskResult]:
-        return self.start(
-            _sleep_task(
-                bed,
-                search_radius,
-                wait_until_possible,
-                retry_interval_ticks,
-                options,
-            ),
-            SleepTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
+    ) -> EffectGen[SoulFireTask[SleepTaskResult], SoulFireOperationError]:
+        return (
+            yield from self.start(
+                (
+                    yield from validate(
+                        lambda: _sleep_task(
+                            bed, search_radius, wait_until_possible, retry_interval_ticks, options
+                        )
+                    )
+                ),
+                SleepTaskResult,
+                conflict_policy=conflict_policy,
+                reconnect_policy=reconnect_policy,
+                priority=priority,
+                deadline=deadline,
+                idempotency_key=idempotency_key,
+                headers=headers,
+                timeout_ms=timeout_ms,
+            )
         )
 
     def run_fish(
@@ -3251,7 +1140,7 @@ class SoulFireTasks:
         maximum_failed_casts: int = 0,
         rod: ItemSelector | None = None,
         cast_timeout_ticks: int = 100,
-        bite_timeout_ticks: int = 12_000,
+        bite_timeout_ticks: int = 12000,
         complete_when_no_rod: bool = False,
         restore_selected_slot: bool = True,
         reconnect_policy: BotTaskReconnectPolicy = BOT_TASK_RECONNECT_POLICY_UNSPECIFIED,
@@ -3259,7 +1148,7 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> Iterator[BotTaskEvent]:
+    ) -> Stream[BotTaskEvent, SoulFireOperationError]:
         return self.run(
             _fish_task(
                 maximum_catches,
@@ -3277,6 +1166,7 @@ class SoulFireTasks:
             timeout_ms=timeout_ms,
         )
 
+    @fn("SoulFireTasks.fish")
     def fish(
         self,
         *,
@@ -3284,7 +1174,7 @@ class SoulFireTasks:
         maximum_failed_casts: int = 0,
         rod: ItemSelector | None = None,
         cast_timeout_ticks: int = 100,
-        bite_timeout_ticks: int = 12_000,
+        bite_timeout_ticks: int = 12000,
         complete_when_no_rod: bool = True,
         restore_selected_slot: bool = True,
         conflict_policy: BotTaskConflictPolicy = BOT_TASK_CONFLICT_POLICY_UNSPECIFIED,
@@ -3294,25 +1184,31 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> SoulFireTask[FishTaskResult]:
-        return self.start(
-            _fish_task(
-                maximum_catches,
-                maximum_failed_casts,
-                rod,
-                cast_timeout_ticks,
-                bite_timeout_ticks,
-                complete_when_no_rod,
-                restore_selected_slot,
-            ),
-            FishTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
+    ) -> EffectGen[SoulFireTask[FishTaskResult], SoulFireOperationError]:
+        return (
+            yield from self.start(
+                (
+                    yield from validate(
+                        lambda: _fish_task(
+                            maximum_catches,
+                            maximum_failed_casts,
+                            rod,
+                            cast_timeout_ticks,
+                            bite_timeout_ticks,
+                            complete_when_no_rod,
+                            restore_selected_slot,
+                        )
+                    )
+                ),
+                FishTaskResult,
+                conflict_policy=conflict_policy,
+                reconnect_policy=reconnect_policy,
+                priority=priority,
+                deadline=deadline,
+                idempotency_key=idempotency_key,
+                headers=headers,
+                timeout_ms=timeout_ms,
+            )
         )
 
     def run_farm(
@@ -3332,7 +1228,7 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> Iterator[BotTaskEvent]:
+    ) -> Stream[BotTaskEvent, SoulFireOperationError]:
         return self.run(
             _farm_task(
                 crop_ids,
@@ -3352,6 +1248,7 @@ class SoulFireTasks:
             timeout_ms=timeout_ms,
         )
 
+    @fn("SoulFireTasks.farm")
     def farm(
         self,
         crop_ids: Iterable[str] = (),
@@ -3371,27 +1268,33 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> SoulFireTask[FarmTaskResult]:
-        return self.start(
-            _farm_task(
-                crop_ids,
-                center,
-                radius,
-                maximum_harvests,
-                replant,
-                complete_when_no_mature_crops,
-                options,
-                rescan_interval_ticks,
-                restore_selected_slot,
-            ),
-            FarmTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
+    ) -> EffectGen[SoulFireTask[FarmTaskResult], SoulFireOperationError]:
+        return (
+            yield from self.start(
+                (
+                    yield from validate(
+                        lambda: _farm_task(
+                            crop_ids,
+                            center,
+                            radius,
+                            maximum_harvests,
+                            replant,
+                            complete_when_no_mature_crops,
+                            options,
+                            rescan_interval_ticks,
+                            restore_selected_slot,
+                        )
+                    )
+                ),
+                FarmTaskResult,
+                conflict_policy=conflict_policy,
+                reconnect_policy=reconnect_policy,
+                priority=priority,
+                deadline=deadline,
+                idempotency_key=idempotency_key,
+                headers=headers,
+                timeout_ms=timeout_ms,
+            )
         )
 
     def run_breed(
@@ -3413,7 +1316,7 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> Iterator[BotTaskEvent]:
+    ) -> Stream[BotTaskEvent, SoulFireOperationError]:
         return self.run(
             _breed_task(
                 animals,
@@ -3435,6 +1338,7 @@ class SoulFireTasks:
             timeout_ms=timeout_ms,
         )
 
+    @fn("SoulFireTasks.breed")
     def breed(
         self,
         animals: EntitySelector | None = None,
@@ -3456,29 +1360,35 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> SoulFireTask[BreedTaskResult]:
-        return self.start(
-            _breed_task(
-                animals,
-                food,
-                center,
-                radius,
-                maximum_pairs,
-                complete_when_no_pair,
-                complete_when_no_food,
-                options,
-                rescan_interval_ticks,
-                breeding_timeout_ticks,
-                restore_selected_slot,
-            ),
-            BreedTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
+    ) -> EffectGen[SoulFireTask[BreedTaskResult], SoulFireOperationError]:
+        return (
+            yield from self.start(
+                (
+                    yield from validate(
+                        lambda: _breed_task(
+                            animals,
+                            food,
+                            center,
+                            radius,
+                            maximum_pairs,
+                            complete_when_no_pair,
+                            complete_when_no_food,
+                            options,
+                            rescan_interval_ticks,
+                            breeding_timeout_ticks,
+                            restore_selected_slot,
+                        )
+                    )
+                ),
+                BreedTaskResult,
+                conflict_policy=conflict_policy,
+                reconnect_policy=reconnect_policy,
+                priority=priority,
+                deadline=deadline,
+                idempotency_key=idempotency_key,
+                headers=headers,
+                timeout_ms=timeout_ms,
+            )
         )
 
     def run_explore(
@@ -3496,7 +1406,7 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> Iterator[BotTaskEvent]:
+    ) -> Stream[BotTaskEvent, SoulFireOperationError]:
         return self.run(
             _explore_task(
                 origin,
@@ -3514,6 +1424,7 @@ class SoulFireTasks:
             timeout_ms=timeout_ms,
         )
 
+    @fn("SoulFireTasks.explore")
     def explore(
         self,
         *,
@@ -3531,25 +1442,31 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> SoulFireTask[ExploreTaskResult]:
-        return self.start(
-            _explore_task(
-                origin,
-                radius,
-                waypoint_spacing,
-                maximum_waypoints,
-                options,
-                return_to_origin,
-                purpose,
-            ),
-            ExploreTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
+    ) -> EffectGen[SoulFireTask[ExploreTaskResult], SoulFireOperationError]:
+        return (
+            yield from self.start(
+                (
+                    yield from validate(
+                        lambda: _explore_task(
+                            origin,
+                            radius,
+                            waypoint_spacing,
+                            maximum_waypoints,
+                            options,
+                            return_to_origin,
+                            purpose,
+                        )
+                    )
+                ),
+                ExploreTaskResult,
+                conflict_policy=conflict_policy,
+                reconnect_policy=reconnect_policy,
+                priority=priority,
+                deadline=deadline,
+                idempotency_key=idempotency_key,
+                headers=headers,
+                timeout_ms=timeout_ms,
+            )
         )
 
     def run_stash(
@@ -3564,7 +1481,7 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> Iterator[BotTaskEvent]:
+    ) -> Stream[BotTaskEvent, SoulFireOperationError]:
         return self.run(
             _container_transfer_task(
                 container,
@@ -3580,6 +1497,7 @@ class SoulFireTasks:
             timeout_ms=timeout_ms,
         )
 
+    @fn("SoulFireTasks.stash")
     def stash(
         self,
         container: BlockPosition,
@@ -3594,23 +1512,29 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> SoulFireTask[ContainerTransferTaskResult]:
-        return self.start(
-            _container_transfer_task(
-                container,
-                CONTAINER_TRANSFER_DIRECTION_DEPOSIT,
-                operations,
-                options,
-                close_container,
-            ),
-            ContainerTransferTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
+    ) -> EffectGen[SoulFireTask[ContainerTransferTaskResult], SoulFireOperationError]:
+        return (
+            yield from self.start(
+                (
+                    yield from validate(
+                        lambda: _container_transfer_task(
+                            container,
+                            CONTAINER_TRANSFER_DIRECTION_DEPOSIT,
+                            operations,
+                            options,
+                            close_container,
+                        )
+                    )
+                ),
+                ContainerTransferTaskResult,
+                conflict_policy=conflict_policy,
+                reconnect_policy=reconnect_policy,
+                priority=priority,
+                deadline=deadline,
+                idempotency_key=idempotency_key,
+                headers=headers,
+                timeout_ms=timeout_ms,
+            )
         )
 
     def run_withdraw(
@@ -3625,7 +1549,7 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> Iterator[BotTaskEvent]:
+    ) -> Stream[BotTaskEvent, SoulFireOperationError]:
         return self.run(
             _container_transfer_task(
                 container,
@@ -3641,6 +1565,7 @@ class SoulFireTasks:
             timeout_ms=timeout_ms,
         )
 
+    @fn("SoulFireTasks.withdraw")
     def withdraw(
         self,
         container: BlockPosition,
@@ -3655,23 +1580,29 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> SoulFireTask[ContainerTransferTaskResult]:
-        return self.start(
-            _container_transfer_task(
-                container,
-                CONTAINER_TRANSFER_DIRECTION_WITHDRAW,
-                operations,
-                options,
-                close_container,
-            ),
-            ContainerTransferTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
+    ) -> EffectGen[SoulFireTask[ContainerTransferTaskResult], SoulFireOperationError]:
+        return (
+            yield from self.start(
+                (
+                    yield from validate(
+                        lambda: _container_transfer_task(
+                            container,
+                            CONTAINER_TRANSFER_DIRECTION_WITHDRAW,
+                            operations,
+                            options,
+                            close_container,
+                        )
+                    )
+                ),
+                ContainerTransferTaskResult,
+                conflict_policy=conflict_policy,
+                reconnect_policy=reconnect_policy,
+                priority=priority,
+                deadline=deadline,
+                idempotency_key=idempotency_key,
+                headers=headers,
+                timeout_ms=timeout_ms,
+            )
         )
 
     def run_maintain_loadout(
@@ -3689,7 +1620,7 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> Iterator[BotTaskEvent]:
+    ) -> Stream[BotTaskEvent, SoulFireOperationError]:
         return self.run(
             _maintain_loadout_task(
                 container,
@@ -3707,6 +1638,7 @@ class SoulFireTasks:
             timeout_ms=timeout_ms,
         )
 
+    @fn("SoulFireTasks.maintain_loadout")
     def maintain_loadout(
         self,
         container: BlockPosition,
@@ -3724,27 +1656,34 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> SoulFireTask[MaintainLoadoutTaskResult]:
-        return self.start(
-            _maintain_loadout_task(
-                container,
-                requirements,
-                options,
-                check_interval_ticks,
-                maximum_rebalances,
-                complete_when_satisfied,
-                close_container,
-            ),
-            MaintainLoadoutTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
+    ) -> EffectGen[SoulFireTask[MaintainLoadoutTaskResult], SoulFireOperationError]:
+        return (
+            yield from self.start(
+                (
+                    yield from validate(
+                        lambda: _maintain_loadout_task(
+                            container,
+                            requirements,
+                            options,
+                            check_interval_ticks,
+                            maximum_rebalances,
+                            complete_when_satisfied,
+                            close_container,
+                        )
+                    )
+                ),
+                MaintainLoadoutTaskResult,
+                conflict_policy=conflict_policy,
+                reconnect_policy=reconnect_policy,
+                priority=priority,
+                deadline=deadline,
+                idempotency_key=idempotency_key,
+                headers=headers,
+                timeout_ms=timeout_ms,
+            )
         )
 
+    @fn("SoulFireTasks.balance_loadout")
     def balance_loadout(
         self,
         container: BlockPosition,
@@ -3760,22 +1699,24 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> SoulFireTask[MaintainLoadoutTaskResult]:
-        return self.maintain_loadout(
-            container,
-            requirements,
-            options=options,
-            check_interval_ticks=check_interval_ticks,
-            maximum_rebalances=1,
-            complete_when_satisfied=True,
-            close_container=close_container,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
+    ) -> EffectGen[SoulFireTask[MaintainLoadoutTaskResult], SoulFireOperationError]:
+        return (
+            yield from self.maintain_loadout(
+                container,
+                requirements,
+                options=options,
+                check_interval_ticks=check_interval_ticks,
+                maximum_rebalances=1,
+                complete_when_satisfied=True,
+                close_container=close_container,
+                conflict_policy=conflict_policy,
+                reconnect_policy=reconnect_policy,
+                priority=priority,
+                deadline=deadline,
+                idempotency_key=idempotency_key,
+                headers=headers,
+                timeout_ms=timeout_ms,
+            )
         )
 
     def run_auto_eat(
@@ -3792,7 +1733,7 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> Iterator[BotTaskEvent]:
+    ) -> Stream[BotTaskEvent, SoulFireOperationError]:
         return self.run(
             _auto_eat_task(
                 food_item_ids,
@@ -3809,6 +1750,7 @@ class SoulFireTasks:
             timeout_ms=timeout_ms,
         )
 
+    @fn("SoulFireTasks.auto_eat")
     def auto_eat(
         self,
         food_item_ids: Iterable[str] = (),
@@ -3825,24 +1767,30 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> SoulFireTask[AutoEatTaskResult]:
-        return self.start(
-            _auto_eat_task(
-                food_item_ids,
-                food_level,
-                check_interval_ticks,
-                maximum_meals,
-                complete_when_no_food,
-                restore_selected_slot,
-            ),
-            AutoEatTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
+    ) -> EffectGen[SoulFireTask[AutoEatTaskResult], SoulFireOperationError]:
+        return (
+            yield from self.start(
+                (
+                    yield from validate(
+                        lambda: _auto_eat_task(
+                            food_item_ids,
+                            food_level,
+                            check_interval_ticks,
+                            maximum_meals,
+                            complete_when_no_food,
+                            restore_selected_slot,
+                        )
+                    )
+                ),
+                AutoEatTaskResult,
+                conflict_policy=conflict_policy,
+                reconnect_policy=reconnect_policy,
+                priority=priority,
+                deadline=deadline,
+                idempotency_key=idempotency_key,
+                headers=headers,
+                timeout_ms=timeout_ms,
+            )
         )
 
     def run_auto_respawn(
@@ -3855,7 +1803,7 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> Iterator[BotTaskEvent]:
+    ) -> Stream[BotTaskEvent, SoulFireOperationError]:
         return self.run(
             _auto_respawn_task(respawn_delay_ticks, maximum_respawns),
             reconnect_policy=reconnect_policy,
@@ -3865,6 +1813,7 @@ class SoulFireTasks:
             timeout_ms=timeout_ms,
         )
 
+    @fn("SoulFireTasks.auto_respawn")
     def auto_respawn(
         self,
         *,
@@ -3877,17 +1826,23 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> SoulFireTask[AutoRespawnTaskResult]:
-        return self.start(
-            _auto_respawn_task(respawn_delay_ticks, maximum_respawns),
-            AutoRespawnTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
+    ) -> EffectGen[SoulFireTask[AutoRespawnTaskResult], SoulFireOperationError]:
+        return (
+            yield from self.start(
+                (
+                    yield from validate(
+                        lambda: _auto_respawn_task(respawn_delay_ticks, maximum_respawns)
+                    )
+                ),
+                AutoRespawnTaskResult,
+                conflict_policy=conflict_policy,
+                reconnect_policy=reconnect_policy,
+                priority=priority,
+                deadline=deadline,
+                idempotency_key=idempotency_key,
+                headers=headers,
+                timeout_ms=timeout_ms,
+            )
         )
 
     def run_auto_totem(
@@ -3902,7 +1857,7 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> Iterator[BotTaskEvent]:
+    ) -> Stream[BotTaskEvent, SoulFireOperationError]:
         return self.run(
             _auto_totem_task(
                 check_interval_ticks,
@@ -3917,6 +1872,7 @@ class SoulFireTasks:
             timeout_ms=timeout_ms,
         )
 
+    @fn("SoulFireTasks.auto_totem")
     def auto_totem(
         self,
         *,
@@ -3931,22 +1887,28 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> SoulFireTask[AutoTotemTaskResult]:
-        return self.start(
-            _auto_totem_task(
-                check_interval_ticks,
-                maximum_equips,
-                complete_when_no_totem,
-                replace_occupied_offhand,
-            ),
-            AutoTotemTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
+    ) -> EffectGen[SoulFireTask[AutoTotemTaskResult], SoulFireOperationError]:
+        return (
+            yield from self.start(
+                (
+                    yield from validate(
+                        lambda: _auto_totem_task(
+                            check_interval_ticks,
+                            maximum_equips,
+                            complete_when_no_totem,
+                            replace_occupied_offhand,
+                        )
+                    )
+                ),
+                AutoTotemTaskResult,
+                conflict_policy=conflict_policy,
+                reconnect_policy=reconnect_policy,
+                priority=priority,
+                deadline=deadline,
+                idempotency_key=idempotency_key,
+                headers=headers,
+                timeout_ms=timeout_ms,
+            )
         )
 
     def run_auto_armor(
@@ -3960,13 +1922,9 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> Iterator[BotTaskEvent]:
+    ) -> Stream[BotTaskEvent, SoulFireOperationError]:
         return self.run(
-            _auto_armor_task(
-                check_interval_ticks,
-                maximum_equips,
-                complete_when_no_upgrade,
-            ),
+            _auto_armor_task(check_interval_ticks, maximum_equips, complete_when_no_upgrade),
             reconnect_policy=reconnect_policy,
             deadline=deadline,
             idempotency_key=idempotency_key,
@@ -3974,6 +1932,7 @@ class SoulFireTasks:
             timeout_ms=timeout_ms,
         )
 
+    @fn("SoulFireTasks.auto_armor")
     def auto_armor(
         self,
         *,
@@ -3987,21 +1946,25 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> SoulFireTask[AutoArmorTaskResult]:
-        return self.start(
-            _auto_armor_task(
-                check_interval_ticks,
-                maximum_equips,
-                complete_when_no_upgrade,
-            ),
-            AutoArmorTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
+    ) -> EffectGen[SoulFireTask[AutoArmorTaskResult], SoulFireOperationError]:
+        return (
+            yield from self.start(
+                (
+                    yield from validate(
+                        lambda: _auto_armor_task(
+                            check_interval_ticks, maximum_equips, complete_when_no_upgrade
+                        )
+                    )
+                ),
+                AutoArmorTaskResult,
+                conflict_policy=conflict_policy,
+                reconnect_policy=reconnect_policy,
+                priority=priority,
+                deadline=deadline,
+                idempotency_key=idempotency_key,
+                headers=headers,
+                timeout_ms=timeout_ms,
+            )
         )
 
     def run_collect_blocks(
@@ -4020,7 +1983,7 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> Iterator[BotTaskEvent]:
+    ) -> Stream[BotTaskEvent, SoulFireOperationError]:
         return self.run(
             _collect_blocks_task(
                 block_ids,
@@ -4039,6 +2002,7 @@ class SoulFireTasks:
             timeout_ms=timeout_ms,
         )
 
+    @fn("SoulFireTasks.collect_blocks")
     def collect_blocks(
         self,
         block_ids: Iterable[str] = (),
@@ -4057,26 +2021,32 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> SoulFireTask[CollectBlocksTaskResult]:
-        return self.start(
-            _collect_blocks_task(
-                block_ids,
-                tags,
-                count,
-                search_radius,
-                avoid_submerged_targets,
-                require_line_of_sight,
-                target_y_range,
-                options,
-            ),
-            CollectBlocksTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
+    ) -> EffectGen[SoulFireTask[CollectBlocksTaskResult], SoulFireOperationError]:
+        return (
+            yield from self.start(
+                (
+                    yield from validate(
+                        lambda: _collect_blocks_task(
+                            block_ids,
+                            tags,
+                            count,
+                            search_radius,
+                            avoid_submerged_targets,
+                            require_line_of_sight,
+                            target_y_range,
+                            options,
+                        )
+                    )
+                ),
+                CollectBlocksTaskResult,
+                conflict_policy=conflict_policy,
+                reconnect_policy=reconnect_policy,
+                priority=priority,
+                deadline=deadline,
+                idempotency_key=idempotency_key,
+                headers=headers,
+                timeout_ms=timeout_ms,
+            )
         )
 
     def run_excavate(
@@ -4091,7 +2061,7 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> Iterator[BotTaskEvent]:
+    ) -> Stream[BotTaskEvent, SoulFireOperationError]:
         return self.run(
             _excavate_task(from_position, to_position, options, maximum_blocks),
             reconnect_policy=reconnect_policy,
@@ -4101,6 +2071,7 @@ class SoulFireTasks:
             timeout_ms=timeout_ms,
         )
 
+    @fn("SoulFireTasks.excavate")
     def excavate(
         self,
         from_position: BlockPosition,
@@ -4115,17 +2086,23 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> SoulFireTask[ExcavateTaskResult]:
-        return self.start(
-            _excavate_task(from_position, to_position, options, maximum_blocks),
-            ExcavateTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
+    ) -> EffectGen[SoulFireTask[ExcavateTaskResult], SoulFireOperationError]:
+        return (
+            yield from self.start(
+                (
+                    yield from validate(
+                        lambda: _excavate_task(from_position, to_position, options, maximum_blocks)
+                    )
+                ),
+                ExcavateTaskResult,
+                conflict_policy=conflict_policy,
+                reconnect_policy=reconnect_policy,
+                priority=priority,
+                deadline=deadline,
+                idempotency_key=idempotency_key,
+                headers=headers,
+                timeout_ms=timeout_ms,
+            )
         )
 
     def run_build(
@@ -4146,7 +2123,7 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> Iterator[BotTaskEvent]:
+    ) -> Stream[BotTaskEvent, SoulFireOperationError]:
         return self.run(
             _build_task(
                 origin,
@@ -4167,6 +2144,7 @@ class SoulFireTasks:
             timeout_ms=timeout_ms,
         )
 
+    @fn("SoulFireTasks.build")
     def build(
         self,
         origin: BlockPosition,
@@ -4187,28 +2165,34 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> SoulFireTask[BuildTaskResult]:
-        return self.start(
-            _build_task(
-                origin,
-                blocks,
-                rotation,
-                mirror,
-                substitutions,
-                options,
-                break_incorrect_blocks,
-                restore_selected_slot,
-                partition_index,
-                partition_count,
-            ),
-            BuildTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
+    ) -> EffectGen[SoulFireTask[BuildTaskResult], SoulFireOperationError]:
+        return (
+            yield from self.start(
+                (
+                    yield from validate(
+                        lambda: _build_task(
+                            origin,
+                            blocks,
+                            rotation,
+                            mirror,
+                            substitutions,
+                            options,
+                            break_incorrect_blocks,
+                            restore_selected_slot,
+                            partition_index,
+                            partition_count,
+                        )
+                    )
+                ),
+                BuildTaskResult,
+                conflict_policy=conflict_policy,
+                reconnect_policy=reconnect_policy,
+                priority=priority,
+                deadline=deadline,
+                idempotency_key=idempotency_key,
+                headers=headers,
+                timeout_ms=timeout_ms,
+            )
         )
 
     def run_craft(
@@ -4222,7 +2206,7 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> Iterator[BotTaskEvent]:
+    ) -> Stream[BotTaskEvent, SoulFireOperationError]:
         return self.run(
             _craft_task(recipe_id, count, station),
             reconnect_policy=reconnect_policy,
@@ -4232,6 +2216,7 @@ class SoulFireTasks:
             timeout_ms=timeout_ms,
         )
 
+    @fn("SoulFireTasks.craft")
     def craft(
         self,
         recipe_id: str,
@@ -4245,17 +2230,19 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> SoulFireTask[CraftTaskResult]:
-        return self.start(
-            _craft_task(recipe_id, count, station),
-            CraftTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
+    ) -> EffectGen[SoulFireTask[CraftTaskResult], SoulFireOperationError]:
+        return (
+            yield from self.start(
+                (yield from validate(lambda: _craft_task(recipe_id, count, station))),
+                CraftTaskResult,
+                conflict_policy=conflict_policy,
+                reconnect_policy=reconnect_policy,
+                priority=priority,
+                deadline=deadline,
+                idempotency_key=idempotency_key,
+                headers=headers,
+                timeout_ms=timeout_ms,
+            )
         )
 
     def run_smelt(
@@ -4270,7 +2257,7 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> Iterator[BotTaskEvent]:
+    ) -> Stream[BotTaskEvent, SoulFireOperationError]:
         return self.run(
             _smelt_task(input, count, fuel, station),
             reconnect_policy=reconnect_policy,
@@ -4280,6 +2267,7 @@ class SoulFireTasks:
             timeout_ms=timeout_ms,
         )
 
+    @fn("SoulFireTasks.smelt")
     def smelt(
         self,
         input: ItemSelector,
@@ -4294,17 +2282,19 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> SoulFireTask[SmeltTaskResult]:
-        return self.start(
-            _smelt_task(input, count, fuel, station),
-            SmeltTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
+    ) -> EffectGen[SoulFireTask[SmeltTaskResult], SoulFireOperationError]:
+        return (
+            yield from self.start(
+                (yield from validate(lambda: _smelt_task(input, count, fuel, station))),
+                SmeltTaskResult,
+                conflict_policy=conflict_policy,
+                reconnect_policy=reconnect_policy,
+                priority=priority,
+                deadline=deadline,
+                idempotency_key=idempotency_key,
+                headers=headers,
+                timeout_ms=timeout_ms,
+            )
         )
 
     def run_brew(
@@ -4321,16 +2311,9 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> Iterator[BotTaskEvent]:
+    ) -> Stream[BotTaskEvent, SoulFireOperationError]:
         return self.run(
-            _brew_task(
-                input,
-                ingredient,
-                count,
-                fuel,
-                station,
-                expected_result,
-            ),
+            _brew_task(input, ingredient, count, fuel, station, expected_result),
             reconnect_policy=reconnect_policy,
             deadline=deadline,
             idempotency_key=idempotency_key,
@@ -4338,6 +2321,7 @@ class SoulFireTasks:
             timeout_ms=timeout_ms,
         )
 
+    @fn("SoulFireTasks.brew")
     def brew(
         self,
         input: ItemSelector,
@@ -4354,24 +2338,23 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> SoulFireTask[BrewTaskResult]:
-        return self.start(
-            _brew_task(
-                input,
-                ingredient,
-                count,
-                fuel,
-                station,
-                expected_result,
-            ),
-            BrewTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
+    ) -> EffectGen[SoulFireTask[BrewTaskResult], SoulFireOperationError]:
+        return (
+            yield from self.start(
+                (
+                    yield from validate(
+                        lambda: _brew_task(input, ingredient, count, fuel, station, expected_result)
+                    )
+                ),
+                BrewTaskResult,
+                conflict_policy=conflict_policy,
+                reconnect_policy=reconnect_policy,
+                priority=priority,
+                deadline=deadline,
+                idempotency_key=idempotency_key,
+                headers=headers,
+                timeout_ms=timeout_ms,
+            )
         )
 
     def run_villager_trade(
@@ -4386,14 +2369,9 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> Iterator[BotTaskEvent]:
+    ) -> Stream[BotTaskEvent, SoulFireOperationError]:
         return self.run(
-            _villager_trade_task(
-                offer_index,
-                count,
-                expected_result,
-                close_when_done,
-            ),
+            _villager_trade_task(offer_index, count, expected_result, close_when_done),
             reconnect_policy=reconnect_policy,
             deadline=deadline,
             idempotency_key=idempotency_key,
@@ -4401,6 +2379,7 @@ class SoulFireTasks:
             timeout_ms=timeout_ms,
         )
 
+    @fn("SoulFireTasks.villager_trade")
     def villager_trade(
         self,
         offer_index: int,
@@ -4415,24 +2394,28 @@ class SoulFireTasks:
         idempotency_key: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> SoulFireTask[VillagerTradeTaskResult]:
-        return self.start(
-            _villager_trade_task(
-                offer_index,
-                count,
-                expected_result,
-                close_when_done,
-            ),
-            VillagerTradeTaskResult,
-            conflict_policy=conflict_policy,
-            reconnect_policy=reconnect_policy,
-            priority=priority,
-            deadline=deadline,
-            idempotency_key=idempotency_key,
-            headers=headers,
-            timeout_ms=timeout_ms,
+    ) -> EffectGen[SoulFireTask[VillagerTradeTaskResult], SoulFireOperationError]:
+        return (
+            yield from self.start(
+                (
+                    yield from validate(
+                        lambda: _villager_trade_task(
+                            offer_index, count, expected_result, close_when_done
+                        )
+                    )
+                ),
+                VillagerTradeTaskResult,
+                conflict_policy=conflict_policy,
+                reconnect_policy=reconnect_policy,
+                priority=priority,
+                deadline=deadline,
+                idempotency_key=idempotency_key,
+                headers=headers,
+                timeout_ms=timeout_ms,
+            )
         )
 
+    @fn("SoulFireTasks.get")
     def get[ResultT: Message](
         self,
         task_id: str,
@@ -4440,20 +2423,17 @@ class SoulFireTasks:
         *,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> SoulFireTask[ResultT]:
-        task = self._client.get_bot_task(
-            GetBotTaskRequest(task_id=task_id),
-            headers=headers,
-            timeout_ms=timeout_ms,
+    ) -> EffectGen[SoulFireTask[ResultT], SoulFireOperationError]:
+        task = yield from rpc(
+            "SoulFireTasks.get",
+            lambda: self._client.get_bot_task(
+                GetBotTaskRequest(task_id=task_id), headers=headers, timeout_ms=timeout_ms
+            ),
         )
-        _require_task_scope(task, self._instance_id, self._bot_id)
-        return SoulFireTask(
-            self._client,
-            task,
-            result_type,
-            self._header_factory,
-        )
+        yield from validate(lambda: _require_task_scope(task, self._instance_id, self._bot_id))
+        return SoulFireTask(self._client, task, result_type, self._header_factory)
 
+    @fn("SoulFireTasks.list")
     def list(
         self,
         *,
@@ -4462,22 +2442,25 @@ class SoulFireTasks:
         page_size: int = 100,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> list[BotTask]:
+    ) -> EffectGen[list[BotTask], SoulFireOperationError]:
         tasks: list[BotTask] = []
         requested_statuses = tuple(statuses)
         page_token = ""
         while True:
-            response = self._client.list_bot_tasks(
-                ListBotTasksRequest(
-                    instance_id=self._instance_id,
-                    bot_id=self._bot_id,
-                    statuses=requested_statuses,
-                    include_terminal=include_terminal,
-                    page_size=page_size,
-                    page_token=page_token,
+            response = yield from rpc(
+                "SoulFireTasks.list",
+                lambda page_token=page_token: self._client.list_bot_tasks(
+                    ListBotTasksRequest(
+                        instance_id=self._instance_id,
+                        bot_id=self._bot_id,
+                        statuses=requested_statuses,
+                        include_terminal=include_terminal,
+                        page_size=page_size,
+                        page_token=page_token,
+                    ),
+                    headers=headers,
+                    timeout_ms=timeout_ms,
                 ),
-                headers=headers,
-                timeout_ms=timeout_ms,
             )
             tasks.extend(response.tasks)
             page_token = response.next_page_token
@@ -4492,17 +2475,20 @@ class SoulFireTasks:
         include_snapshot: bool = True,
         headers: dict[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> Iterator[BotTaskEvent]:
-        return self._client.watch_bot_tasks(
-            WatchBotTasksRequest(
-                instance_id=self._instance_id,
-                bot_id=self._bot_id,
-                statuses=statuses,
-                after_sequence=after_sequence,
-                include_snapshot=include_snapshot,
+    ) -> Stream[BotTaskEvent, SoulFireOperationError]:
+        return rpc_stream(
+            "SoulFireTasks.watch",
+            lambda: self._client.watch_bot_tasks(
+                WatchBotTasksRequest(
+                    instance_id=self._instance_id,
+                    bot_id=self._bot_id,
+                    statuses=statuses,
+                    after_sequence=after_sequence,
+                    include_snapshot=include_snapshot,
+                ),
+                headers=headers,
+                timeout_ms=timeout_ms,
             ),
-            headers=headers,
-            timeout_ms=timeout_ms,
         )
 
 
@@ -4531,9 +2517,7 @@ def _follow_entity_task(
         raise ValueError("target network_id must be positive")
     task = FollowEntityTask(
         target=PathfindGoal.EntityGoal(
-            entity_id=network_id,
-            radius=distance,
-            connection_epoch=connection_epoch,
+            entity_id=network_id, radius=distance, connection_epoch=connection_epoch
         ),
         target_unavailable_timeout_seconds=target_unavailable_timeout_seconds,
     )
@@ -4641,7 +2625,7 @@ def _ranged_attack_task(
         raise ValueError("maximum_range must be finite, greater than minimum_range, and at most 64")
     if maximum_shots < 0:
         raise ValueError("maximum_shots must be non-negative")
-    if not 0 < target_unavailable_timeout_seconds <= 3_600:
+    if not 0 < target_unavailable_timeout_seconds <= 3600:
         raise ValueError("target_unavailable_timeout_seconds must be between one and 3,600")
     if not 3 <= bow_draw_ticks <= 20:
         raise ValueError("bow_draw_ticks must be between three and twenty")
@@ -4772,7 +2756,7 @@ def _sleep_task(
 ) -> SleepTask:
     if not 0 < search_radius <= 32:
         raise ValueError("search_radius must be between one and 32")
-    if not 0 < retry_interval_ticks <= 1_200:
+    if not 0 < retry_interval_ticks <= 1200:
         raise ValueError("retry_interval_ticks must be between one and 1,200")
     task = SleepTask(
         search_radius=search_radius,
@@ -4799,9 +2783,9 @@ def _fish_task(
         raise ValueError("maximum_catches must be non-negative")
     if maximum_failed_casts < 0:
         raise ValueError("maximum_failed_casts must be non-negative")
-    if not 0 < cast_timeout_ticks <= 1_200:
+    if not 0 < cast_timeout_ticks <= 1200:
         raise ValueError("cast_timeout_ticks must be between one and 1,200")
-    if not 0 < bite_timeout_ticks <= 72_000:
+    if not 0 < bite_timeout_ticks <= 72000:
         raise ValueError("bite_timeout_ticks must be between one and 72,000")
     task = FishTask(
         maximum_catches=maximum_catches,
@@ -4831,7 +2815,7 @@ def _farm_task(
         raise ValueError("radius must be between one and 48")
     if maximum_harvests < 0:
         raise ValueError("maximum_harvests must be non-negative")
-    if not 0 < rescan_interval_ticks <= 72_000:
+    if not 0 < rescan_interval_ticks <= 72000:
         raise ValueError("rescan_interval_ticks must be between one and 72,000")
     task = FarmTask(
         crop_ids=tuple(crop_ids),
@@ -4866,9 +2850,9 @@ def _breed_task(
         raise ValueError("radius must be between one and 64")
     if maximum_pairs < 0:
         raise ValueError("maximum_pairs must be non-negative")
-    if not 0 < rescan_interval_ticks <= 72_000:
+    if not 0 < rescan_interval_ticks <= 72000:
         raise ValueError("rescan_interval_ticks must be between one and 72,000")
-    if not 0 < breeding_timeout_ticks <= 1_200:
+    if not 0 < breeding_timeout_ticks <= 1200:
         raise ValueError("breeding_timeout_ticks must be between one and 1,200")
     task = BreedTask(
         radius=radius,
@@ -4899,7 +2883,7 @@ def _explore_task(
     return_to_origin: bool,
     purpose: str,
 ) -> ExploreTask:
-    if not 0 < radius <= 4_096:
+    if not 0 < radius <= 4096:
         raise ValueError("radius must be between one and 4,096")
     if not 8 <= waypoint_spacing <= 512:
         raise ValueError("waypoint_spacing must be between eight and 512")
@@ -4956,13 +2940,9 @@ def _container_transfer_operation(
         selector = value.selector
         count = value.count
         allow_partial = value.allow_partial
-    if not 0 < count <= 1_000_000:
+    if not 0 < count <= 1000000:
         raise ValueError("transfer count must be between one and 1,000,000")
-    return ContainerTransferOperation(
-        selector=selector,
-        count=count,
-        allow_partial=allow_partial,
-    )
+    return ContainerTransferOperation(selector=selector, count=count, allow_partial=allow_partial)
 
 
 def _maintain_loadout_task(
@@ -4995,8 +2975,8 @@ def _maintain_loadout_task(
             )
         ):
             raise ValueError(
-                "Each requirement needs minimum_count <= target_count "
-                "<= maximum_count when maximum_count is set"
+                "Each requirement needs minimum_count <= target_count <= maximum_count "
+                "when maximum_count is set"
             )
     if check_interval_ticks <= 0:
         raise ValueError("check_interval_ticks must be positive")
@@ -5039,17 +3019,13 @@ def _auto_eat_task(
     )
 
 
-def _auto_respawn_task(
-    respawn_delay_ticks: int,
-    maximum_respawns: int,
-) -> AutoRespawnTask:
+def _auto_respawn_task(respawn_delay_ticks: int, maximum_respawns: int) -> AutoRespawnTask:
     if respawn_delay_ticks < 0:
         raise ValueError("respawn_delay_ticks must be non-negative")
     if maximum_respawns < 0:
         raise ValueError("maximum_respawns must be non-negative")
     return AutoRespawnTask(
-        respawn_delay_ticks=respawn_delay_ticks,
-        maximum_respawns=maximum_respawns,
+        respawn_delay_ticks=respawn_delay_ticks, maximum_respawns=maximum_respawns
     )
 
 
@@ -5072,9 +3048,7 @@ def _auto_totem_task(
 
 
 def _auto_armor_task(
-    check_interval_ticks: int,
-    maximum_equips: int,
-    complete_when_no_upgrade: bool,
+    check_interval_ticks: int, maximum_equips: int, complete_when_no_upgrade: bool
 ) -> AutoArmorTask:
     if check_interval_ticks <= 0:
         raise ValueError("check_interval_ticks must be positive")
@@ -5099,7 +3073,7 @@ def _collect_blocks_task(
 ) -> CollectBlocksTask:
     ids = tuple(block_ids)
     block_tags = tuple(tags)
-    if not ids and not block_tags:
+    if not ids and (not block_tags):
         raise ValueError("block_ids or tags must contain at least one selector")
     if count <= 0:
         raise ValueError("count must be positive")
@@ -5128,11 +3102,7 @@ def _excavate_task(
 ) -> ExcavateTask:
     if maximum_blocks < 0:
         raise ValueError("maximum_blocks must be non-negative")
-    task = ExcavateTask(
-        corner_a=from_position,
-        corner_b=to_position,
-        maximum_blocks=maximum_blocks,
-    )
+    task = ExcavateTask(corner_a=from_position, corner_b=to_position, maximum_blocks=maximum_blocks)
     if options is not None:
         task.options.CopyFrom(options)
     return task
@@ -5171,8 +3141,7 @@ def _build_task(
         mirror=mirror,
         substitutions=[
             BuildMaterialSubstitution(
-                source_block_id=source,
-                replacement_block_ids=tuple(replacements),
+                source_block_id=source, replacement_block_ids=tuple(replacements)
             )
             for source, replacements in (substitutions or {}).items()
         ],
@@ -5186,11 +3155,7 @@ def _build_task(
     return task
 
 
-def _craft_task(
-    recipe_id: str,
-    count: int,
-    station: BlockPosition | None,
-) -> CraftTask:
+def _craft_task(recipe_id: str, count: int, station: BlockPosition | None) -> CraftTask:
     if not recipe_id:
         raise ValueError("recipe_id must not be empty")
     if count <= 0:
@@ -5202,10 +3167,7 @@ def _craft_task(
 
 
 def _smelt_task(
-    input: ItemSelector,
-    count: int,
-    fuel: ItemSelector | None,
-    station: BlockPosition | None,
+    input: ItemSelector, count: int, fuel: ItemSelector | None, station: BlockPosition | None
 ) -> SmeltTask:
     if count <= 0:
         raise ValueError("count must be positive")
@@ -5238,20 +3200,13 @@ def _brew_task(
 
 
 def _villager_trade_task(
-    offer_index: int,
-    count: int,
-    expected_result: ItemSelector | None,
-    close_when_done: bool,
+    offer_index: int, count: int, expected_result: ItemSelector | None, close_when_done: bool
 ) -> VillagerTradeTask:
     if offer_index < 0:
         raise ValueError("offer_index must be non-negative")
     if count <= 0:
         raise ValueError("count must be positive")
-    task = VillagerTradeTask(
-        offer_index=offer_index,
-        count=count,
-        close_when_done=close_when_done,
-    )
+    task = VillagerTradeTask(offer_index=offer_index, count=count, close_when_done=close_when_done)
     if expected_result is not None:
         task.expected_result.CopyFrom(expected_result)
     return task
@@ -5268,10 +3223,7 @@ def _entity_reference(target: AttackEntityTarget) -> EntityReference:
         uuid = getattr(target, "uuid", None)
     if network_id <= 0:
         raise ValueError("target network_id must be positive")
-    reference = EntityReference(
-        network_id=network_id,
-        connection_epoch=connection_epoch,
-    )
+    reference = EntityReference(network_id=network_id, connection_epoch=connection_epoch)
     if isinstance(uuid, str) and uuid:
         reference.uuid = uuid
     return reference

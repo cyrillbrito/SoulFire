@@ -96,7 +96,6 @@ jobs:
       - name: Import Node.js entry points
         run: |
           node -e 'const sdk = await import("./sdk/typescript/dist/node.js"); if (typeof sdk.SoulFire.connect !== "function") throw new Error("Effect Node.js entry point is invalid")'
-          node -e 'const sdk = await import("./sdk/typescript/dist/node-promise.js"); if (typeof sdk.SoulFire.connect !== "function") throw new Error("Promise Node.js entry point is invalid")'
       - name: Verify npm package contents
         working-directory: sdk/typescript
         run: |
@@ -106,9 +105,7 @@ jobs:
           tar -tf "$package_archive" | grep -q 'package/dist/index.js'
           tar -tf "$package_archive" | grep -q 'package/dist/browser.js'
           tar -tf "$package_archive" | grep -q 'package/dist/bun.js'
-          tar -tf "$package_archive" | grep -q 'package/dist/bun-promise.js'
           tar -tf "$package_archive" | grep -q 'package/dist/node.js'
-          tar -tf "$package_archive" | grep -q 'package/dist/node-promise.js'
           tar -tf "$package_archive" | grep -q 'package/dist/platform.js'
           tar -tf "$package_archive" | grep -q 'package/dist/cli.js'
           tar -tf "$package_archive" | grep -q 'package/dist/plugin-generator.js'

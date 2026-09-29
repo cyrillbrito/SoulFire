@@ -99,7 +99,7 @@ describe("workflow resources", () => {
           const failure = yield* Effect.flip(
             soulfire.instance("instance").bot("bot").wake(),
           );
-          expect(failure.cause).toBeInstanceOf(SoulFireActionError);
+          expect(failure).toBeInstanceOf(SoulFireActionError);
         }),
       ),
     ));

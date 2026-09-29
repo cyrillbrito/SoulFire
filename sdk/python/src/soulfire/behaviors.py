@@ -1,41 +1,48 @@
 from __future__ import annotations
 
-import asyncio
-from collections.abc import Awaitable, Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
-from typing import Protocol, TypeVar
+from typing import Generic, Never, Protocol, TypeVar
 
-from .bot import AsyncSoulFireBot
-from .bot_live_pb2 import (
-    HAND_MAIN,
-    BlockFace,
-    PathfindOptions,
-)
+from effect_py import Effect, EffectGen, Schedule, Scope, fail, fn, gen, schedule, scoped, succeed
+from effect_py.errors import TaggedError, catch_tag
+
+from .bot import SoulFireBot
+from .bot_live_pb2 import HAND_MAIN, BlockFace, PathfindOptions
 from .common_pb2 import BlockPosition
+from .concurrency import parallel as parallel_effects
+from .concurrency import race as race_effects
+from .errors import SoulFireOperationError, SoulFireStateError, SoulFireTaskError
+from .resources import ensuring
+from .streams import Stream
+from .task_pb2 import BOT_TASK_STATUS_COMPLETED, BotTask, BotTaskEvent
+from .transport import validate
 from .world_pb2 import IntRange
 
-ResultT = TypeVar("ResultT", covariant=True)
+A = TypeVar("A", covariant=True)
+E = TypeVar("E", covariant=True, default=Never)
+R = TypeVar("R", covariant=True, default=Never)
 
 
-class BotBehavior(Protocol[ResultT]):
-    async def run(self, bot: AsyncSoulFireBot) -> ResultT: ...
+class BotBehavior(Protocol[A, E, R]):
+    def run(self, bot: SoulFireBot) -> Effect[A, E, R]: ...
 
 
 @dataclass(frozen=True, slots=True)
-class FunctionBehavior[ResultT]:
-    function: Callable[[AsyncSoulFireBot], Awaitable[ResultT]]
+class FunctionBehavior(Generic[A, E, R]):
+    function: Callable[[SoulFireBot], Effect[A, E, R]]
 
-    async def run(self, bot: AsyncSoulFireBot) -> ResultT:
-        return await self.function(bot)
+    def run(self, bot: SoulFireBot) -> Effect[A, E, R]:
+        return self.function(bot)
 
 
-def define_behavior[ResultT](
-    function: Callable[[AsyncSoulFireBot], Awaitable[ResultT]],
-) -> FunctionBehavior[ResultT]:
+def define_behavior[A2, E2 = Never, R2 = Never](
+    function: Callable[[SoulFireBot], Effect[A2, E2, R2]],
+) -> FunctionBehavior[A2, E2, R2]:
     return FunctionBehavior(function)
 
 
-class SoulFireBehaviorError(RuntimeError):
+class SoulFireBehaviorError(TaggedError):
     pass
 
 
@@ -45,290 +52,226 @@ class SoulFireBehaviorTimeoutError(SoulFireBehaviorError):
         super().__init__(f"Behavior exceeded {duration:g} seconds")
 
 
-async def run_behaviors(
-    bot: AsyncSoulFireBot,
-    behaviors: Iterable[BotBehavior[object]],
-) -> None:
+@fn("run_behaviors")
+def run_behaviors[E2 = Never, R2 = Never](
+    bot: SoulFireBot,
+    behaviors: Iterable[BotBehavior[object, E2, R2]],
+) -> EffectGen[None, E2, R2]:
+    yield from succeed(None)
     for behavior in behaviors:
-        await behavior.run(bot)
+        yield from behavior.run(bot)
 
 
-@dataclass(frozen=True, slots=True)
-class SequenceBehavior:
-    behaviors: tuple[BotBehavior[object], ...]
-
-    async def run(self, bot: AsyncSoulFireBot) -> tuple[object, ...]:
-        return tuple([await behavior.run(bot) for behavior in self.behaviors])
-
-
-def sequence(*behaviors: BotBehavior[object]) -> SequenceBehavior:
-    return SequenceBehavior(behaviors)
-
-
-@dataclass(frozen=True, slots=True)
-class ParallelBehavior:
-    behaviors: tuple[BotBehavior[object], ...]
-
-    async def run(self, bot: AsyncSoulFireBot) -> tuple[object, ...]:
-        results: list[object | None] = [None] * len(self.behaviors)
-
-        async def run_one(index: int, behavior: BotBehavior[object]) -> None:
-            results[index] = await behavior.run(bot)
-
-        async with asyncio.TaskGroup() as tasks:
-            for index, behavior in enumerate(self.behaviors):
-                tasks.create_task(run_one(index, behavior))
+def sequence[E2 = Never, R2 = Never](
+    *behaviors: BotBehavior[object, E2, R2],
+) -> BotBehavior[tuple[object, ...], E2, R2]:
+    @fn("sequence")
+    def run(bot: SoulFireBot) -> EffectGen[tuple[object, ...], E2, R2]:
+        results: list[object] = []
+        yield from succeed(None)
+        for behavior in behaviors:
+            results.append((yield from behavior.run(bot)))
         return tuple(results)
 
-
-def parallel(*behaviors: BotBehavior[object]) -> ParallelBehavior:
-    return ParallelBehavior(behaviors)
+    return define_behavior(run)
 
 
-@dataclass(frozen=True, slots=True)
-class RaceBehavior:
-    behaviors: tuple[BotBehavior[object], ...]
-
-    async def run(self, bot: AsyncSoulFireBot) -> object:
-        if not self.behaviors:
-            raise ValueError("race requires at least one behavior")
-        tasks = {asyncio.create_task(behavior.run(bot)) for behavior in self.behaviors}
-        failures: list[Exception] = []
-        try:
-            pending = tasks
-            while pending:
-                completed, pending = await asyncio.wait(
-                    pending,
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-                for task in completed:
-                    try:
-                        result = task.result()
-                    except Exception as error:
-                        failures.append(error)
-                    else:
-                        for remaining in pending:
-                            remaining.cancel()
-                        return result
-            raise ExceptionGroup("Every raced behavior failed", failures)
-        finally:
-            for task in tasks:
-                if not task.done():
-                    task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+def parallel[E2 = Never, R2 = Never](
+    *behaviors: BotBehavior[object, E2, R2],
+) -> BotBehavior[tuple[object, ...], E2, R2]:
+    return define_behavior(
+        lambda bot: parallel_effects(
+            (behavior.run(bot) for behavior in behaviors), concurrency=max(1, len(behaviors))
+        )
+    )
 
 
-def race(
-    first: BotBehavior[object],
-    *others: BotBehavior[object],
-) -> RaceBehavior:
-    return RaceBehavior((first, *others))
+def race[A2, E2 = Never, R2 = Never](
+    first: BotBehavior[A2, E2, R2],
+    *others: BotBehavior[A2, E2, R2],
+) -> BotBehavior[A2, E2, R2]:
+    return define_behavior(
+        lambda bot: race_effects(first.run(bot), *(behavior.run(bot) for behavior in others))
+    )
 
 
-@dataclass(frozen=True, slots=True)
-class RepeatBehavior[ResultT]:
-    behavior: BotBehavior[ResultT]
-    times: int
-
-    async def run(self, bot: AsyncSoulFireBot) -> tuple[ResultT, ...]:
-        times = _positive_integer(self.times, "times")
-        return tuple([await self.behavior.run(bot) for _ in range(times)])
-
-
-def repeat[ResultT](
-    behavior: BotBehavior[ResultT],
+def repeat[A2, E2 = Never, R2 = Never](
+    behavior: BotBehavior[A2, E2, R2],
     *,
     times: int,
-) -> RepeatBehavior[ResultT]:
-    _positive_integer(times, "times")
-    return RepeatBehavior(behavior, times)
+) -> BotBehavior[tuple[A2, ...], E2 | SoulFireOperationError, R2]:
+    @fn("repeat")
+    def run(bot: SoulFireBot) -> EffectGen[tuple[A2, ...], E2 | SoulFireOperationError, R2]:
+        count = yield from validate(lambda: _positive_integer(times, "times"))
+        results: list[A2] = []
+        for _ in range(count):
+            results.append((yield from behavior.run(bot)))
+        return tuple(results)
+
+    return define_behavior(run)
 
 
-@dataclass(frozen=True, slots=True)
-class RetryBehavior[ResultT]:
-    behavior: BotBehavior[ResultT]
-    attempts: int = 3
-    delay: float = 0
-    backoff: float = 1
-    maximum_delay: float | None = None
-
-    async def run(self, bot: AsyncSoulFireBot) -> ResultT:
-        attempts = _positive_integer(self.attempts, "attempts")
-        delay = _non_negative_finite(self.delay, "delay")
-        backoff = _positive_finite(self.backoff, "backoff")
-        maximum_delay = (
-            float("inf")
-            if self.maximum_delay is None
-            else _non_negative_finite(self.maximum_delay, "maximum_delay")
-        )
-        for attempt in range(1, attempts + 1):
-            try:
-                return await self.behavior.run(bot)
-            except Exception:
-                if attempt == attempts:
-                    raise
-                await asyncio.sleep(delay)
-                delay = min(delay * backoff, maximum_delay)
-        raise AssertionError("Retry loop exhausted unexpectedly")
-
-
-def retry[ResultT](
-    behavior: BotBehavior[ResultT],
+def retry[A2, E2 = Never, R2 = Never](
+    behavior: BotBehavior[A2, E2, R2],
     *,
     attempts: int = 3,
     delay: float = 0,
     backoff: float = 1,
     maximum_delay: float | None = None,
-) -> RetryBehavior[ResultT]:
-    return RetryBehavior(
-        behavior,
-        attempts=attempts,
-        delay=delay,
-        backoff=backoff,
-        maximum_delay=maximum_delay,
-    )
+    while_: Callable[[E2], bool] = lambda _: True,
+) -> BotBehavior[A2, E2 | SoulFireOperationError, R2]:
+    @fn("retry")
+    def run(bot: SoulFireBot) -> EffectGen[A2, E2 | SoulFireOperationError, R2]:
+        count = yield from validate(lambda: _positive_integer(attempts, "attempts"))
+        initial = yield from validate(lambda: _non_negative_finite(delay, "delay"))
+        factor = yield from validate(lambda: _positive_finite(backoff, "backoff"))
+        cap = (
+            float("inf")
+            if maximum_delay is None
+            else (
+                yield from validate(
+                    lambda maximum_delay=maximum_delay: _non_negative_finite(
+                        maximum_delay, "maximum_delay"
+                    )
+                )
+            )
+        )
+        policy: Schedule[int, E2] = Schedule(
+            lambda attempt, error, _: (
+                (min(initial * factor**attempt, cap), attempt)
+                if attempt < count - 1 and while_(error)
+                else None
+            )
+        )
+        return (yield from behavior.run(bot).pipe(schedule.retry(policy)))
+
+    return define_behavior(run)
 
 
-@dataclass(frozen=True, slots=True)
-class TimeoutBehavior[ResultT]:
-    behavior: BotBehavior[ResultT]
-    seconds: float
-
-    async def run(self, bot: AsyncSoulFireBot) -> ResultT:
-        duration = _positive_finite(self.seconds, "seconds")
-        try:
-            async with asyncio.timeout(duration):
-                return await self.behavior.run(bot)
-        except TimeoutError as error:
-            raise SoulFireBehaviorTimeoutError(duration) from error
-
-
-def timeout[ResultT](
-    behavior: BotBehavior[ResultT],
+def timeout[A2, E2 = Never, R2 = Never](
+    behavior: BotBehavior[A2, E2, R2],
     seconds: float,
-) -> TimeoutBehavior[ResultT]:
-    _positive_finite(seconds, "seconds")
-    return TimeoutBehavior(behavior, seconds)
+) -> BotBehavior[A2, E2 | SoulFireOperationError | SoulFireBehaviorTimeoutError, R2]:
+    @fn("timeout")
+    def run(
+        bot: SoulFireBot,
+    ) -> EffectGen[A2, E2 | SoulFireOperationError | SoulFireBehaviorTimeoutError, R2]:
+        duration = yield from validate(lambda: _positive_finite(seconds, "seconds"))
+        return (
+            yield from behavior.run(bot).pipe(
+                schedule.timeout(duration),
+                catch_tag(schedule.TimeoutException)(
+                    lambda _: fail(SoulFireBehaviorTimeoutError(duration))
+                ),
+            )
+        )
+
+    return define_behavior(run)
 
 
-@dataclass(frozen=True, slots=True)
-class UntilBehavior[ResultT]:
-    behavior: BotBehavior[ResultT]
-    predicate: Callable[[ResultT], bool | Awaitable[bool]]
-    maximum_iterations: int | None = None
-
-    async def run(self, bot: AsyncSoulFireBot) -> ResultT:
+def until[A2, E2 = Never, R2 = Never, EP = Never, RP = Never](
+    behavior: BotBehavior[A2, E2, R2],
+    predicate: Callable[[A2], bool | Effect[bool, EP, RP]],
+    *,
+    maximum_iterations: int | None = None,
+) -> BotBehavior[A2, E2 | EP | SoulFireOperationError | SoulFireBehaviorError, R2 | RP]:
+    @fn("until")
+    def run(
+        bot: SoulFireBot,
+    ) -> EffectGen[A2, E2 | EP | SoulFireOperationError | SoulFireBehaviorError, R2 | RP]:
         maximum = (
             None
-            if self.maximum_iterations is None
-            else _positive_integer(self.maximum_iterations, "maximum_iterations")
+            if maximum_iterations is None
+            else (
+                yield from validate(
+                    lambda maximum_iterations=maximum_iterations: _positive_integer(
+                        maximum_iterations, "maximum_iterations"
+                    )
+                )
+            )
         )
         iteration = 0
         while maximum is None or iteration < maximum:
-            result = await self.behavior.run(bot)
+            result = yield from behavior.run(bot)
             iteration += 1
-            if await _resolve_bool(self.predicate(result)):
+            decision = predicate(result)
+            if decision if isinstance(decision, bool) else (yield from decision):
                 return result
-        raise SoulFireBehaviorError(f"Predicate remained false after {maximum} iterations")
+        return (
+            yield from fail(
+                SoulFireBehaviorError(f"Predicate remained false after {maximum} iterations")
+            )
+        )
+
+    return define_behavior(run)
 
 
-def until[ResultT](
-    behavior: BotBehavior[ResultT],
-    predicate: Callable[[ResultT], bool | Awaitable[bool]],
-    *,
-    maximum_iterations: int | None = None,
-) -> UntilBehavior[ResultT]:
-    return UntilBehavior(behavior, predicate, maximum_iterations)
+def conditional[A2, E2 = Never, R2 = Never, EP = Never, RP = Never](
+    predicate: Callable[[SoulFireBot], bool | Effect[bool, EP, RP]],
+    when_true: BotBehavior[A2, E2, R2],
+    when_false: BotBehavior[A2, E2, R2] | None = None,
+) -> BotBehavior[A2 | None, E2 | EP, R2 | RP]:
+    @fn("conditional")
+    def run(bot: SoulFireBot) -> EffectGen[A2 | None, E2 | EP, R2 | RP]:
+        decision = predicate(bot)
+        if decision if isinstance(decision, bool) else (yield from decision):
+            return (yield from when_true.run(bot))
+        if when_false is not None:
+            return (yield from when_false.run(bot))
+        return (yield from succeed(None))
+
+    return define_behavior(run)
 
 
-@dataclass(frozen=True, slots=True)
-class ConditionalBehavior[ResultT]:
-    predicate: Callable[[AsyncSoulFireBot], bool | Awaitable[bool]]
-    when_true: BotBehavior[ResultT]
-    when_false: BotBehavior[ResultT] | None = None
-
-    async def run(self, bot: AsyncSoulFireBot) -> ResultT | None:
-        if await _resolve_bool(self.predicate(bot)):
-            return await self.when_true.run(bot)
-        if self.when_false is None:
-            return None
-        return await self.when_false.run(bot)
-
-
-def conditional[ResultT](
-    predicate: Callable[[AsyncSoulFireBot], bool | Awaitable[bool]],
-    when_true: BotBehavior[ResultT],
-    when_false: BotBehavior[ResultT] | None = None,
-) -> ConditionalBehavior[ResultT]:
-    return ConditionalBehavior(predicate, when_true, when_false)
-
-
-@dataclass(frozen=True, slots=True)
-class FallbackBehavior[ResultT]:
-    behaviors: tuple[BotBehavior[ResultT], ...]
-
-    async def run(self, bot: AsyncSoulFireBot) -> ResultT:
-        failures: list[Exception] = []
-        for behavior in self.behaviors:
-            try:
-                return await behavior.run(bot)
-            except Exception as error:
-                failures.append(error)
-        raise ExceptionGroup("Every fallback behavior failed", failures)
-
-
-def fallback[ResultT](
-    primary: BotBehavior[ResultT],
-    *alternatives: BotBehavior[ResultT],
-) -> FallbackBehavior[ResultT]:
-    return FallbackBehavior((primary, *alternatives))
-
-
-@dataclass(frozen=True, slots=True)
-class CleanupBehavior[ResultT]:
-    behavior: BotBehavior[ResultT]
-    finalizer: BotBehavior[object]
-
-    async def run(self, bot: AsyncSoulFireBot) -> ResultT:
-        try:
-            result = await self.behavior.run(bot)
-        except Exception as behavior_error:
-            try:
-                await self.finalizer.run(bot)
-            except Exception as finalizer_error:
-                raise ExceptionGroup(
-                    "Behavior and cleanup both failed",
-                    [behavior_error, finalizer_error],
-                ) from None
-            raise
-        await self.finalizer.run(bot)
+def fallback[A2, E2 = Never, R2 = Never](
+    primary: BotBehavior[A2, E2, R2],
+    *alternatives: BotBehavior[A2, E2, R2],
+) -> BotBehavior[A2, E2, R2]:
+    def run(bot: SoulFireBot) -> Effect[A2, E2, R2]:
+        result = primary.run(bot)
+        for behavior in alternatives:
+            result = result.catch_all(lambda _, behavior=behavior: behavior.run(bot))
         return result
 
-
-def cleanup[ResultT](
-    behavior: BotBehavior[ResultT],
-    finalizer: BotBehavior[object],
-) -> CleanupBehavior[ResultT]:
-    return CleanupBehavior(behavior, finalizer)
+    return define_behavior(run)
 
 
-@dataclass(frozen=True, slots=True)
-class ScopedLeaseBehavior[ResultT]:
-    behavior: BotBehavior[ResultT]
-    ttl_seconds: int = 30
-
-    async def run(self, bot: AsyncSoulFireBot) -> ResultT:
-        ttl = _positive_integer(self.ttl_seconds, "ttl_seconds")
-        async with await bot.acquire_control(ttl_seconds=ttl):
-            return await self.behavior.run(bot)
+def cleanup[A2, E2 = Never, R2 = Never](
+    behavior: BotBehavior[A2, E2, R2],
+    finalizer: BotBehavior[object, object],
+) -> BotBehavior[A2, E2, R2]:
+    return define_behavior(lambda bot: ensuring(behavior.run(bot), finalizer.run(bot).or_die()))
 
 
-def scoped_lease[ResultT](
-    behavior: BotBehavior[ResultT],
+def scoped_lease[A2, E2 = Never, R2 = Never](
+    behavior: BotBehavior[A2, E2, R2],
     *,
     ttl_seconds: int = 30,
-) -> ScopedLeaseBehavior[ResultT]:
-    return ScopedLeaseBehavior(behavior, ttl_seconds)
+) -> BotBehavior[A2, E2 | SoulFireOperationError, R2]:
+    @fn("scoped_lease")
+    def run(bot: SoulFireBot) -> EffectGen[A2, E2 | SoulFireOperationError, R2]:
+        @gen
+        def leased() -> EffectGen[A2, E2 | SoulFireOperationError, R2 | Scope]:
+            yield from bot.acquire_control(ttl_seconds=ttl_seconds)
+            return (yield from behavior.run(bot))
+
+        return (yield from scoped(leased))
+
+    return define_behavior(run)
+
+
+@fn("complete_task")
+def _complete_task(
+    stream: Stream[BotTaskEvent, SoulFireOperationError],
+) -> EffectGen[None, SoulFireOperationError]:
+    def latest_task(latest: BotTask | None, event: BotTaskEvent) -> BotTask | None:
+        return event.task if event.HasField("task") else latest
+
+    task = yield from stream.run_fold(None, latest_task)
+    if task is None:
+        return (yield from fail(SoulFireStateError("Task stream ended without a terminal result")))
+    if task.status != BOT_TASK_STATUS_COMPLETED:
+        return (yield from fail(SoulFireTaskError(task)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -341,20 +284,18 @@ class CollectBlocks:
     require_line_of_sight: bool = False
     target_y_range: IntRange | None = None
 
-    async def run(self, bot: AsyncSoulFireBot) -> int:
-        task = await bot.tasks.collect_blocks(
+    @fn("behavior.run")
+    def run(self, bot: SoulFireBot) -> EffectGen[int, SoulFireOperationError]:
+        task = yield from bot.tasks.collect_blocks(
             self.block_ids,
             tags=self.tags,
             count=self.count,
             search_radius=self.search_radius,
             require_line_of_sight=self.require_line_of_sight,
             target_y_range=self.target_y_range,
-            options=PathfindOptions(
-                allow_mining=True,
-                allow_placing=self.allow_placing,
-            ),
+            options=PathfindOptions(allow_mining=True, allow_placing=self.allow_placing),
         )
-        return (await task.result()).blocks_broken
+        return (yield from task.result()).blocks_broken
 
 
 @dataclass(frozen=True, slots=True)
@@ -362,13 +303,15 @@ class FollowEntity:
     entity_id: int
     radius: float = 3
 
-    async def run(self, bot: AsyncSoulFireBot) -> None:
-        async for _ in bot.tasks.run_follow_entity(
-            self.entity_id,
-            distance=self.radius,
-            options=PathfindOptions(allow_mining=False, allow_placing=False),
-        ):
-            pass
+    @fn("behavior.run")
+    def run(self, bot: SoulFireBot) -> EffectGen[None, SoulFireOperationError]:
+        yield from _complete_task(
+            bot.tasks.run_follow_entity(
+                self.entity_id,
+                distance=self.radius,
+                options=PathfindOptions(allow_mining=False, allow_placing=False),
+            )
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -379,23 +322,23 @@ class AttackNearest:
     sprinting: bool = False
     maximum_attacks: int = 0
 
-    async def run(self, bot: AsyncSoulFireBot) -> bool:
-        response = await bot.list_nearby_entities(
-            self.radius,
-            entity_types=self.entity_types,
-            include_players=False,
+    @fn("behavior.run")
+    def run(self, bot: SoulFireBot) -> EffectGen[bool, SoulFireOperationError]:
+        response = yield from bot.list_nearby_entities(
+            self.radius, entity_types=self.entity_types, include_players=False
         )
         if not response.entities:
             return False
         target = response.entities[0]
-        async for _ in bot.tasks.run_attack_entity(
-            target.entity_id,
-            attack_range=self.attack_range,
-            sprinting=self.sprinting,
-            maximum_attacks=self.maximum_attacks,
-            options=PathfindOptions(allow_mining=False, allow_placing=False),
-        ):
-            pass
+        yield from _complete_task(
+            bot.tasks.run_attack_entity(
+                target.entity_id,
+                attack_range=self.attack_range,
+                sprinting=self.sprinting,
+                maximum_attacks=self.maximum_attacks,
+                options=PathfindOptions(allow_mining=False, allow_placing=False),
+            )
+        )
         return True
 
 
@@ -408,16 +351,18 @@ class AutoEat:
     complete_when_no_food: bool = False
     restore_selected_slot: bool = True
 
-    async def run(self, bot: AsyncSoulFireBot) -> None:
-        async for _ in bot.tasks.run_auto_eat(
-            self.food_item_ids,
-            food_level=self.food_level,
-            check_interval_ticks=self.check_interval_ticks,
-            maximum_meals=self.maximum_meals,
-            complete_when_no_food=self.complete_when_no_food,
-            restore_selected_slot=self.restore_selected_slot,
-        ):
-            pass
+    @fn("behavior.run")
+    def run(self, bot: SoulFireBot) -> EffectGen[None, SoulFireOperationError]:
+        yield from _complete_task(
+            bot.tasks.run_auto_eat(
+                self.food_item_ids,
+                food_level=self.food_level,
+                check_interval_ticks=self.check_interval_ticks,
+                maximum_meals=self.maximum_meals,
+                complete_when_no_food=self.complete_when_no_food,
+                restore_selected_slot=self.restore_selected_slot,
+            )
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -425,12 +370,13 @@ class AutoRespawn:
     respawn_delay_ticks: int = 0
     maximum_respawns: int = 0
 
-    async def run(self, bot: AsyncSoulFireBot) -> None:
-        async for _ in bot.tasks.run_auto_respawn(
-            respawn_delay_ticks=self.respawn_delay_ticks,
-            maximum_respawns=self.maximum_respawns,
-        ):
-            pass
+    @fn("behavior.run")
+    def run(self, bot: SoulFireBot) -> EffectGen[None, SoulFireOperationError]:
+        yield from _complete_task(
+            bot.tasks.run_auto_respawn(
+                respawn_delay_ticks=self.respawn_delay_ticks, maximum_respawns=self.maximum_respawns
+            )
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -440,14 +386,16 @@ class AutoTotem:
     complete_when_no_totem: bool = False
     replace_occupied_offhand: bool = False
 
-    async def run(self, bot: AsyncSoulFireBot) -> None:
-        async for _ in bot.tasks.run_auto_totem(
-            check_interval_ticks=self.check_interval_ticks,
-            maximum_equips=self.maximum_equips,
-            complete_when_no_totem=self.complete_when_no_totem,
-            replace_occupied_offhand=self.replace_occupied_offhand,
-        ):
-            pass
+    @fn("behavior.run")
+    def run(self, bot: SoulFireBot) -> EffectGen[None, SoulFireOperationError]:
+        yield from _complete_task(
+            bot.tasks.run_auto_totem(
+                check_interval_ticks=self.check_interval_ticks,
+                maximum_equips=self.maximum_equips,
+                complete_when_no_totem=self.complete_when_no_totem,
+                replace_occupied_offhand=self.replace_occupied_offhand,
+            )
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -456,13 +404,15 @@ class AutoArmor:
     maximum_equips: int = 0
     complete_when_no_upgrade: bool = False
 
-    async def run(self, bot: AsyncSoulFireBot) -> None:
-        async for _ in bot.tasks.run_auto_armor(
-            check_interval_ticks=self.check_interval_ticks,
-            maximum_equips=self.maximum_equips,
-            complete_when_no_upgrade=self.complete_when_no_upgrade,
-        ):
-            pass
+    @fn("behavior.run")
+    def run(self, bot: SoulFireBot) -> EffectGen[None, SoulFireOperationError]:
+        yield from _complete_task(
+            bot.tasks.run_auto_armor(
+                check_interval_ticks=self.check_interval_ticks,
+                maximum_equips=self.maximum_equips,
+                complete_when_no_upgrade=self.complete_when_no_upgrade,
+            )
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -476,24 +426,15 @@ class BuildPlacement:
 class Build:
     placements: Sequence[BuildPlacement]
 
-    async def run(self, bot: AsyncSoulFireBot) -> int:
+    @fn("behavior.run")
+    def run(self, bot: SoulFireBot) -> EffectGen[int, SoulFireOperationError]:
         placed = 0
         for placement in self.placements:
             if placement.hotbar_slot is not None:
-                await bot.select_hotbar(placement.hotbar_slot)
-            await bot.place_block(
-                placement.against,
-                placement.face,
-                HAND_MAIN,
-            )
+                yield from bot.select_hotbar(placement.hotbar_slot)
+            yield from bot.place_block(placement.against, placement.face, HAND_MAIN)
             placed += 1
         return placed
-
-
-async def _resolve_bool(value: bool | Awaitable[bool]) -> bool:
-    if isinstance(value, bool):
-        return value
-    return await value
 
 
 def _positive_integer(value: int, name: str) -> int:

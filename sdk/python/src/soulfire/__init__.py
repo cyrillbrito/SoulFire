@@ -1,6 +1,6 @@
 from ._install import LocalSoulFireServer
 from .actions import SoulFireActionError
-from .admin import AsyncSoulFireAdmin, SoulFireAdmin
+from .admin import SoulFireAdmin
 from .behaviors import (
     AttackNearest,
     AutoArmor,
@@ -10,22 +10,11 @@ from .behaviors import (
     BotBehavior,
     Build,
     BuildPlacement,
-    CleanupBehavior,
     CollectBlocks,
-    ConditionalBehavior,
-    FallbackBehavior,
     FollowEntity,
     FunctionBehavior,
-    ParallelBehavior,
-    RaceBehavior,
-    RepeatBehavior,
-    RetryBehavior,
-    ScopedLeaseBehavior,
-    SequenceBehavior,
     SoulFireBehaviorError,
     SoulFireBehaviorTimeoutError,
-    TimeoutBehavior,
-    UntilBehavior,
     cleanup,
     conditional,
     define_behavior,
@@ -40,12 +29,7 @@ from .behaviors import (
     timeout,
     until,
 )
-from .bot import (
-    AsyncSoulFireBot,
-    AsyncSoulFireBotControlLease,
-    SoulFireBot,
-    SoulFireBotControlLease,
-)
+from .bot import SoulFireBot, SoulFireBotControlLease
 from .bot_live_pb2 import (
     BotChunkEvent,
     BotEvent,
@@ -59,14 +43,8 @@ from .bot_live_pb2 import (
     TitleEventKind,
     WaitForChunksResponse,
 )
-from .camera import (
-    AsyncSoulFireCamera,
-    CameraRenderOptions,
-    SoulFireCamera,
-    WorldMapOptions,
-    decode_camera_image,
-)
-from .client import AsyncSoulFire, AsyncSoulFireInstance, SoulFire, SoulFireInstance
+from .camera import CameraRenderOptions, SoulFireCamera, WorldMapOptions, decode_camera_image
+from .client import SoulFire, SoulFireInstance, SoulFireService, connection_layer
 from .common_pb2 import BlockPosition, WorldPosition
 from .connection import (
     SDK_API_VERSION,
@@ -86,17 +64,17 @@ from .domain_pb2 import (
     TextComponent,
     Vec3,
 )
-from .errors import RpcFailureContext, SoulFireRpcError
-from .example_plugin import (
-    AsyncExamplePluginClient,
-    ExamplePluginClient,
-    async_example_plugin,
-    example_plugin,
+from .errors import (
+    RpcFailureContext,
+    SoulFireInstallError,
+    SoulFireOperationError,
+    SoulFireRpcError,
+    SoulFireStateError,
+    SoulFireTimeoutError,
+    SoulFireValidationError,
 )
+from .example_plugin import ExamplePluginClient, example_plugin
 from .fleet import (
-    AsyncFleetTaskMember,
-    AsyncSoulFireFleet,
-    AsyncSoulFireFleetTaskGroup,
     FleetAssignment,
     FleetBot,
     FleetMetadataSelector,
@@ -116,15 +94,7 @@ from .fleet import (
     SoulFireFleetTaskGroup,
 )
 from .instance_live_pb2 import InstanceEvent, InstanceEventFilter
-from .pathfinding import (
-    AsyncSoulFirePathfinder,
-    BlockTarget,
-    EntityTarget,
-    Goals,
-    SoulFirePathfinder,
-    WorldTarget,
-    goals,
-)
+from .pathfinding import BlockTarget, EntityTarget, Goals, SoulFirePathfinder, WorldTarget, goals
 from .plugin_api_pb2 import (
     PluginPermissionDefault,
     PluginPermissionDescriptor,
@@ -132,9 +102,6 @@ from .plugin_api_pb2 import (
     PluginPermissionScope,
 )
 from .plugins import (
-    AsyncPluginCatalog,
-    AsyncReflectivePlugin,
-    AsyncSoulFirePluginModule,
     PluginCatalog,
     ReflectiveMessage,
     ReflectivePlugin,
@@ -145,7 +112,7 @@ from .plugins import (
     SoulFirePluginNotFoundError,
     TypedPluginEvent,
 )
-from .protocol import AsyncSoulFireProtocol, SoulFireProtocol
+from .protocol import SoulFireProtocol
 from .protocol_pb2 import (
     PACKET_DIRECTION_CLIENTBOUND,
     PACKET_DIRECTION_SERVERBOUND,
@@ -155,12 +122,6 @@ from .protocol_pb2 import (
     RawPacketEvent,
 )
 from .semantic import (
-    AsyncSoulFireChat,
-    AsyncSoulFireContainer,
-    AsyncSoulFireInventory,
-    AsyncSoulFireRecipes,
-    AsyncSoulFireRegistry,
-    AsyncSoulFireWorld,
     ChatMatch,
     ChatMatcher,
     InventoryRankingOptions,
@@ -174,7 +135,6 @@ from .semantic import (
     match_chat,
 )
 from .session import (
-    AsyncBotSession,
     BotBossBarState,
     BotEnvironmentState,
     BotScoreboardObjective,
@@ -187,9 +147,8 @@ from .session import (
     empty_bot_session_state,
     reduce_bot_session_state,
 )
+from .streams import Stream
 from .tasks import (
-    AsyncSoulFireTask,
-    AsyncSoulFireTasks,
     ContainerTransferSpec,
     LoadoutRequirementSpec,
     SchematicBlock,
@@ -221,30 +180,6 @@ __all__ = [
     "PACKET_DIRECTION_SERVERBOUND",
     "SDK_API_VERSION",
     "SDK_VERSION",
-    "AsyncBotSession",
-    "AsyncExamplePluginClient",
-    "AsyncFleetTaskMember",
-    "AsyncPluginCatalog",
-    "AsyncReflectivePlugin",
-    "AsyncSoulFire",
-    "AsyncSoulFireAdmin",
-    "AsyncSoulFireBot",
-    "AsyncSoulFireBotControlLease",
-    "AsyncSoulFireCamera",
-    "AsyncSoulFireChat",
-    "AsyncSoulFireContainer",
-    "AsyncSoulFireFleet",
-    "AsyncSoulFireFleetTaskGroup",
-    "AsyncSoulFireInstance",
-    "AsyncSoulFireInventory",
-    "AsyncSoulFirePathfinder",
-    "AsyncSoulFirePluginModule",
-    "AsyncSoulFireProtocol",
-    "AsyncSoulFireRecipes",
-    "AsyncSoulFireRegistry",
-    "AsyncSoulFireTask",
-    "AsyncSoulFireTasks",
-    "AsyncSoulFireWorld",
     "AttackNearest",
     "AutoArmor",
     "AutoEat",
@@ -279,9 +214,7 @@ __all__ = [
     "ChatMatch",
     "ChatMatcher",
     "ChunkEventKind",
-    "CleanupBehavior",
     "CollectBlocks",
-    "ConditionalBehavior",
     "ContainerTransferSpec",
     "CreativeItemStack",
     "EntityReference",
@@ -291,7 +224,6 @@ __all__ = [
     "EstimateDigTimeResponse",
     "EstimateExplosionDamageResponse",
     "ExamplePluginClient",
-    "FallbackBehavior",
     "FleetAssignment",
     "FleetBot",
     "FleetMetadataSelector",
@@ -320,7 +252,6 @@ __all__ = [
     "LocalSoulFireServer",
     "PacketDirection",
     "PacketSchema",
-    "ParallelBehavior",
     "PlayerSnapshot",
     "PluginCatalog",
     "PluginPermissionDefault",
@@ -331,21 +262,16 @@ __all__ = [
     "QueryEntitiesResponse",
     "QueryRegion",
     "QuerySort",
-    "RaceBehavior",
     "RawPacketEvent",
     "RaycastResponse",
     "ReflectiveMessage",
     "ReflectivePlugin",
     "ReflectivePluginEvent",
-    "RepeatBehavior",
     "RequiredPlugin",
     "ResourcePackEventKind",
     "ResourcePackResponse",
-    "RetryBehavior",
     "RpcFailureContext",
     "SchematicBlock",
-    "ScopedLeaseBehavior",
-    "SequenceBehavior",
     "ServerMetadata",
     "SoulFire",
     "SoulFireActionError",
@@ -362,8 +288,10 @@ __all__ = [
     "SoulFireContainerClosedError",
     "SoulFireFleet",
     "SoulFireFleetTaskGroup",
+    "SoulFireInstallError",
     "SoulFireInstance",
     "SoulFireInventory",
+    "SoulFireOperationError",
     "SoulFirePathfinder",
     "SoulFirePluginCompatibilityError",
     "SoulFirePluginDescriptorError",
@@ -373,25 +301,28 @@ __all__ = [
     "SoulFireRecipes",
     "SoulFireRegistry",
     "SoulFireRpcError",
+    "SoulFireService",
+    "SoulFireStateError",
     "SoulFireTask",
     "SoulFireTaskError",
     "SoulFireTasks",
+    "SoulFireTimeoutError",
+    "SoulFireValidationError",
     "SoulFireWorld",
     "SphereRegion",
+    "Stream",
     "TextComponent",
-    "TimeoutBehavior",
     "TitleEventKind",
     "TypedPluginEvent",
-    "UntilBehavior",
     "UserPluginPermissionGrant",
     "Vec3",
     "WaitForChunksResponse",
     "WorldMapOptions",
     "WorldPosition",
     "WorldTarget",
-    "async_example_plugin",
     "cleanup",
     "conditional",
+    "connection_layer",
     "decode_camera_image",
     "define_behavior",
     "empty_bot_session_state",

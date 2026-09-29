@@ -1,5 +1,5 @@
-import { Deferred, Effect, Exit } from "effect";
-import { describe, expect, it } from "vitest";
+import { Context, Data, Deferred, Effect, Exit } from "effect";
+import { describe, expect, expectTypeOf, it } from "vitest";
 import {
   cleanup,
   defineBehavior,
@@ -113,4 +113,21 @@ describe("Effect behavior combinators", () => {
         expect(released).toBe(true);
       }),
     ));
+});
+
+class Counter extends Context.Tag("test/Counter")<Counter, { readonly value: number }>() {}
+class CustomFailure extends Data.TaggedError("CustomFailure")<{}> {}
+
+it("preserves custom behavior errors and required services through composition", () => {
+  const dependent = defineBehavior(() => Effect.gen(function* () {
+    const counter = yield* Counter;
+    if (counter.value < 0) return yield* Effect.fail(new CustomFailure());
+    return counter.value;
+  }));
+  const composed = sequence(dependent, defineBehavior(() => Effect.succeed("done")));
+  expectTypeOf(composed.run(effectBot)).toEqualTypeOf<Effect.Effect<readonly [number, string], CustomFailure, Counter>>();
+  return Effect.runPromise(composed.run(effectBot).pipe(
+    Effect.provideService(Counter, { value: 4 }),
+    Effect.tap((result) => Effect.sync(() => expect(result).toEqual([4, "done"]))),
+  ));
 });

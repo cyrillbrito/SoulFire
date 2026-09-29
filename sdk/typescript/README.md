@@ -455,8 +455,10 @@ const results = yield* workflow.run(bot);
 
 The SDK includes `sequence`, `parallel`, `race`, `repeat`, `retry`, `timeout`,
 `until`, `conditional`, `fallback`, `cleanup`, and `scopedLease`. Effect uses
-fiber interruption. The combinators use standard Effect operators for
-sequencing, concurrency, retries, races, and resource cleanup.
+fiber interruption. The combinators preserve custom error and service types,
+including the result tuple for `sequence` and `parallel`. Retry accepts a
+`while` predicate to restrict retries. Cleanup failures remain visible as
+defects, and losing fibers finish cleanup before a race returns.
 
 ## Call plugin APIs
 

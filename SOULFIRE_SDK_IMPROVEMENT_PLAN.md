@@ -90,7 +90,7 @@ SoulFire can call the first official SDK release successful when:
 - TypeScript exposes Effect-native errors, streams, scopes, layers, retries, and interruption as its canonical API.
 - Async TypeScript applications run scoped SDK workflows through `Effect.runPromise`.
 - Python uses the newest stable CPython minor selected for the SDK release and does not carry compatibility shims for older Python versions.
-- Python exposes native sync and async clients with shared domain models and behavior.
+- Python exposes one effect-py API with shared domain models and scoped resources.
 - SoulFireClient consumes the official protocol and SDK instead of maintaining a separate copy of the API.
 - The SDK, protocol, and plugin authoring documentation is published and maintained on `soulfiremc.com`.
 - Core and plugin APIs have automated compatibility checks.
@@ -118,7 +118,7 @@ TypeScript and Python must share concepts and capabilities, but they should not 
 
 The TypeScript SDK is Effect-first. Effect owns typed failures, structured concurrency, interruption, resource scopes, streams, retry schedules, dependency injection, and observability.
 
-The Python SDK uses native modern Python. It owns resources with context managers, exposes streams through iterators and async iterators, uses structured concurrency from the standard library, and reports failures through a typed exception hierarchy.
+The Python SDK uses effect-py. Native effects own typed failures, service dependencies, scoped resources, fibers, schedules, and tracing. SDK pull streams acquire one cursor per subscription and close it through native scopes. Generated ConnectRPC clients remain the async and synchronous transport boundary.
 
 Generated protobuf and transport clients remain implementation details in both SDKs.
 
@@ -358,7 +358,7 @@ SoulFireBot
 └── protocol
 ```
 
-The TypeScript and Python SDKs should share the same conceptual hierarchy. TypeScript uses camel case, `Effect`, `Stream`, `Scope`, and `Layer`. Python uses snake case, context managers, iterators, async iterators, and native structured concurrency.
+The TypeScript and Python SDKs should share the same conceptual hierarchy. TypeScript uses camel case, `Effect`, `Stream`, `Scope`, and `Layer`. Python uses snake case, effect-py effects, scopes, layers, and SDK pull streams.
 
 ## Language-native SDK design
 
@@ -556,82 +556,53 @@ Release policy:
 - Document the exact Python requirement in package metadata, installation docs, and release notes.
 - Keep `requires-python`, Ruff's target, Pyright's target, generated code, CI images, and documentation on the same CPython minor.
 
-The Python SDK should use new standard-library capabilities when they improve correctness or clarity, including:
-
-- `asyncio.TaskGroup` for structured multi-bot concurrency.
-- `asyncio.timeout` for scoped deadlines.
-- Native cancellation propagation.
-- `ExceptionGroup` and `except*` for concurrent failures.
-- Async context managers for connections, sessions, leases, subscriptions, and local servers.
-- Async iterators for events, progress, logs, and state changes.
-- Modern typing syntax, `Protocol`, `Self`, precise generics, overloads, and exhaustive enums.
-- Python 3.14 deferred annotations and `annotationlib` when runtime type inspection or plugin binding generation needs them.
-- Frozen, slotted dataclasses for ergonomic domain values when generated protobuf messages should not be public.
-- Standard-library queue shutdown and task introspection APIs when they help stream cleanup and diagnostics.
-- `compression.zstd` when the protocol or local cache benefits from negotiated Zstandard compression.
-
-Do not adopt a new API only because it is new. Each use must improve correctness, observability, performance, typing, or maintenance for an SDK use case. Free-threaded CPython support should begin as a CI compatibility job and become a documented guarantee only after the ConnectRPC and protobuf stack is proven safe under it.
-
 #### Python client shape
 
-Provide two first-class clients over shared models and operation descriptions:
+The Python SDK uses one effect-py implementation. The selected dependency is
+`effect-python==0.1.0a2`, imported as `effect_py`. It is an alpha release, so
+runtime upgrades require SDK validation before changing the pin.
 
-- `AsyncSoulFire` is the primary automation client.
-- `SoulFire` is the synchronous client for scripts, notebooks, and simple tools.
-
-```python
-async with AsyncSoulFire.connect(
-    "https://soulfire.example.com",
-    token=os.environ["SOULFIRE_TOKEN"],
-) as soulfire:
-    bot = await soulfire.instance(instance_id).bot(bot_id)
-
-    async with asyncio.TaskGroup() as tasks:
-        tasks.create_task(bot.chat.send("Ready"))
-        tasks.create_task(bot.wait_for_spawn())
-
-    async for event in bot.events():
-        print(event)
-```
-
-Synchronous usage should remain direct:
+- `SoulFire` is the single high-level client.
+- Unary operations return native `Effect[A, E, R]` values.
+- `@fn` and `EffectGen` keep generator workflows strictly typed.
+- Connections, sessions, leases, containers, and local servers use `Scope`.
+- Layers provide shared connections and replaceable services.
+- Streams open a scoped cursor for each subscriber.
+- Native fibers inherit services and await interruption cleanup.
+- Schedules provide typed retry and timeout behavior.
+- Expected errors remain in `E`; unexpected exceptions remain defects.
+- Generated ConnectRPC clients expose raw async and synchronous calls.
 
 ```python
-with SoulFire.connect(
-    "https://soulfire.example.com",
-    token=os.environ["SOULFIRE_TOKEN"],
-) as soulfire:
-    bot = soulfire.instance(instance_id).bot(bot_id)
-    bot.chat.send("Ready")
+from effect_py import gen, run_async, scoped, sync
+from soulfire import SoulFire
+
+
+@gen
+def program():
+    client = yield from SoulFire.connect("https://soulfire.example.com", token="token")
+    bot = client.instance(instance_id).bot(bot_id)
+    yield from bot.chat.send("Ready")
+    yield from bot.events().run_for_each(lambda event: sync(lambda: print(event)))
+
+
+await run_async(scoped(program).or_die())
 ```
 
-The synchronous client must use a real synchronous transport or one managed blocking portal. It must not create and destroy an event loop for each method call.
+The host runs a complete workflow at one runtime boundary. `run_sync` is for
+synchronous effects; RPC operations require `run_async`. Do not recreate a
+runtime for each operation or maintain duplicate high-level sync/async classes.
 
-Both clients should:
+`effect-py` does not provide a native Stream implementation in this release.
+The SDK's pull stream composes its native effects, scopes, and fibers. It
+provides typed transformation, bounded merging, folds, and scoped consumers.
 
-- Share the same domain models, selectors, task handles, error hierarchy, plugin descriptors, and semantic operation definitions.
-- Use normal typed exceptions with stable error codes and structured context.
-- Preserve cancellation and deadlines.
-- Close resources deterministically.
-- Keep generated protobuf objects below the ergonomic surface.
-- Provide `py.typed` metadata and pass strict static type checking.
-- Generate plugin clients for both sync and async use.
-- Run the same behavioral capability suite.
-
-#### AnyIO compatibility
-
-Native modern Python remains the default. Evaluate AnyIO compatibility only when the selected ConnectRPC transport can preserve correct behavior on its supported backends.
-
-If practical:
-
-- Add an optional `soulfire.anyio` integration rather than changing the primary API.
-- Test cancellation, task groups, timeouts, and stream cleanup under every claimed backend.
-- Do not advertise Trio compatibility while any transport or callback path still assumes asyncio.
-- Keep the core domain model independent of the event-loop library.
+The transport and async runtime use asyncio. No Trio or AnyIO compatibility
+is claimed. Python keeps its modern typing syntax and frozen domain dataclasses.
 
 ### Language design acceptance suite
 
-Before freezing the APIs, implement the same representative programs in Effect TypeScript, an async TypeScript host, async Python, and sync Python:
+Before freezing the APIs, implement the same representative programs in Effect TypeScript, an async TypeScript host, and effect-py Python:
 
 1. Connect, negotiate capabilities, and close cleanly.
 2. Build a chat bot with a cancellable event stream.
@@ -684,12 +655,12 @@ const inspectServer = Effect.scoped(
 Python:
 
 ```python
-async with AsyncSoulFire.connect(
+client = yield from SoulFire.connect(
     "https://soulfire.example.com",
     token=os.environ["SOULFIRE_TOKEN"],
-) as soulfire:
-    print(soulfire.server.version)
-    print(soulfire.capabilities.supports("bot.tasks.v1"))
+)
+print(client.server.version)
+print(client.capabilities.supports("bot.tasks.v1"))
 ```
 
 The SDK should fail early with a typed compatibility error when the server is too old, too new, or missing a required plugin.
@@ -724,7 +695,7 @@ for await (const message of session.chat.events()) {
 - Keep read-only state maps for entities, players, blocks, inventory, effects, teams, boss bars, and scoreboards.
 - Expose typed event filters.
 - Support `waitFor` and `once` helpers.
-- Close cleanly through an Effect `Scope`, host cancellation at the Effect runtime boundary, or a Python context manager.
+- Close cleanly through native scopes and host cancellation at the runtime boundary.
 
 ### Event envelope
 
@@ -984,7 +955,7 @@ const response = await bot.chat.waitFor({
 });
 ```
 
-Python should offer equivalent async helpers and lead with async iterators. Optional callback registration may be provided as a convenience built on the same event stream.
+Python offers equivalent effect-based helpers and scoped pull streams. Event handlers return effects and remain owned by the stream consumer.
 
 ## Player actions
 
@@ -1126,13 +1097,12 @@ await task.cancel();
 Python:
 
 ```python
-task = await bot.tasks.collect_blocks(
-    selector=BlockSelector(tags=["minecraft:logs"]),
+task = yield from bot.tasks.collect_blocks(
+    block_ids=(), tags=("minecraft:logs",),
     count=32,
 )
 
-async for update in task.events():
-    print(update.status, update.progress)
+yield from task.events().run_for_each(lambda update: sync(lambda: print(update)))
 ```
 
 ## Pathfinder v2
@@ -2499,8 +2469,8 @@ Expand that section using the Diátaxis structure below. Documentation work is p
 
 - Build your first SoulFire bot with Effect.
 - Run a scoped SoulFire workflow from an async host.
-- Build your first async Python bot.
-- Build your first synchronous Python bot.
+- Build your first effect-py Python bot.
+- Run a complete Python workflow from a synchronous script.
 - Build a chat bot.
 - Collect and craft an item.
 - Build a structure.
@@ -2514,7 +2484,7 @@ Expand that section using the Diátaxis structure below. Documentation work is p
 - Provide SoulFire through an Effect `Layer`.
 - Run SoulFire Effects from a Promise application.
 - Convert SoulFire streams to async iterables and readable streams.
-- Use Python task groups for concurrent bot work.
+- Use scoped Python fibers for concurrent bot work.
 - Resume event streams.
 - Cancel and replace tasks.
 - Coordinate multiple SDK controllers.
@@ -2570,7 +2540,7 @@ Deliver:
 - Effect-first TypeScript architecture decision.
 - Host and transport interoperability boundaries.
 - Newest-stable-Python version policy.
-- Sync and async Python client architecture.
+- One effect-py Python client architecture.
 - Language design acceptance programs.
 
 Exit criteria:
@@ -2578,7 +2548,7 @@ Exit criteria:
 - Core protocol has one source of truth.
 - SDK and server compatibility is checked at connection time.
 - A protocol change cannot merge without compatibility validation.
-- Effect, async-host integration, async Python, and sync Python API shapes are approved before the high-level surface expands.
+- Effect, async-host integration, and effect-py Python API shapes are approved before the high-level surface expands.
 
 ### Phase 1: Plugin RPC foundation
 
@@ -2613,7 +2583,7 @@ Deliver:
 - Cancellation and cleanup.
 - Effect services, layers, scopes, streams, schedules, and tagged errors.
 - Async-host integration through one scoped Effect workflow.
-- Modern async and sync Python clients.
+- One modern effect-py Python client.
 - TypeScript and Python parity tests.
 - Effect and Promise interoperability tests.
 - Strict Python type checking.
@@ -2686,7 +2656,7 @@ Deliver:
 - TypeScript plugin SDK generator.
 - Python plugin SDK generator.
 - Effect clients generated from one plugin operation model.
-- Async and sync Python clients generated from one plugin operation model.
+- Effect-based Python clients generated from one plugin operation model.
 - Reflective invocation.
 - SDK module registration.
 - Plugin event and task decoders.
@@ -2810,7 +2780,7 @@ SoulFire is ready to be recommended as a general mineflayer replacement when:
 - TypeScript is Effect-first across core services, plugins, streams, tasks, errors, resource scopes, and documentation.
 - Async hosts run complete scoped workflows with `Effect.runPromise` and forward cancellation through `AbortSignal`.
 - The Python package requires the newest stable CPython selected for the release and uses its useful modern APIs without older-version shims.
-- Async and sync Python clients pass the same behavioral capability suite and strict type checking.
+- The effect-py Python client passes the behavioral capability suite and strict type checking.
 - `BotSession` provides reliable synchronized state.
 - Instance streams scale to fleets.
 - Long-running work uses server tasks.
@@ -2842,7 +2812,7 @@ It should be presented as the official programming environment for Minecraft aut
 - Scalable enough for fleets.
 - Extensible enough for server-specific and third-party capabilities.
 - Effect-native in TypeScript while remaining accessible to ordinary Promise applications.
-- Native to the newest stable Python with modern sync and async APIs.
+- Native effect-py workflows on the selected modern Python baseline.
 - Typed and discoverable across TypeScript and Python.
 - Open-ended through plugin-defined RPCs, tasks, events, and low-level protocol access.
 

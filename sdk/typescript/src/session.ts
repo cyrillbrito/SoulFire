@@ -157,9 +157,10 @@ export type BotEventStreamFactory = (
  */
 export class BotSession {
   #state: BotSessionState = emptyBotSessionState();
+  #failure: Cause.Cause<SoulFireOperationError> | undefined;
 
   private constructor(
-    private readonly eventsHub: PubSub.PubSub<BotEvent>,
+    private readonly eventsHub: PubSub.PubSub<Exit.Exit<BotEvent, SoulFireOperationError>>,
     private readonly ready: Deferred.Deferred<void, SoulFireOperationError>,
     private readonly scope: Scope.CloseableScope,
   ) {}
@@ -171,7 +172,7 @@ export class BotSession {
     return Effect.gen(function* () {
       const scope = yield* Scope.make();
       yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
-      const events = yield* PubSub.sliding<BotEvent>(SUBSCRIBER_BUFFER_SIZE);
+      const events = yield* PubSub.sliding<Exit.Exit<BotEvent, SoulFireOperationError>>(SUBSCRIBER_BUFFER_SIZE);
       const ready = yield* Deferred.make<void, SoulFireOperationError>();
       const session = new BotSession(events, ready, scope);
       yield* Scope.addFinalizer(scope, PubSub.shutdown(events));
@@ -197,8 +198,10 @@ export class BotSession {
   }
 
   /** Subscribes lazily; slow readers lose the oldest buffered events. */
-  public events(): Stream.Stream<BotEvent> {
-    return Stream.fromPubSub(this.eventsHub);
+  public events(): Stream.Stream<BotEvent, SoulFireOperationError> {
+    return Stream.suspend(() => this.#failure === undefined
+      ? Stream.fromPubSub(this.eventsHub).pipe(Stream.mapEffect((event) => event))
+      : Stream.failCause(this.#failure));
   }
 
   public waitFor(
@@ -225,10 +228,9 @@ export class BotSession {
           Effect.timeoutFail({
             duration: options.timeoutMs,
             onTimeout: () =>
-              operationError(
-                "session.waitFor",
-                new Error("Timed out waiting for a bot event"),
-              ),
+              new SoulFireTimeoutError({
+                operation: "session.waitFor", message: "Timed out waiting for a bot event",
+              }),
           }),
         );
   }
@@ -261,7 +263,7 @@ export class BotSession {
             receivedEvent = true;
             delay = DEFAULT_RECONNECT_DELAY_MS;
             yield* Deferred.succeed(this.ready, undefined);
-            yield* PubSub.publish(this.eventsHub, event);
+            yield* PubSub.publish(this.eventsHub, Exit.succeed(event));
           })),
           Effect.exit,
         );
@@ -269,8 +271,9 @@ export class BotSession {
           const failure = Cause.failureOption(exit.cause);
           if (!receivedEvent || Option.isNone(failure) || failure.value._tag !== "SoulFireRpcError" || !failure.value.retryable) {
             yield* Deferred.failCause(this.ready, exit.cause);
-            yield* PubSub.shutdown(this.eventsHub);
-            return yield* Effect.failCause(exit.cause);
+            this.#failure = exit.cause;
+            yield* PubSub.publish(this.eventsHub, Exit.failCause(exit.cause));
+            return;
           }
         }
         yield* Effect.sleep(delay);

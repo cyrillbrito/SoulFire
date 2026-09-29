@@ -1,13 +1,31 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
-import queue
-import threading
-from collections.abc import AsyncIterator, Callable, Iterator, Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Protocol
+
+from effect_py import (
+    Effect,
+    EffectGen,
+    Fiber,
+    Scope,
+    acquire_release,
+    fail,
+    fn,
+    fork,
+    from_async,
+    gen,
+    join,
+    schedule,
+    sleep,
+    sync,
+)
+from effect_py.cause import Die, Fail
+from effect_py.errors import catch_tag
+from effect_py.exit import Exit, Failure, Success
+from effect_py.fiber import interrupt
 
 from .bot_live_pb2 import (
     BOSS_BAR_EVENT_REMOVE,
@@ -49,10 +67,17 @@ from .bot_live_pb2 import (
 from .bot_pb2 import BotInventoryStateResponse, BotLiveState, BotStatus
 from .common_pb2 import BlockPosition
 from .domain_pb2 import BlockSnapshot, EntitySnapshot, TextComponent
+from .errors import (
+    SoulFireOperationError,
+    SoulFireRpcError,
+    SoulFireStateError,
+    SoulFireTimeoutError,
+)
+from .streams import END, Cursor, End, Item, Stream
 
 _DEFAULT_RECONNECT_DELAY = 0.25
 _MAX_RECONNECT_DELAY = 5.0
-_SUBSCRIBER_BUFFER_SIZE = 1_024
+_SUBSCRIBER_BUFFER_SIZE = 1024
 _CLOSED = object()
 
 
@@ -140,249 +165,6 @@ class BotSessionOptions:
     heartbeat_interval_seconds: int = 15
 
 
-class AsyncBotEventStreamFactory(Protocol):
-    def __call__(self, request: WatchBotEventsRequest) -> AsyncIterator[BotEvent]: ...
-
-
-class BotEventStreamFactory(Protocol):
-    def __call__(self, request: WatchBotEventsRequest) -> Iterator[BotEvent]: ...
-
-
-class AsyncBotSession:
-    __slots__ = (
-        "_closed",
-        "_events",
-        "_options",
-        "_ready",
-        "_run_task",
-        "_state",
-        "_stream",
-    )
-
-    def __init__(
-        self,
-        stream: AsyncBotEventStreamFactory,
-        options: BotSessionOptions,
-    ) -> None:
-        self._stream = stream
-        self._options = options
-        self._state = empty_bot_session_state()
-        self._events: set[asyncio.Queue[BotEvent | object]] = set()
-        self._closed = False
-        self._ready = asyncio.get_running_loop().create_future()
-        self._run_task = asyncio.create_task(self._consume())
-
-    @classmethod
-    async def open(
-        cls,
-        stream: AsyncBotEventStreamFactory,
-        options: BotSessionOptions | None = None,
-    ) -> AsyncBotSession:
-        session = cls(stream, options or BotSessionOptions())
-        await session._ready
-        return session
-
-    @property
-    def state(self) -> BotSessionState:
-        return self._state
-
-    async def events(self) -> AsyncIterator[BotEvent]:
-        events: asyncio.Queue[BotEvent | object] = asyncio.Queue(maxsize=_SUBSCRIBER_BUFFER_SIZE)
-        self._events.add(events)
-        try:
-            while True:
-                event = await events.get()
-                if event is _CLOSED:
-                    return
-                assert isinstance(event, BotEvent)
-                yield event
-        finally:
-            self._events.discard(events)
-
-    async def wait_for(
-        self,
-        predicate: Callable[[BotEvent, BotSessionState], bool],
-        *,
-        timeout: float | None = None,
-    ) -> BotEvent:
-        async def wait() -> BotEvent:
-            async for event in self.events():
-                if predicate(event, self._state):
-                    return event
-            raise RuntimeError("Bot session closed before the expected event")
-
-        return await asyncio.wait_for(wait(), timeout)
-
-    async def once(self, event_name: str, *, timeout: float | None = None) -> BotEvent:
-        return await self.wait_for(
-            lambda event, _: event.WhichOneof("event") == event_name,
-            timeout=timeout,
-        )
-
-    async def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        self._run_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await self._run_task
-        for events in self._events:
-            _put_async(events, _CLOSED)
-        self._events.clear()
-
-    async def __aenter__(self) -> AsyncBotSession:
-        return self
-
-    async def __aexit__(self, *_: object) -> None:
-        await self.close()
-
-    async def _consume(self) -> None:
-        reconnect_delay = _DEFAULT_RECONNECT_DELAY
-        while not self._closed:
-            try:
-                request = _watch_request(self._state, self._options)
-                async for event in self._stream(request):
-                    self._state = reduce_bot_session_state(self._state, event)
-                    if not self._ready.done():
-                        self._ready.set_result(None)
-                    for events in self._events:
-                        _put_async(events, event)
-                    reconnect_delay = _DEFAULT_RECONNECT_DELAY
-                if not self._closed:
-                    await asyncio.sleep(reconnect_delay)
-            except asyncio.CancelledError:
-                raise
-            except Exception as error:
-                if not self._ready.done():
-                    self._ready.set_exception(error)
-                    return
-                await asyncio.sleep(reconnect_delay)
-                reconnect_delay = min(reconnect_delay * 2, _MAX_RECONNECT_DELAY)
-
-
-class BotSession:
-    __slots__ = (
-        "_closed",
-        "_events",
-        "_options",
-        "_ready",
-        "_state",
-        "_stream",
-        "_thread",
-    )
-
-    def __init__(
-        self,
-        stream: BotEventStreamFactory,
-        options: BotSessionOptions | None = None,
-    ) -> None:
-        self._stream = stream
-        self._options = options or BotSessionOptions()
-        self._state = empty_bot_session_state()
-        self._events: set[queue.Queue[BotEvent | object]] = set()
-        self._closed = threading.Event()
-        self._ready: queue.Queue[BaseException | None] = queue.Queue(maxsize=1)
-        self._thread = threading.Thread(
-            target=self._consume,
-            name="soulfire-bot-session",
-            daemon=True,
-        )
-        self._thread.start()
-        ready = self._ready.get()
-        if ready is not None:
-            raise ready
-
-    @property
-    def state(self) -> BotSessionState:
-        return self._state
-
-    def events(self) -> Iterator[BotEvent]:
-        events: queue.Queue[BotEvent | object] = queue.Queue(maxsize=_SUBSCRIBER_BUFFER_SIZE)
-        self._events.add(events)
-        try:
-            while True:
-                event = events.get()
-                if event is _CLOSED:
-                    return
-                assert isinstance(event, BotEvent)
-                yield event
-        finally:
-            self._events.discard(events)
-
-    def wait_for(
-        self,
-        predicate: Callable[[BotEvent, BotSessionState], bool],
-        *,
-        timeout: float | None = None,
-    ) -> BotEvent:
-        result: queue.Queue[BotEvent | BaseException] = queue.Queue(maxsize=1)
-
-        def wait() -> None:
-            try:
-                for event in self.events():
-                    if predicate(event, self._state):
-                        result.put(event)
-                        return
-                result.put(RuntimeError("Bot session closed before the expected event"))
-            except BaseException as error:
-                result.put(error)
-
-        threading.Thread(target=wait, name="soulfire-session-wait", daemon=True).start()
-        try:
-            value = result.get(timeout=timeout)
-        except queue.Empty as error:
-            raise TimeoutError("Timed out waiting for a bot event") from error
-        if isinstance(value, BaseException):
-            raise value
-        return value
-
-    def once(self, event_name: str, *, timeout: float | None = None) -> BotEvent:
-        return self.wait_for(
-            lambda event, _: event.WhichOneof("event") == event_name,
-            timeout=timeout,
-        )
-
-    def close(self) -> None:
-        if self._closed.is_set():
-            return
-        self._closed.set()
-        for events in self._events:
-            _put_sync(events, _CLOSED)
-        self._events.clear()
-
-    def __enter__(self) -> BotSession:
-        return self
-
-    def __exit__(self, *_: object) -> None:
-        self.close()
-
-    def _consume(self) -> None:
-        reconnect_delay = _DEFAULT_RECONNECT_DELAY
-        ready = False
-        while not self._closed.is_set():
-            try:
-                request = _watch_request(self._state, self._options)
-                for event in self._stream(request):
-                    if self._closed.is_set():
-                        return
-                    self._state = reduce_bot_session_state(self._state, event)
-                    if not ready:
-                        ready = True
-                        self._ready.put(None)
-                    for events in self._events:
-                        _put_sync(events, event)
-                    reconnect_delay = _DEFAULT_RECONNECT_DELAY
-                if self._closed.wait(reconnect_delay):
-                    return
-            except BaseException as error:
-                if not ready:
-                    self._ready.put(error)
-                    return
-                if self._closed.wait(reconnect_delay):
-                    return
-                reconnect_delay = min(reconnect_delay * 2, _MAX_RECONNECT_DELAY)
-
-
 def reduce_bot_session_state(state: BotSessionState, event: BotEvent) -> BotSessionState:
     has_envelope = event.HasField("envelope")
     discontinuity = (
@@ -396,7 +178,6 @@ def reduce_bot_session_state(state: BotSessionState, event: BotEvent) -> BotSess
     event_name = event.WhichOneof("event")
     if discontinuity or event_name == "resync_required":
         state = replace(empty_bot_session_state(), status=state.status)
-
     blocks = dict(state.blocks)
     block_snapshots = dict(state.block_snapshots)
     boss_bars = dict(state.boss_bars)
@@ -409,7 +190,6 @@ def reduce_bot_session_state(state: BotSessionState, event: BotEvent) -> BotSess
     player = state.player
     inventory = state.inventory
     status = state.status
-
     if event_name == "snapshot":
         player = event.snapshot
     elif event_name == "state_delta" and player is not None:
@@ -447,7 +227,6 @@ def reduce_bot_session_state(state: BotSessionState, event: BotEvent) -> BotSess
         scoreboard = _reduce_scoreboard_state(scoreboard, event.scoreboard)
     elif event_name == "resource_pack":
         _reduce_resource_pack_state(resource_packs, event.resource_pack)
-
     return BotSessionState(
         block_snapshots=MappingProxyType(block_snapshots),
         blocks=MappingProxyType(blocks),
@@ -459,9 +238,9 @@ def reduce_bot_session_state(state: BotSessionState, event: BotEvent) -> BotSess
         resource_packs=MappingProxyType(resource_packs),
         scoreboard=scoreboard,
         sequence=event.envelope.sequence if has_envelope else state.sequence,
-        snapshot_revision=(
-            event.envelope.snapshot_revision if has_envelope else state.snapshot_revision
-        ),
+        snapshot_revision=event.envelope.snapshot_revision
+        if has_envelope
+        else state.snapshot_revision,
         epoch=event.envelope.stream_epoch if has_envelope else state.epoch,
         inventory=inventory,
         player=player,
@@ -470,8 +249,7 @@ def reduce_bot_session_state(state: BotSessionState, event: BotEvent) -> BotSess
 
 
 def _reduce_resource_pack_state(
-    resource_packs: dict[str, BotResourcePackEvent],
-    event: BotResourcePackEvent,
+    resource_packs: dict[str, BotResourcePackEvent], event: BotResourcePackEvent
 ) -> None:
     if event.kind == RESOURCE_PACK_EVENT_OFFERED:
         resource_packs[event.pack_id] = event
@@ -482,18 +260,13 @@ def _reduce_resource_pack_state(
 
 
 def _reduce_environment_state(
-    state: BotEnvironmentState,
-    event: BotEnvironmentEvent,
+    state: BotEnvironmentState, event: BotEnvironmentEvent
 ) -> BotEnvironmentState:
     change = event.WhichOneof("change")
     if change == "time":
         clocks = dict(state.clocks)
         clocks.update((clock.clock_id, clock) for clock in event.time.clocks)
-        return replace(
-            state,
-            clocks=MappingProxyType(clocks),
-            game_time=event.time.game_time,
-        )
+        return replace(state, clocks=MappingProxyType(clocks), game_time=event.time.game_time)
     if change == "game_event":
         return replace(state, last_game_event=event.game_event)
     if change != "weather":
@@ -512,8 +285,7 @@ def _reduce_environment_state(
 
 
 def _reduce_player_list_state(
-    state: dict[str, PlayerListEntrySnapshot],
-    event: BotPlayerListEvent,
+    state: dict[str, PlayerListEntrySnapshot], event: BotPlayerListEvent
 ) -> None:
     if event.kind == PLAYER_LIST_EVENT_REMOVE:
         for profile_id in event.removed_profile_ids:
@@ -547,10 +319,7 @@ def _reduce_player_list_state(
         state[entry.profile_id] = merged
 
 
-def _reduce_boss_bar_state(
-    state: dict[str, BotBossBarState],
-    event: BotBossBarEvent,
-) -> None:
+def _reduce_boss_bar_state(state: dict[str, BotBossBarState], event: BotBossBarEvent) -> None:
     if event.kind == BOSS_BAR_EVENT_REMOVE:
         state.pop(event.boss_bar_id, None)
         return
@@ -558,70 +327,58 @@ def _reduce_boss_bar_state(
     state[event.boss_bar_id] = BotBossBarState(
         boss_bar_id=event.boss_bar_id,
         color=event.color if event.HasField("color") else previous.color if previous else None,
-        create_world_fog=(
-            event.create_world_fog
-            if event.HasField("create_world_fog")
-            else previous.create_world_fog
-            if previous
-            else None
-        ),
-        darken_screen=(
-            event.darken_screen
-            if event.HasField("darken_screen")
-            else previous.darken_screen
-            if previous
-            else None
-        ),
+        create_world_fog=event.create_world_fog
+        if event.HasField("create_world_fog")
+        else previous.create_world_fog
+        if previous
+        else None,
+        darken_screen=event.darken_screen
+        if event.HasField("darken_screen")
+        else previous.darken_screen
+        if previous
+        else None,
         name=event.name if event.HasField("name") else previous.name if previous else None,
-        overlay=(
-            event.overlay if event.HasField("overlay") else previous.overlay if previous else None
-        ),
-        play_music=(
-            event.play_music
-            if event.HasField("play_music")
-            else previous.play_music
-            if previous
-            else None
-        ),
-        progress=(
-            event.progress
-            if event.HasField("progress")
-            else previous.progress
-            if previous
-            else None
-        ),
+        overlay=event.overlay
+        if event.HasField("overlay")
+        else previous.overlay
+        if previous
+        else None,
+        play_music=event.play_music
+        if event.HasField("play_music")
+        else previous.play_music
+        if previous
+        else None,
+        progress=event.progress
+        if event.HasField("progress")
+        else previous.progress
+        if previous
+        else None,
     )
 
 
 def _reduce_scoreboard_state(
-    state: BotScoreboardState,
-    event: BotScoreboardEvent,
+    state: BotScoreboardState, event: BotScoreboardEvent
 ) -> BotScoreboardState:
     display_slots = dict(state.display_slots)
     objectives = dict(state.objectives)
     scores = dict(state.scores)
     teams = dict(state.teams)
     objective_name = event.objective_name if event.HasField("objective_name") else None
-
     if event.kind in {SCOREBOARD_EVENT_OBJECTIVE_ADD, SCOREBOARD_EVENT_OBJECTIVE_UPDATE}:
         if objective_name is not None:
             previous = objectives.get(objective_name)
             objectives[objective_name] = BotScoreboardObjective(
                 name=objective_name,
-                display_name=(
-                    event.display_name
-                    if event.HasField("display_name")
-                    else previous.display_name
-                    if previous
-                    else None
-                ),
-                render_type=(
-                    event.render_type
-                    if event.HasField("render_type")
-                    else previous.render_type
-                    if previous
-                    else None
-                ),
+                display_name=event.display_name
+                if event.HasField("display_name")
+                else previous.display_name
+                if previous
+                else None,
+                render_type=event.render_type
+                if event.HasField("render_type")
+                else previous.render_type
+                if previous
+                else None,
             )
     elif event.kind == SCOREBOARD_EVENT_OBJECTIVE_REMOVE and objective_name is not None:
         objectives.pop(objective_name, None)
@@ -664,7 +421,6 @@ def _reduce_scoreboard_state(
         SCOREBOARD_EVENT_TEAM_PLAYERS_REMOVE,
     }:
         _reduce_scoreboard_team(teams, event)
-
     return BotScoreboardState(
         display_slots=MappingProxyType(display_slots),
         objectives=MappingProxyType(objectives),
@@ -673,10 +429,7 @@ def _reduce_scoreboard_state(
     )
 
 
-def _reduce_scoreboard_team(
-    teams: dict[str, BotScoreboardTeam],
-    event: BotScoreboardEvent,
-) -> None:
+def _reduce_scoreboard_team(teams: dict[str, BotScoreboardTeam], event: BotScoreboardEvent) -> None:
     if not event.HasField("team_name"):
         return
     previous = teams.get(event.team_name)
@@ -690,49 +443,39 @@ def _reduce_scoreboard_team(
     teams[event.team_name] = BotScoreboardTeam(
         name=event.team_name,
         players=frozenset(players),
-        allow_friendly_fire=(
-            event.allow_friendly_fire
-            if event.HasField("allow_friendly_fire")
-            else previous.allow_friendly_fire
-            if previous
-            else None
-        ),
-        collision_rule=(
-            event.collision_rule
-            if event.HasField("collision_rule")
-            else previous.collision_rule
-            if previous
-            else None
-        ),
+        allow_friendly_fire=event.allow_friendly_fire
+        if event.HasField("allow_friendly_fire")
+        else previous.allow_friendly_fire
+        if previous
+        else None,
+        collision_rule=event.collision_rule
+        if event.HasField("collision_rule")
+        else previous.collision_rule
+        if previous
+        else None,
         color=event.color if event.HasField("color") else previous.color if previous else None,
-        display_name=(
-            event.display_name
-            if event.HasField("display_name")
-            else previous.display_name
-            if previous
-            else None
-        ),
-        name_tag_visibility=(
-            event.name_tag_visibility
-            if event.HasField("name_tag_visibility")
-            else previous.name_tag_visibility
-            if previous
-            else None
-        ),
+        display_name=event.display_name
+        if event.HasField("display_name")
+        else previous.display_name
+        if previous
+        else None,
+        name_tag_visibility=event.name_tag_visibility
+        if event.HasField("name_tag_visibility")
+        else previous.name_tag_visibility
+        if previous
+        else None,
         prefix=event.prefix if event.HasField("prefix") else previous.prefix if previous else None,
-        see_friendly_invisibles=(
-            event.see_friendly_invisibles
-            if event.HasField("see_friendly_invisibles")
-            else previous.see_friendly_invisibles
-            if previous
-            else None
-        ),
+        see_friendly_invisibles=event.see_friendly_invisibles
+        if event.HasField("see_friendly_invisibles")
+        else previous.see_friendly_invisibles
+        if previous
+        else None,
         suffix=event.suffix if event.HasField("suffix") else previous.suffix if previous else None,
     )
 
 
 def _scoreboard_score_key(objective_name: str, owner: str) -> str:
-    return f"{objective_name}\0{owner}"
+    return f"{objective_name}\x00{owner}"
 
 
 def empty_bot_session_state() -> BotSessionState:
@@ -754,14 +497,11 @@ def empty_bot_session_state() -> BotSessionState:
     )
 
 
-def _watch_request(
-    state: BotSessionState,
-    options: BotSessionOptions,
-) -> WatchBotEventsRequest:
+def _watch_request(state: BotSessionState, options: BotSessionOptions) -> WatchBotEventsRequest:
     return WatchBotEventsRequest(
         filter=options.filter or _default_filter(),
         after_sequence=state.sequence if state.epoch is not None else 0,
-        **({} if state.epoch is None else {"stream_epoch": state.epoch}),
+        **{} if state.epoch is None else {"stream_epoch": state.epoch},
         heartbeat_interval_seconds=options.heartbeat_interval_seconds,
     )
 
@@ -812,15 +552,187 @@ def _block_key(position: BlockPosition) -> str:
     return f"{position.dimension}:{position.x}:{position.y}:{position.z}"
 
 
-def _put_async(events: asyncio.Queue[BotEvent | object], event: BotEvent | object) -> None:
-    if events.full():
-        with contextlib.suppress(asyncio.QueueEmpty):
-            events.get_nowait()
-    events.put_nowait(event)
+class BotEventStreamFactory(Protocol):
+    def __call__(
+        self, request: WatchBotEventsRequest
+    ) -> Stream[BotEvent, SoulFireOperationError]: ...
 
 
-def _put_sync(events: queue.Queue[BotEvent | object], event: BotEvent | object) -> None:
-    if events.full():
-        with contextlib.suppress(queue.Empty):
-            events.get_nowait()
-    events.put_nowait(event)
+class BotSession:
+    def __init__(self, stream: BotEventStreamFactory, options: BotSessionOptions) -> None:
+        self._stream = stream
+        self._options = options
+        self._state = empty_bot_session_state()
+        self._subscribers: set[asyncio.Queue[BotEvent | Failure[SoulFireOperationError] | End]] = (
+            set()
+        )
+        self._ready: asyncio.Future[Exit[None, SoulFireOperationError]] = (
+            asyncio.get_running_loop().create_future()
+        )
+        self._fiber: Fiber[None, SoulFireOperationError] | None = None
+        self._closed = False
+        self._failure: Failure[SoulFireOperationError] | None = None
+
+    @classmethod
+    @fn("BotSession.open")
+    def open(
+        cls, stream: BotEventStreamFactory, options: BotSessionOptions | None = None
+    ) -> EffectGen[BotSession, SoulFireOperationError, Scope]:
+        session = yield from acquire_release(
+            sync(lambda: cls(stream, options or BotSessionOptions())),
+            lambda session, _: session.close(),
+        )
+        session._fiber = yield from fork(session._consume())
+        result = yield from from_async(lambda: asyncio.shield(session._ready))
+        if isinstance(result, Failure):
+            yield from join(session._fiber)
+        return session
+
+    @property
+    def state(self) -> BotSessionState:
+        return self._state
+
+    def events(self) -> Stream[BotEvent, SoulFireOperationError]:
+        @gen
+        def acquire() -> EffectGen[
+            Cursor[BotEvent, SoulFireOperationError], SoulFireOperationError, Scope
+        ]:
+            queue: asyncio.Queue[BotEvent | Failure[SoulFireOperationError] | End] = asyncio.Queue(
+                maxsize=_SUBSCRIBER_BUFFER_SIZE
+            )
+            yield from acquire_release(
+                sync(lambda: self._subscribers.add(queue)),
+                lambda _, _exit: sync(lambda: self._subscribers.discard(queue)),
+            )
+            if self._failure is not None:
+                queue.put_nowait(self._failure)
+            elif self._closed:
+                queue.put_nowait(END)
+
+            @gen
+            def pull() -> EffectGen[Item[BotEvent] | End, SoulFireOperationError]:
+                value = yield from from_async(queue.get)
+                if isinstance(value, End):
+                    return END
+                if isinstance(value, Failure):
+                    if value.cause.defects:
+                        raise value.cause.defects[0]
+                    if value.cause.errors:
+                        return (yield from fail(value.cause.errors[0]))
+                    raise asyncio.CancelledError()
+                return Item(value)
+
+            return Cursor(lambda: pull)
+
+        return Stream(acquire)
+
+    def wait_for(
+        self,
+        predicate: Callable[[BotEvent, BotSessionState], bool],
+        *,
+        timeout: float | None = None,
+    ) -> Effect[BotEvent, SoulFireOperationError]:
+        @gen
+        def wait() -> EffectGen[BotEvent, SoulFireOperationError]:
+            value = (
+                yield from self.events()
+                .filter(lambda event: predicate(event, self._state))
+                .run_head()
+            )
+            if value is None:
+                return (
+                    yield from fail(
+                        SoulFireStateError("Bot session closed before the expected event")
+                    )
+                )
+            return value
+
+        effect = wait
+        return (
+            effect
+            if timeout is None
+            else effect.pipe(
+                schedule.timeout(timeout),
+                catch_tag(schedule.TimeoutException)(
+                    lambda _: fail(SoulFireTimeoutError("Timed out waiting for a bot event"))
+                ),
+            )
+        )
+
+    def once(
+        self, event_name: str, *, timeout: float | None = None
+    ) -> Effect[BotEvent, SoulFireOperationError]:
+        return self.wait_for(
+            lambda event, _: event.WhichOneof("event") == event_name, timeout=timeout
+        )
+
+    @fn("BotSession.close")
+    def close(self) -> EffectGen[None]:
+        self._closed = True
+        self._publish(END)
+        fiber = self._fiber
+        self._fiber = None
+        if fiber is not None:
+            yield from interrupt(fiber)
+        self._subscribers.clear()
+
+    def _publish(self, value: BotEvent | Failure[SoulFireOperationError] | End) -> None:
+        for queue in tuple(self._subscribers):
+            if queue.full():
+                queue.get_nowait()
+            queue.put_nowait(value)
+
+    def _finish(self, result: Exit[None, SoulFireOperationError]) -> None:
+        self._closed = True
+        if isinstance(result, Failure):
+            self._failure = result
+            self._publish(result)
+        else:
+            self._publish(END)
+        if not self._ready.done():
+            self._ready.set_result(result)
+
+    @fn("BotSession.consume")
+    def _consume(self) -> EffectGen[None, SoulFireOperationError]:
+        delay = _DEFAULT_RECONNECT_DELAY
+
+        def receive(event: BotEvent) -> None:
+            nonlocal delay
+            self._state = reduce_bot_session_state(self._state, event)
+            delay = _DEFAULT_RECONNECT_DELAY
+            if not self._ready.done():
+                self._ready.set_result(Success(None))
+            self._publish(event)
+
+        while not self._closed:
+
+            @gen
+            def watch() -> EffectGen[None, SoulFireOperationError]:
+                stream = yield from sync(
+                    lambda: self._stream(_watch_request(self._state, self._options))
+                )
+                yield from stream.run_for_each(lambda event: sync(lambda: receive(event)))
+
+            result = yield from watch.exit()
+            if isinstance(result, Failure):
+                error = next(
+                    (reason.error for reason in result.cause.reasons if isinstance(reason, Fail)),
+                    None,
+                )
+                if error is None:
+                    # Preserve defects and interruption instead of retrying them.
+                    for reason in result.cause.reasons:
+                        if isinstance(reason, Die):
+                            self._finish(result)
+                            raise reason.defect
+                    raise asyncio.CancelledError()
+                if (
+                    not self._ready.done()
+                    or not isinstance(error, SoulFireRpcError)
+                    or not error.retryable
+                ):
+                    self._finish(result)
+                    return (yield from fail(error))
+            yield from sleep(delay)
+            if isinstance(result, Failure):
+                delay = min(delay * 2, _MAX_RECONNECT_DELAY)
