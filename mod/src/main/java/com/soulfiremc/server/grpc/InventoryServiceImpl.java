@@ -28,6 +28,7 @@ import com.soulfiremc.server.bot.ControlStopReason;
 import com.soulfiremc.server.bot.ControlTask;
 import com.soulfiremc.server.pathfinding.cost.Costs;
 import com.soulfiremc.server.user.PermissionContext;
+import com.soulfiremc.server.util.SFInventoryHelpers;
 import com.soulfiremc.server.util.SFItemHelpers;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -1825,6 +1826,7 @@ public final class InventoryServiceImpl
     private boolean interacted;
     private int initialContainerId;
     private int elapsedTicks;
+    private int contentsTicks;
     private boolean done;
 
     private OpenContainerTask(
@@ -1887,6 +1889,15 @@ public final class InventoryServiceImpl
 
       if (context.menu.containerId != initialContainerId
         && !(context.menu instanceof InventoryMenu)) {
+        // The slots arrive in a packet after the screen opens. A snapshot
+        // taken before that shows an empty container, and its revision is
+        // stale as soon as they arrive (the first transfer then aborts).
+        if (
+          !SFInventoryHelpers.hasReceivedContents(context.menu)
+            && ++contentsTicks < SFInventoryHelpers.MENU_CONTENTS_GRACE_TICKS
+        ) {
+          return;
+        }
         result.set(snapshot(context));
         done = true;
         return;

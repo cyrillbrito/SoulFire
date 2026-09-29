@@ -189,6 +189,7 @@ public final class MaintainLoadoutTaskProvider
     private Stage stage = Stage.CHECK;
     private int waitTicks;
     private int stageTicks;
+    private int contentsTicks;
     private int initialContainerId;
     private int approachAttempts;
     private int rebalances;
@@ -332,6 +333,7 @@ public final class MaintainLoadoutTaskProvider
         player.closeContainer();
       }
       initialContainerId = player.containerMenu.containerId;
+      contentsTicks = 0;
       var gameMode = Objects.requireNonNull(
         context.bot().minecraft().gameMode,
         "Bot game mode is not available"
@@ -354,6 +356,14 @@ public final class MaintainLoadoutTaskProvider
       if (menu.containerId != initialContainerId
         && !(menu instanceof InventoryMenu)) {
         openedMenu = true;
+        // The slots arrive in a packet after the screen opens: counting them
+        // before that sees an empty container.
+        if (
+          !SFInventoryHelpers.hasReceivedContents(menu)
+            && ++contentsTicks < SFInventoryHelpers.MENU_CONTENTS_GRACE_TICKS
+        ) {
+          return;
+        }
         transition(Stage.TRANSFER, "Rebalancing loadout");
         return;
       }

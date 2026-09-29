@@ -36,6 +36,18 @@ public final class SFInventoryHelpers {
   private SFInventoryHelpers() {
   }
 
+  /// Ticks to wait for a newly opened menu's contents before using it anyway.
+  public static final int MENU_CONTENTS_GRACE_TICKS = 20;
+
+  /// Whether a newly opened menu has received its contents from the server.
+  ///
+  /// The server opens a screen and then sends its slots in a separate packet.
+  /// A client menu starts at state id 0, and the first content packet sets a
+  /// state id of at least 1, so reading the menu before that sees it empty.
+  public static boolean hasReceivedContents(AbstractContainerMenu menu) {
+    return menu.getStateId() != 0;
+  }
+
   public static boolean isSelectableHotbarSlot(int slot) {
     return slot >= InventoryMenu.USE_ROW_SLOT_START && slot < InventoryMenu.USE_ROW_SLOT_END;
   }

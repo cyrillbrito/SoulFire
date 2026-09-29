@@ -38,6 +38,7 @@ import com.soulfiremc.server.pathfinding.SFVec3i;
 import com.soulfiremc.server.pathfinding.execution.PathExecutor;
 import com.soulfiremc.server.pathfinding.goals.CloseToPosGoal;
 import com.soulfiremc.server.pathfinding.graph.constraint.PathConstraint;
+import com.soulfiremc.server.util.SFInventoryHelpers;
 import io.grpc.Status;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
@@ -179,6 +180,7 @@ public final class ContainerTransferTaskProvider
     private Stage stage = Stage.NAVIGATE;
     private int initialContainerId;
     private int stageTicks;
+    private int contentsTicks;
     private int approachAttempts;
     private int totalTransferred;
     private long containerRevision;
@@ -291,6 +293,7 @@ public final class ContainerTransferTaskProvider
         player.closeContainer();
       }
       initialContainerId = player.containerMenu.containerId;
+      contentsTicks = 0;
       var gameMode = Objects.requireNonNull(
         context.bot().minecraft().gameMode,
         "Bot game mode is not available"
@@ -315,6 +318,14 @@ public final class ContainerTransferTaskProvider
           && !(menu instanceof InventoryMenu)
       ) {
         openedMenu = true;
+        // The slots arrive in a packet after the screen opens: moving items
+        // before that sees an empty container.
+        if (
+          !SFInventoryHelpers.hasReceivedContents(menu)
+            && ++contentsTicks < SFInventoryHelpers.MENU_CONTENTS_GRACE_TICKS
+        ) {
+          return;
+        }
         transition(Stage.TRANSFER, "Transferring items");
         return;
       }
