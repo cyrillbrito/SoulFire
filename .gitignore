@@ -60,3 +60,4 @@ sdk/python/.pytest_cache/
 sdk/python/.ruff_cache/
 sdk/python/dist/
 **/__pycache__/
+.repos/effect
