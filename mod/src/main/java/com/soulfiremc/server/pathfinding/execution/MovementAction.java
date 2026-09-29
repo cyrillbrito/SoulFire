@@ -60,7 +60,7 @@ public final class MovementAction implements WorldAction {
     var level = connection.minecraft().level;
 
     var blockMeta = level.getBlockState(blockPosition.toBlockPos());
-    var targetMiddleBlock = VectorHelper.topMiddleOfBlock(blockPosition, blockMeta);
+    var targetMiddleBlock = VectorHelper.standingMiddleOfBlock(blockPosition, blockMeta);
     if (!hasReachedTargetHeight(
       botPosition.y,
       targetMiddleBlock.y,
@@ -193,7 +193,7 @@ public final class MovementAction implements WorldAction {
     var level = connection.minecraft().level;
 
     var blockMeta = level.getBlockState(blockPosition.toBlockPos());
-    var targetMiddleBlock = VectorHelper.topMiddleOfBlock(blockPosition, blockMeta);
+    var targetMiddleBlock = VectorHelper.standingMiddleOfBlock(blockPosition, blockMeta);
 
     if (pathConstraint.smoothCamera()) {
       connection.rotationControl().lookHorizontallyAtSmoothly(
