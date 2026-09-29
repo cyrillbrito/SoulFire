@@ -9,6 +9,17 @@
         "@bufbuild/protoc-gen-es": "2.15.0",
       },
     },
+    "e2e": {
+      "name": "@soulfiremc/e2e",
+      "dependencies": {
+        "@bufbuild/protobuf": "2.15.0",
+        "@soulfiremc/sdk": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/node": "26.6.3",
+        "typescript": "7.0.2",
+      },
+    },
     "sdk/beat-game": {
       "name": "@soulfiremc/beat-game",
       "version": "2.11.0",
@@ -245,6 +256,8 @@
     "@rolldown/pluginutils": ["@rolldown/pluginutils@1.0.1", "", {}, "sha512-2j9bGt5Jh8hj+vPtgzPtl72j0yRxHAyumoo6TNfAjsLB04UtpSvPbPcDcBMxz7n+9CYB0c1GxQFxYRg2jimqGw=="],
 
     "@soulfiremc/beat-game": ["@soulfiremc/beat-game@workspace:sdk/beat-game"],
+
+    "@soulfiremc/e2e": ["@soulfiremc/e2e@workspace:e2e"],
 
     "@soulfiremc/sdk": ["@soulfiremc/sdk@workspace:sdk/typescript"],
 

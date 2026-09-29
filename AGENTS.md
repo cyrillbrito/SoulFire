@@ -19,6 +19,10 @@ Also use `_` for unused parameters in lambdas and use `///` Markdown Javadocs in
 
 Place tests beside the module you modify, e.g., new mod behavior belongs in `mod/src/test/java`. Write JUnit 5 tests (`@Test`, `@ParameterizedTest`) that mirror production package names and run without live Minecraft servers unless explicitly mocked. Name classes `<Feature>Test` or `<Component>IT`, and fail fast on protocol regressions. Always run `./gradlew test` locally and note the command in your PR description.
 
+## Checking Behaviour in a Real Game
+
+Unit tests check SoulFire against what their author believes Minecraft does. When a fix depends on how the game behaves (what the client sees of an entity, what the server accepts, which packets arrive and when), check that belief first with `e2e/`: it runs SoulFire against a vanilla server in Docker and drives a bot through the TypeScript SDK (see `e2e/README.md`). Then write the unit test from what the game did. A fix you can stage there should fail the scenario without the change and pass with it. Add a scenario to `e2e/tests/` only when it covers something a unit test can't.
+
 ## Commit & Pull Request Guidelines
 
 Commits follow Conventional Commits (`fix:`, `feat:`, `ci:`); keep subjects under 72 characters and group logically related changes together. Reference issues in the body, add `BREAKING CHANGE:` notes when behavior shifts, and avoid drive-by reformatting. Pull requests need a clear summary, affected modules, and evidence of testing (command output or screenshots/CLI transcripts when user-facing). Request reviews early for large changes but ensure CI is green before merge.
