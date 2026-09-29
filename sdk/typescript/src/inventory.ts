@@ -47,6 +47,9 @@ export type InventoryRankingOptions = Omit<
   "equipmentSlot" | "targetBlock"
 >;
 
+/**
+ * A block container opened with `inventory.open`. `await using` closes it.
+ */
 export class SoulFireContainer implements AsyncDisposable {
   #closed = false;
 
@@ -66,6 +69,10 @@ export class SoulFireContainer implements AsyncDisposable {
     return this.#closed;
   }
 
+  /**
+   * Throws `SoulFireContainerClosedError` if the container was closed in the
+   * meantime.
+   */
   public async refresh(options?: CallOptions): Promise<ContainerSnapshot> {
     this.requireOpen();
     const response = await this.client.getContainerSnapshot(
@@ -83,6 +90,10 @@ export class SoulFireContainer implements AsyncDisposable {
     return this.current;
   }
 
+  /**
+   * Moves `count` items matching `selector` from the player's inventory into
+   * the container. Fails if fewer are available or they don't fit.
+   */
   public deposit(
     selector: InventoryRequest<typeof TransferItemsRequestSchema>["selector"],
     count: number,
@@ -97,6 +108,10 @@ export class SoulFireContainer implements AsyncDisposable {
     );
   }
 
+  /**
+   * Moves `count` items matching `selector` from the container into the
+   * player's inventory. Fails if fewer are available or they don't fit.
+   */
   public withdraw(
     selector: InventoryRequest<typeof TransferItemsRequestSchema>["selector"],
     count: number,
@@ -176,6 +191,11 @@ export class SoulFireContainerClosedError extends Error {
   }
 }
 
+/**
+ * The inventory and the menu the bot has open. `move`, `transfer`, `toss`,
+ * `selectHotbar`, `equip` and `unequip` take an optional `expectedRevision`:
+ * when not 0, they fail with ABORTED if the menu changed since that revision.
+ */
 export class SoulFireInventory {
   public constructor(
     private readonly instanceId: string,
@@ -185,6 +205,10 @@ export class SoulFireInventory {
       CallOptions | undefined,
   ) {}
 
+  /**
+   * The open menu (the player's inventory when no container is open), with
+   * every slot.
+   */
   public async snapshot(options?: CallOptions): Promise<ContainerSnapshot> {
     const response = await this.client.getContainerSnapshot(
       { scope: this.scope() },
@@ -196,6 +220,10 @@ export class SoulFireInventory {
     return response.container;
   }
 
+  /**
+   * Items matching `selector` in `areas`. No `areas` means container, main,
+   * hotbar, armor, offhand and crafting slots.
+   */
   public async count(
     request: InventoryRequest<typeof CountItemsRequestSchema>,
     options?: CallOptions,
@@ -207,6 +235,10 @@ export class SoulFireInventory {
     return response.count;
   }
 
+  /**
+   * Slots holding items that match `selector`, in `areas` (the same default as
+   * `count`).
+   */
   public find(
     request: InventoryRequest<typeof FindInventorySlotsRequestSchema>,
     options?: CallOptions,
@@ -217,6 +249,11 @@ export class SoulFireInventory {
     );
   }
 
+  /**
+   * Candidates for `kind`, best first, with the factors behind each score.
+   * `limit` defaults to 10 (at most 100); `areas` default to main, hotbar,
+   * armor and offhand.
+   */
   public rank(
     kind: InventoryRecommendationKind,
     options: InventoryRankOptions = {},
@@ -228,6 +265,9 @@ export class SoulFireInventory {
     );
   }
 
+  /**
+   * The best tool for breaking the block at `targetBlock`.
+   */
   public bestTool(
     targetBlock: MessageInitShape<typeof BlockPositionSchema>,
     options: InventoryRankingOptions = {},
@@ -285,6 +325,10 @@ export class SoulFireInventory {
     );
   }
 
+  /**
+   * Moves items from `sourceSlot` to `destinationSlot` of the open menu;
+   * `count` defaults to the whole stack.
+   */
   public move(
     request: InventoryRequest<typeof MoveInventoryItemRequestSchema>,
     options?: CallOptions,
@@ -295,6 +339,11 @@ export class SoulFireInventory {
     );
   }
 
+  /**
+   * Moves `count` items matching `selector` from area `from` to area `to`
+   * (`PLAYER` is main and hotbar). Fails if fewer are available or they don't
+   * fit.
+   */
   public transfer(
     request: InventoryRequest<typeof TransferItemsRequestSchema>,
     options?: CallOptions,
@@ -305,6 +354,9 @@ export class SoulFireInventory {
     );
   }
 
+  /**
+   * Drops `count` items matching `selector` on the ground.
+   */
   public toss(
     request: InventoryRequest<typeof TossItemsRequestSchema>,
     options?: CallOptions,
@@ -315,6 +367,10 @@ export class SoulFireInventory {
     );
   }
 
+  /**
+   * Selects `hotbarSlot` (0-8), or the item matching `selector`: a hotbar slot
+   * that holds one, or else a matching item swapped into the selected slot.
+   */
   public selectHotbar(
     request: InventoryRequest<typeof SelectHotbarItemRequestSchema>,
     options?: CallOptions,
@@ -325,6 +381,11 @@ export class SoulFireInventory {
     );
   }
 
+  /**
+   * Puts an item matching `selector` in `equipmentSlot`: mainhand, offhand,
+   * head, chest, legs or feet. Closes an open container first, except for
+   * mainhand (which selects it as `selectHotbar` does).
+   */
   public equip(
     request: InventoryRequest<typeof EquipItemRequestSchema>,
     options?: CallOptions,
@@ -335,6 +396,11 @@ export class SoulFireInventory {
     );
   }
 
+  /**
+   * Moves the item in `equipmentSlot` (mainhand, offhand, head, chest, legs or
+   * feet) to `destinationArea`: MAIN, HOTBAR or PLAYER. It defaults to PLAYER,
+   * the first free main or hotbar slot.
+   */
   public unequip(
     request: InventoryRequest<typeof UnequipItemRequestSchema>,
     options?: CallOptions,
@@ -345,6 +411,9 @@ export class SoulFireInventory {
     );
   }
 
+  /**
+   * Opens the container block at `position`. Times out after 10 s.
+   */
   public async open(
     position: MessageInitShape<typeof BlockPositionSchema>,
     options: ContainerMutationOptions = {},

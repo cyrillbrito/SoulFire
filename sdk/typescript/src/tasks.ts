@@ -163,8 +163,16 @@ type GuardSubject = Exclude<
   undefined
 >;
 
+/**
+ * Options every task takes. Unset, the server uses `conflictPolicy` QUEUE,
+ * `priority` NORMAL, `reconnectPolicy` FAIL and `disconnectPolicy` CONTINUE
+ * (the `run*` methods default to CANCEL_WITH_CALL).
+ */
 export interface TaskStartOptions extends ScopedTaskStartRequest {
   call?: CallOptions;
+  /**
+   * The task ends as TIMED_OUT at this time. Must be in the future.
+   */
   deadline?: Date;
 }
 
@@ -174,186 +182,499 @@ export interface GoToTaskOptions extends TaskStartOptions {
 
 export interface FollowEntityTaskOptions extends TaskStartOptions {
   path?: MessageInitShape<typeof PathfindOptionsSchema>;
+  /**
+   * How long the entity may stay out of sight before the task ends. Defaults to
+   * 10, at most 3600.
+   */
   targetUnavailableTimeoutSeconds?: number;
 }
 
 export interface AttackEntityTaskOptions extends TaskStartOptions {
   path?: MessageInitShape<typeof PathfindOptionsSchema>;
+  /**
+   * Defaults to 3, at most 6.
+   */
   attackRange?: number;
   sprinting?: boolean;
+  /**
+   * 0 (the default) attacks until the target is defeated.
+   */
   maximumAttacks?: number;
+  /**
+   * How long the target may stay out of sight before the task ends. Defaults to
+   * 10, at most 3600.
+   */
   targetUnavailableTimeoutSeconds?: number;
+  /**
+   * Picks the strongest melee weapon (among `weapon` if set). Defaults to true.
+   */
   selectBestWeapon?: boolean;
   weapon?: MessageInitShape<typeof ItemSelectorSchema>;
+  /**
+   * Reselects the previous hotbar slot when the task stops. Defaults to true.
+   */
   restoreSelectedSlot?: boolean;
+  /**
+   * Raises a shield held in the offhand while approaching and between attacks.
+   */
   useOffhandShield?: boolean;
 }
 
 export interface AttackNearestTaskOptions extends TaskStartOptions {
+  /**
+   * Search radius around the bot. Defaults to 32, at most 128.
+   */
   radius?: number;
   path?: MessageInitShape<typeof PathfindOptionsSchema>;
+  /**
+   * Defaults to 3, at most 6.
+   */
   attackRange?: number;
   sprinting?: boolean;
+  /**
+   * 0 (the default) means no limit.
+   */
   maximumAttacks?: number;
+  /**
+   * Targets to defeat; 0 means no limit. Defaults to 1 for `attackNearest`, 0
+   * for `runAttackNearest`.
+   */
   maximumTargets?: number;
+  /**
+   * How long to wait while nothing matches; 0 (the default) waits forever. At
+   * most 3600.
+   */
   noTargetTimeoutSeconds?: number;
+  /**
+   * Ends at once when no target is in sight. Defaults to true for
+   * `attackNearest`, false for `runAttackNearest`.
+   */
   completeWhenNoTarget?: boolean;
+  /**
+   * Defaults to true.
+   */
   selectBestWeapon?: boolean;
   weapon?: MessageInitShape<typeof ItemSelectorSchema>;
+  /**
+   * Defaults to true.
+   */
   restoreSelectedSlot?: boolean;
 }
 
 export interface RangedAttackTaskOptions extends TaskStartOptions {
   path?: MessageInitShape<typeof PathfindOptionsSchema>;
+  /**
+   * Defaults to 8; less than `maximumRange`.
+   */
   minimumRange?: number;
+  /**
+   * Defaults to 24, at most 64.
+   */
   maximumRange?: number;
+  /**
+   * 0 (the default) fires until the target is defeated.
+   */
   maximumShots?: number;
+  /**
+   * How long the target may stay out of sight before the task ends. Defaults to
+   * 10, at most 3600.
+   */
   targetUnavailableTimeoutSeconds?: number;
+  /**
+   * Limits which bow or crossbow may be picked.
+   */
   weapon?: MessageInitShape<typeof ItemSelectorSchema>;
+  /**
+   * Defaults to 20, from 3 to 20. Crossbows use their own charge time.
+   */
   bowDrawTicks?: number;
+  /**
+   * Defaults to true.
+   */
   leadTarget?: boolean;
+  /**
+   * Defaults to true.
+   */
   compensateGravity?: boolean;
+  /**
+   * Defaults to true.
+   */
   strafe?: boolean;
+  /**
+   * Defaults to true.
+   */
   restoreSelectedSlot?: boolean;
 }
 
 export interface FleeTaskOptions extends TaskStartOptions {
+  /**
+   * Starts fleeing when a threat is this close. Defaults to 8, at most 128.
+   */
   triggerRadius?: number;
+  /**
+   * How far from the threat counts as safe. Defaults to 16, at most 128; more
+   * than `triggerRadius`.
+   */
   safeDistance?: number;
   path?: MessageInitShape<typeof PathfindOptionsSchema>;
+  /**
+   * Seconds the bot must stay safe for an escape to count. Defaults to 2, at
+   * most 300.
+   */
   safeSeconds?: number;
+  /**
+   * Ends after an escape instead of watching for more. Defaults to true for
+   * `flee`, false for `runFlee`.
+   */
   completeWhenSafe?: boolean;
+  /**
+   * 0 (the default) means no limit.
+   */
   maximumEscapes?: number;
 }
 
 export interface GuardTaskOptions extends TaskStartOptions {
+  /**
+   * How far around the guarded position or entity to look for threats. Defaults
+   * to 16, at most 128.
+   */
   guardRadius?: number;
+  /**
+   * Stops chasing beyond this distance from what it guards. Defaults to 24, at
+   * most 128; at least `guardRadius`.
+   */
   maximumPursuitDistance?: number;
+  /**
+   * How close to what it guards the bot returns. Defaults to 3; less than the
+   * pursuit distance.
+   */
   returnRadius?: number;
   path?: MessageInitShape<typeof PathfindOptionsSchema>;
+  /**
+   * Defaults to 3, at most 6.
+   */
   attackRange?: number;
   sprinting?: boolean;
+  /**
+   * 0 (the default) means no limit.
+   */
   maximumAttacks?: number;
+  /**
+   * 0 (the default) means no limit.
+   */
   maximumTargets?: number;
+  /**
+   * Ends once no threat is in range for `clearSeconds`. Defaults to true for
+   * `guard` and `protect`, false for `runGuard` and `runProtect`.
+   */
   completeWhenClear?: boolean;
+  /**
+   * Defaults to 3, at most 300.
+   */
   clearSeconds?: number;
+  /**
+   * Defaults to true.
+   */
   selectBestWeapon?: boolean;
   weapon?: MessageInitShape<typeof ItemSelectorSchema>;
+  /**
+   * Defaults to true.
+   */
   restoreSelectedSlot?: boolean;
 }
 
 export interface SleepTaskOptions extends TaskStartOptions {
+  /**
+   * Defaults to the nearest loaded bed within `searchRadius`.
+   */
   bed?: MessageInitShape<typeof BlockPositionSchema>;
+  /**
+   * Defaults to 24, at most 32.
+   */
   searchRadius?: number;
   path?: MessageInitShape<typeof PathfindOptionsSchema>;
+  /**
+   * Keeps trying while sleeping isn't possible, such as during the day.
+   * Defaults to false for `sleep`, true for `runSleep`.
+   */
   waitUntilPossible?: boolean;
+  /**
+   * Between refused attempts. Defaults to 20, at most 1200.
+   */
   retryIntervalTicks?: number;
 }
 
 export interface FishTaskOptions extends TaskStartOptions {
+  /**
+   * 0 fishes until cancelled. Defaults to 1 for `fish`, 0 for `runFish`.
+   */
   maximumCatches?: number;
+  /**
+   * 0 (the default) means no limit.
+   */
   maximumFailedCasts?: number;
+  /**
+   * Limits which fishing rod may be picked.
+   */
   rod?: MessageInitShape<typeof ItemSelectorSchema>;
+  /**
+   * Defaults to 100, at most 1200.
+   */
   castTimeoutTicks?: number;
+  /**
+   * Defaults to 12000, at most 72000.
+   */
   biteTimeoutTicks?: number;
+  /**
+   * Defaults to true for `fish`, false for `runFish`.
+   */
   completeWhenNoRod?: boolean;
+  /**
+   * Defaults to true.
+   */
   restoreSelectedSlot?: boolean;
 }
 
 export interface FarmTaskOptions extends TaskStartOptions {
+  /**
+   * Empty (the default) farms every crop SoulFire supports.
+   */
   cropIds?: readonly string[];
+  /**
+   * Defaults to wherever the bot is at each scan.
+   */
   center?: MessageInitShape<typeof BlockPositionSchema>;
+  /**
+   * Defaults to 24, at most 48.
+   */
   radius?: number;
+  /**
+   * 0 farms until cancelled. Defaults to 1 for `farm`, 0 for `runFarm`.
+   */
   maximumHarvests?: number;
+  /**
+   * Defaults to true.
+   */
   replant?: boolean;
+  /**
+   * Ends instead of waiting for a crop to grow. Defaults to true for `farm`,
+   * false for `runFarm`.
+   */
   completeWhenNoMatureCrops?: boolean;
   path?: MessageInitShape<typeof PathfindOptionsSchema>;
+  /**
+   * Between scans while nothing is mature. Defaults to 100, at most 72000.
+   */
   rescanIntervalTicks?: number;
+  /**
+   * Defaults to true.
+   */
   restoreSelectedSlot?: boolean;
 }
 
 export interface BreedTaskOptions extends TaskStartOptions {
+  /**
+   * Empty (the default) means any animal.
+   */
   animals?: MessageInitShape<typeof EntitySelectorSchema>;
+  /**
+   * Defaults to any food both animals accept.
+   */
   food?: MessageInitShape<typeof ItemSelectorSchema>;
   center?: MessageInitShape<typeof BlockPositionSchema>;
+  /**
+   * Defaults to 24, from 1 to 64.
+   */
   radius?: number;
+  /**
+   * 0 breeds until cancelled. Defaults to 1 for `breed`, 0 for `runBreed`.
+   */
   maximumPairs?: number;
+  /**
+   * Defaults to true for `breed`, false for `runBreed`.
+   */
   completeWhenNoPair?: boolean;
+  /**
+   * Defaults to true for `breed`, false for `runBreed`.
+   */
   completeWhenNoFood?: boolean;
   path?: MessageInitShape<typeof PathfindOptionsSchema>;
+  /**
+   * Between scans while no pair is found. Defaults to 100, at most 72000.
+   */
   rescanIntervalTicks?: number;
+  /**
+   * Defaults to 100, at most 1200.
+   */
   breedingTimeoutTicks?: number;
+  /**
+   * Defaults to true.
+   */
   restoreSelectedSlot?: boolean;
 }
 
 export interface ExploreTaskOptions extends TaskStartOptions {
+  /**
+   * Defaults to where the bot is when the task starts.
+   */
   origin?: MessageInitShape<typeof BlockPositionSchema>;
+  /**
+   * Horizontal distance from `origin`. Defaults to 256, from 1 to 4096.
+   */
   radius?: number;
+  /**
+   * Defaults to 64, from 8 to 512.
+   */
   waypointSpacing?: number;
+  /**
+   * 0 explores until every cell is visited or the task is cancelled. Defaults
+   * to 1 for `explore`, 0 for `runExplore`.
+   */
   maximumWaypoints?: number;
   path?: MessageInitShape<typeof PathfindOptionsSchema>;
+  /**
+   * Goes back to `origin` after `maximumWaypoints`.
+   */
   returnToOrigin?: boolean;
+  /**
+   * Bots with the same purpose share out the cells. Defaults to "sdk-explore".
+   */
   purpose?: string;
 }
 
 export interface ContainerTransferSpec {
   selector: MessageInitShape<typeof ItemSelectorSchema>;
   count: number;
+  /**
+   * Moves what it can instead of failing when there are fewer items, or less
+   * room, than `count`.
+   */
   allowPartial?: boolean;
 }
 
 export interface ContainerTransferTaskOptions extends TaskStartOptions {
   path?: MessageInitShape<typeof PathfindOptionsSchema>;
+  /**
+   * Closes the container after a successful transfer. Defaults to true. A
+   * failed or cancelled task always closes a container it opened.
+   */
   closeContainer?: boolean;
 }
 
+/**
+ * Below `minimumCount`, the bot withdraws up to `targetCount`; above
+ * `maximumCount`, it deposits down to `targetCount`.
+ */
 export interface LoadoutRequirementSpec {
   selector: MessageInitShape<typeof ItemSelectorSchema>;
   minimumCount: number;
   targetCount: number;
+  /**
+   * Omitted or 0: never deposits.
+   */
   maximumCount?: number;
 }
 
 export interface MaintainLoadoutTaskOptions extends TaskStartOptions {
   path?: MessageInitShape<typeof PathfindOptionsSchema>;
+  /**
+   * Defaults to 100, at most 72000.
+   */
   checkIntervalTicks?: number;
+  /**
+   * 0 (the default) keeps going until cancelled.
+   */
   maximumRebalances?: number;
   completeWhenSatisfied?: boolean;
+  /**
+   * Defaults to true.
+   */
   closeContainer?: boolean;
 }
 
 export interface AutoEatTaskOptions extends TaskStartOptions {
+  /**
+   * Eats when the food level is at or below this. Defaults to 14, at most 20.
+   */
   foodLevel?: number;
+  /**
+   * Defaults to 20, at most 1200.
+   */
   checkIntervalTicks?: number;
+  /**
+   * 0 (the default) keeps going until cancelled.
+   */
   maximumMeals?: number;
   completeWhenNoFood?: boolean;
+  /**
+   * Defaults to true.
+   */
   restoreSelectedSlot?: boolean;
 }
 
 export interface AutoRespawnTaskOptions extends TaskStartOptions {
+  /**
+   * Between death and respawn. At most 12000.
+   */
   respawnDelayTicks?: number;
+  /**
+   * 0 (the default) keeps going until cancelled.
+   */
   maximumRespawns?: number;
 }
 
 export interface AutoTotemTaskOptions extends TaskStartOptions {
+  /**
+   * Defaults to 20, at most 1200.
+   */
   checkIntervalTicks?: number;
+  /**
+   * 0 (the default) keeps going until cancelled.
+   */
   maximumEquips?: number;
   completeWhenNoTotem?: boolean;
+  /**
+   * Swaps out another item held in the offhand; otherwise it is left alone.
+   */
   replaceOccupiedOffhand?: boolean;
 }
 
 export interface AutoArmorTaskOptions extends TaskStartOptions {
+  /**
+   * Defaults to 20, at most 1200.
+   */
   checkIntervalTicks?: number;
+  /**
+   * 0 (the default) keeps going until cancelled.
+   */
   maximumEquips?: number;
   completeWhenNoUpgrade?: boolean;
 }
 
 export interface CollectBlocksTaskOptions extends TaskStartOptions {
+  /**
+   * Block tags to match, besides `blockIds`.
+   */
   tags?: readonly string[];
+  /**
+   * Defaults to 1.
+   */
   count?: number;
+  /**
+   * Defaults to 32, at most 64.
+   */
   searchRadius?: number;
+  /**
+   * Skips blocks with fluid above them, up to the bot's height.
+   */
   avoidSubmergedTargets?: boolean;
+  /**
+   * Only picks blocks the bot can see, checked again after each block.
+   */
   requireLineOfSight?: boolean;
+  /**
+   * Only blocks between these heights; a missing bound is open.
+   */
   targetYRange?: Readonly<{
     minimum?: number;
     maximum?: number;
@@ -363,6 +684,9 @@ export interface CollectBlocksTaskOptions extends TaskStartOptions {
 
 export interface ExcavateTaskOptions extends TaskStartOptions {
   path?: MessageInitShape<typeof PathfindOptionsSchema>;
+  /**
+   * 0 (the default) clears the whole cuboid.
+   */
   maximumBlocks?: number;
 }
 
@@ -377,33 +701,76 @@ export interface SchematicBlock {
 }
 
 export interface BuildTaskOptions extends TaskStartOptions {
+  /**
+   * Defaults to NONE.
+   */
   rotation?: BuildRotation;
+  /**
+   * Defaults to NONE.
+   */
   mirror?: BuildMirror;
+  /**
+   * Block ids that may be placed instead of a block id of the schematic.
+   */
   substitutions?: Readonly<Record<string, readonly string[]>>;
   path?: MessageInitShape<typeof PathfindOptionsSchema>;
+  /**
+   * Defaults to true.
+   */
   breakIncorrectBlocks?: boolean;
+  /**
+   * Defaults to true.
+   */
   restoreSelectedSlot?: boolean;
+  /**
+   * Splits the blocks between bots: this one builds part `partitionIndex` of
+   * `partitionCount`. `partitionIndex` defaults to 0 and `partitionCount` to 1.
+   */
   partitionIndex?: number;
   partitionCount?: number;
 }
 
 export interface CraftTaskOptions extends TaskStartOptions {
+  /**
+   * A crafting table, for recipes that need one, unless one is already open.
+   */
   station?: MessageInitShape<typeof BlockPositionSchema>;
 }
 
 export interface SmeltTaskOptions extends TaskStartOptions {
+  /**
+   * Limits the fuel, which defaults to any valid fuel.
+   */
   fuel?: MessageInitShape<typeof ItemSelectorSchema>;
+  /**
+   * The furnace to use; needed unless a furnace menu is already open.
+   */
   station?: MessageInitShape<typeof BlockPositionSchema>;
 }
 
 export interface BrewTaskOptions extends TaskStartOptions {
+  /**
+   * Limits the fuel, which defaults to blaze powder.
+   */
   fuel?: MessageInitShape<typeof ItemSelectorSchema>;
+  /**
+   * The brewing stand to use; needed unless one is already open.
+   */
   station?: MessageInitShape<typeof BlockPositionSchema>;
+  /**
+   * Refuses to brew if the predicted potion no longer matches.
+   */
   expectedResult?: MessageInitShape<typeof ItemSelectorSchema>;
 }
 
 export interface VillagerTradeTaskOptions extends TaskStartOptions {
+  /**
+   * Closes the trade menu after a successful task.
+   */
   closeWhenDone?: boolean;
+  /**
+   * Refuses to trade if the offer's result no longer matches.
+   */
   expectedResult?: MessageInitShape<typeof ItemSelectorSchema>;
 }
 
@@ -421,6 +788,9 @@ export interface TaskListOptions extends ScopedTaskListRequest {
   call?: CallOptions;
 }
 
+/**
+ * Thrown by `SoulFireTask.result` when the task ended other than COMPLETED.
+ */
 export class SoulFireTaskError extends Error {
   public constructor(public readonly task: BotTask) {
     super(
@@ -431,6 +801,10 @@ export class SoulFireTaskError extends Error {
   }
 }
 
+/**
+ * A task the bot runs on the server. It keeps running whatever the caller does,
+ * until it ends.
+ */
 export class SoulFireTask<Result extends DescMessage | undefined = undefined> {
   #snapshot: BotTask;
 
@@ -448,10 +822,16 @@ export class SoulFireTask<Result extends DescMessage | undefined = undefined> {
     return this.#snapshot.taskId;
   }
 
+  /**
+   * The task as last fetched: `refresh`, `wait` and `cancel` update it.
+   */
   public get snapshot(): Readonly<BotTask> {
     return this.#snapshot;
   }
 
+  /**
+   * Completed, cancelled, failed or timed out.
+   */
   public get terminal(): boolean {
     return isTerminalTaskStatus(this.#snapshot.status);
   }
@@ -464,6 +844,10 @@ export class SoulFireTask<Result extends DescMessage | undefined = undefined> {
     return this.#snapshot;
   }
 
+  /**
+   * The task's events after `afterRevision`, until it ends. `afterRevision`
+   * defaults to the snapshot's.
+   */
   public events(options?: {
     afterRevision?: bigint;
     call?: CallOptions;
@@ -478,6 +862,9 @@ export class SoulFireTask<Result extends DescMessage | undefined = undefined> {
     );
   }
 
+  /**
+   * Resolves when the task ends, however it ends.
+   */
   public async wait(options?: {
     call?: CallOptions;
   }): Promise<BotTask> {
@@ -513,6 +900,10 @@ export class SoulFireTask<Result extends DescMessage | undefined = undefined> {
     return this.#snapshot;
   }
 
+  /**
+   * Waits for the end and returns the result. Throws `SoulFireTaskError` unless
+   * it completed.
+   */
   public async result(options?: {
     call?: CallOptions;
   }): Promise<
@@ -557,6 +948,12 @@ export class SoulFireTask<Result extends DescMessage | undefined = undefined> {
   }
 }
 
+/**
+ * Long jobs the server runs for the bot. Each `x` starts a task and resolves
+ * once it's accepted, not when it ends: `await (await tasks.x(...)).result()`
+ * waits for its result. Each `runX` starts it and streams its events instead,
+ * and the task is cancelled if the stream is.
+ */
 export class SoulFireTasks {
   public constructor(
     private readonly instanceId: string,
@@ -566,6 +963,9 @@ export class SoulFireTasks {
       CallOptions | undefined,
   ) {}
 
+  /**
+   * Starts a task from its input message. `resultSchema` types `result()`.
+   */
   public async start<
     Input extends DescMessage,
     Result extends DescMessage | undefined = undefined,
@@ -601,6 +1001,10 @@ export class SoulFireTasks {
     );
   }
 
+  /**
+   * Starts a task and streams its events until it ends. Unless
+   * `disconnectPolicy` says otherwise, the task is cancelled if the stream is.
+   */
   public run<Input extends DescMessage>(
     inputSchema: Input,
     input: MessageInitShape<Input>,
@@ -629,6 +1033,9 @@ export class SoulFireTasks {
     );
   }
 
+  /**
+   * Moves the bot to `goal` (see `goals`).
+   */
   public goTo(
     goal: PathfindGoal,
     options: GoToTaskOptions = {},
@@ -660,6 +1067,9 @@ export class SoulFireTasks {
     );
   }
 
+  /**
+   * Keeps within `distance` of an entity as it moves. `distance` defaults to 3.
+   */
   public followEntity(
     target: FollowEntityTarget,
     distance = 3,
@@ -691,6 +1101,9 @@ export class SoulFireTasks {
     );
   }
 
+  /**
+   * `distance` defaults to 3.
+   */
   public runFollowEntity(
     target: FollowEntityTarget,
     distance = 3,
@@ -721,6 +1134,10 @@ export class SoulFireTasks {
     );
   }
 
+  /**
+   * Chases one entity and attacks it until it's defeated or `maximumAttacks` is
+   * reached.
+   */
   public attackEntity(
     target: AttackEntityTarget,
     options: AttackEntityTaskOptions = {},
@@ -790,6 +1207,10 @@ export class SoulFireTasks {
     );
   }
 
+  /**
+   * Attacks the nearest entity matching `selector` within `radius`, then the
+   * next, up to `maximumTargets`.
+   */
   public attackNearest(
     selector: MessageInitShape<typeof EntitySelectorSchema>,
     options: AttackNearestTaskOptions = {},
@@ -867,6 +1288,10 @@ export class SoulFireTasks {
     );
   }
 
+  /**
+   * Shoots an entity with a bow or crossbow from between `minimumRange` and
+   * `maximumRange`, leading the target and aiming for the arrow's drop.
+   */
   public rangedAttack(
     target: AttackEntityTarget,
     options: RangedAttackTaskOptions = {},
@@ -888,6 +1313,9 @@ export class SoulFireTasks {
     return this.run(RangedAttackTaskSchema, input, taskOptions);
   }
 
+  /**
+   * Moves away from the nearest threat until it is `safeDistance` away.
+   */
   public flee(
     threats: MessageInitShape<typeof EntitySelectorSchema>,
     options: FleeTaskOptions = {},
@@ -945,6 +1373,9 @@ export class SoulFireTasks {
     );
   }
 
+  /**
+   * Defends `position` from `threats`.
+   */
   public guard(
     position: MessageInitShape<typeof BlockPositionSchema>,
     threats: MessageInitShape<typeof EntitySelectorSchema>,
@@ -971,6 +1402,9 @@ export class SoulFireTasks {
     );
   }
 
+  /**
+   * Defends an entity from `threats`.
+   */
   public protect(
     entity: AttackEntityTarget,
     threats: MessageInitShape<typeof EntitySelectorSchema>,
@@ -1032,6 +1466,9 @@ export class SoulFireTasks {
     return this.run(GuardTaskSchema, input, taskOptions);
   }
 
+  /**
+   * Walks to a bed and gets in.
+   */
   public sleep(
     options: SleepTaskOptions = {},
   ): Promise<SoulFireTask<typeof SleepTaskResultSchema>> {
@@ -1081,6 +1518,9 @@ export class SoulFireTasks {
     );
   }
 
+  /**
+   * Casts, waits for a bite, reels in, and repeats.
+   */
   public fish(
     options: FishTaskOptions = {},
   ): Promise<SoulFireTask<typeof FishTaskResultSchema>> {
@@ -1138,6 +1578,9 @@ export class SoulFireTasks {
     );
   }
 
+  /**
+   * Harvests mature crops around `center` and replants the ones that need it.
+   */
   public farm(
     options: FarmTaskOptions = {},
   ): Promise<SoulFireTask<typeof FarmTaskResultSchema>> {
@@ -1203,6 +1646,10 @@ export class SoulFireTasks {
     );
   }
 
+  /**
+   * Feeds pairs of adult animals until the server confirms both are in love
+   * mode.
+   */
   public breed(
     options: BreedTaskOptions = {},
   ): Promise<SoulFireTask<typeof BreedTaskResultSchema>> {
@@ -1276,6 +1723,9 @@ export class SoulFireTasks {
     );
   }
 
+  /**
+   * Visits unexplored cells around `origin`.
+   */
   public explore(
     options: ExploreTaskOptions = {},
   ): Promise<SoulFireTask<typeof ExploreTaskResultSchema>> {
@@ -1333,6 +1783,9 @@ export class SoulFireTasks {
     );
   }
 
+  /**
+   * Walks to the container, opens it and puts the items in.
+   */
   public stash(
     container: MessageInitShape<typeof BlockPositionSchema>,
     operations: readonly ContainerTransferSpec[],
@@ -1366,6 +1819,9 @@ export class SoulFireTasks {
     return this.run(ContainerTransferTaskSchema, input, taskOptions);
   }
 
+  /**
+   * Walks to the container, opens it and takes the items out.
+   */
   public withdraw(
     container: MessageInitShape<typeof BlockPositionSchema>,
     operations: readonly ContainerTransferSpec[],
@@ -1399,6 +1855,10 @@ export class SoulFireTasks {
     return this.run(ContainerTransferTaskSchema, input, taskOptions);
   }
 
+  /**
+   * Keeps each requirement's count in range by withdrawing from and depositing
+   * to `container`.
+   */
   public maintainLoadout(
     container: MessageInitShape<typeof BlockPositionSchema>,
     requirements: readonly LoadoutRequirementSpec[],
@@ -1430,6 +1890,9 @@ export class SoulFireTasks {
     return this.run(MaintainLoadoutTaskSchema, input, taskOptions);
   }
 
+  /**
+   * `maintainLoadout` once: a single rebalance, done when satisfied.
+   */
   public balanceLoadout(
     container: MessageInitShape<typeof BlockPositionSchema>,
     requirements: readonly LoadoutRequirementSpec[],
@@ -1445,6 +1908,10 @@ export class SoulFireTasks {
     });
   }
 
+  /**
+   * Eats when the food level drops to `foodLevel`. An empty `foodItemIds` (the
+   * default) eats any safe food.
+   */
   public autoEat(
     foodItemIds: readonly string[] = [],
     options: AutoEatTaskOptions = {},
@@ -1472,6 +1939,9 @@ export class SoulFireTasks {
     );
   }
 
+  /**
+   * An empty `foodItemIds` (the default) eats any safe food.
+   */
   public runAutoEat(
     foodItemIds: readonly string[] = [],
     options: AutoEatTaskOptions = {},
@@ -1498,6 +1968,9 @@ export class SoulFireTasks {
     );
   }
 
+  /**
+   * Respawns after each death.
+   */
   public autoRespawn(
     options: AutoRespawnTaskOptions = {},
   ): Promise<SoulFireTask<typeof AutoRespawnTaskResultSchema>> {
@@ -1529,6 +2002,9 @@ export class SoulFireTasks {
     );
   }
 
+  /**
+   * Keeps a totem of undying in the offhand.
+   */
   public autoTotem(
     options: AutoTotemTaskOptions = {},
   ): Promise<SoulFireTask<typeof AutoTotemTaskResultSchema>> {
@@ -1574,6 +2050,9 @@ export class SoulFireTasks {
     );
   }
 
+  /**
+   * Keeps the best armor the bot has equipped.
+   */
   public autoArmor(
     options: AutoArmorTaskOptions = {},
   ): Promise<SoulFireTask<typeof AutoArmorTaskResultSchema>> {
@@ -1607,6 +2086,9 @@ export class SoulFireTasks {
     );
   }
 
+  /**
+   * Finds, reaches and mines `count` blocks with one of `blockIds` or `tags`.
+   */
   public collectBlocks(
     blockIds: readonly string[],
     options: CollectBlocksTaskOptions = {},
@@ -1668,6 +2150,10 @@ export class SoulFireTasks {
     );
   }
 
+  /**
+   * Clears every diggable block in the cuboid from `from` to `to`, both
+   * included. At most 32,768 blocks.
+   */
   public excavate(
     from: MessageInitShape<typeof BlockPositionSchema>,
     to: MessageInitShape<typeof BlockPositionSchema>,
@@ -1713,6 +2199,9 @@ export class SoulFireTasks {
     );
   }
 
+  /**
+   * Places `blocks`, each at `origin` plus its offset. At most 8192 blocks.
+   */
   public build(
     origin: MessageInitShape<typeof BlockPositionSchema>,
     blocks: readonly SchematicBlock[],
@@ -1736,6 +2225,10 @@ export class SoulFireTasks {
     return this.run(BuildTaskSchema, input, taskOptions);
   }
 
+  /**
+   * `recipeId` comes from `recipes.list`, e.g. "display:42". `count` is recipe
+   * operations, not output items; it defaults to 1, at most 4096.
+   */
   public craft(
     recipeId: string,
     count = 1,
@@ -1757,6 +2250,10 @@ export class SoulFireTasks {
     );
   }
 
+  /**
+   * `recipeId` comes from `recipes.list`, e.g. "display:42". `count` is recipe
+   * operations, not output items; it defaults to 1, at most 4096.
+   */
   public runCraft(
     recipeId: string,
     count = 1,
@@ -1777,6 +2274,10 @@ export class SoulFireTasks {
     );
   }
 
+  /**
+   * `input` selects items that fit a known cooking recipe. `count` is input
+   * items to cook; it defaults to 1, at most 4096.
+   */
   public smelt(
     input: MessageInitShape<typeof ItemSelectorSchema>,
     count = 1,
@@ -1800,6 +2301,9 @@ export class SoulFireTasks {
     );
   }
 
+  /**
+   * `count` is input items to cook; it defaults to 1, at most 4096.
+   */
   public runSmelt(
     input: MessageInitShape<typeof ItemSelectorSchema>,
     count = 1,
@@ -1822,6 +2326,10 @@ export class SoulFireTasks {
     );
   }
 
+  /**
+   * Brews `count` potion bottles matching `input`, using one `ingredient` per
+   * bottle. `count` defaults to 1, at most 4096.
+   */
   public brew(
     input: MessageInitShape<typeof ItemSelectorSchema>,
     ingredient: MessageInitShape<typeof ItemSelectorSchema>,
@@ -1849,6 +2357,9 @@ export class SoulFireTasks {
     );
   }
 
+  /**
+   * `count` is bottles to brew; it defaults to 1, at most 4096.
+   */
   public runBrew(
     input: MessageInitShape<typeof ItemSelectorSchema>,
     ingredient: MessageInitShape<typeof ItemSelectorSchema>,
@@ -1875,6 +2386,11 @@ export class SoulFireTasks {
     );
   }
 
+  /**
+   * Trades with the merchant menu the bot has open. `offerIndex` is the
+   * zero-based index from `recipes.listVillagerTrades`. `count` defaults to 1,
+   * at most 4096.
+   */
   public villagerTrade(
     offerIndex: number,
     count = 1,
@@ -1898,6 +2414,9 @@ export class SoulFireTasks {
     );
   }
 
+  /**
+   * `count` is trades to make; it defaults to 1, at most 4096.
+   */
   public runVillagerTrade(
     offerIndex: number,
     count = 1,
@@ -1920,6 +2439,9 @@ export class SoulFireTasks {
     );
   }
 
+  /**
+   * One of this bot's tasks, by id.
+   */
   public async get<Result extends DescMessage | undefined = undefined>(
     taskId: string,
     resultSchema?: Result,
@@ -1939,6 +2461,9 @@ export class SoulFireTasks {
     );
   }
 
+  /**
+   * This bot's tasks, all pages. Ended tasks only with `includeTerminal`.
+   */
   public async list(options: TaskListOptions = {}): Promise<BotTask[]> {
     const { call, ...request } = options;
     const tasks: BotTask[] = [];
@@ -1959,6 +2484,10 @@ export class SoulFireTasks {
     return tasks;
   }
 
+  /**
+   * Events of this bot's tasks, starting with a snapshot of them unless
+   * `includeSnapshot` is false.
+   */
   public watch(options?: {
     afterSequence?: bigint;
     includeSnapshot?: boolean;

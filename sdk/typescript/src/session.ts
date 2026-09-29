@@ -39,9 +39,19 @@ const MAX_RECONNECT_DELAY_MS = 5_000;
 const SUBSCRIBER_BUFFER_SIZE = 1_024;
 
 export interface BotSessionState {
+  /**
+   * Like `blocks`, for updates that carried a full snapshot.
+   */
   readonly blockSnapshots: ReadonlyMap<string, BlockSnapshot>;
+  /**
+   * Blocks seen changing since the session opened (block update events), keyed
+   * `dimension:x:y:z`.
+   */
   readonly blocks: ReadonlyMap<string, BlockState>;
   readonly bossBars: ReadonlyMap<string, BotBossBarState>;
+  /**
+   * Entities from entity events, by entity id; removed when they despawn.
+   */
   readonly entities: ReadonlyMap<number, NearbyEntity>;
   readonly entitySnapshots: ReadonlyMap<number, EntitySnapshot>;
   readonly environment: BotEnvironmentState;
@@ -110,8 +120,17 @@ export interface BotScoreboardState {
 }
 
 export interface BotSessionOptions {
+  /**
+   * Defaults to every category except sounds, particles and chunks.
+   */
   readonly filter?: MessageInitShape<typeof BotEventFilterSchema>;
+  /**
+   * Defaults to 15, from 5 to 60.
+   */
   readonly heartbeatIntervalSeconds?: number;
+  /**
+   * Closes the session when aborted.
+   */
   readonly signal?: AbortSignal;
 }
 
@@ -125,6 +144,10 @@ export type BotEventStreamFactory = (
   options: CallOptions,
 ) => AsyncIterable<BotEvent>;
 
+/**
+ * A bot's event stream and the state it adds up to. After an error it
+ * reconnects and resumes where it left off. `await using` closes it.
+ */
 export class BotSession implements AsyncDisposable {
   readonly #abortController = new AbortController();
   readonly #events = new Set<AsyncQueue<BotEvent>>();
@@ -153,6 +176,9 @@ export class BotSession implements AsyncDisposable {
     });
   }
 
+  /**
+   * Resolves once the first event has arrived.
+   */
   public static async open(
     stream: BotEventStreamFactory,
     options: BotSessionOptions = {},
@@ -162,10 +188,16 @@ export class BotSession implements AsyncDisposable {
     return session;
   }
 
+  /**
+   * Updated before each event is handed to readers.
+   */
   public get state(): BotSessionState {
     return this.#state;
   }
 
+  /**
+   * Events from now on. A reader more than 1024 events behind loses the oldest.
+   */
   public events(): AsyncIterable<BotEvent> {
     const queue = new AsyncQueue<BotEvent>(SUBSCRIBER_BUFFER_SIZE);
     this.#events.add(queue);
@@ -182,6 +214,10 @@ export class BotSession implements AsyncDisposable {
     };
   }
 
+  /**
+   * The next event for which `predicate` is true; it gets the state including
+   * that event. No timeout unless `timeoutMs` is set.
+   */
   public async waitFor(
     predicate: (event: BotEvent, state: BotSessionState) => boolean,
     options: { readonly signal?: AbortSignal; readonly timeoutMs?: number } = {},
@@ -211,6 +247,9 @@ export class BotSession implements AsyncDisposable {
     }
   }
 
+  /**
+   * The next event of one kind, e.g. `"chat"` or `"damage"`.
+   */
   public once(
     eventCase: BotEvent["event"]["case"],
     options?: { readonly signal?: AbortSignal; readonly timeoutMs?: number },

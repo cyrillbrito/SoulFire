@@ -33,6 +33,9 @@ export type EntityTarget = Pick<
 
 export interface PlanPathOptions {
   path?: MessageInitShape<typeof PathfindOptionsSchema>;
+  /**
+   * Adds a readable description to each step.
+   */
   includeDescriptions?: boolean;
   call?: CallOptions;
 }
@@ -45,6 +48,9 @@ export class SoulFirePathfinder {
     private readonly tasks: SoulFireTasks,
   ) {}
 
+  /**
+   * Plans a route to `goal` from the loaded world, without moving the bot.
+   */
   public async plan(
     goal: PathfindGoal,
     options: PlanPathOptions = {},
@@ -65,6 +71,9 @@ export class SoulFirePathfinder {
     return response.plan;
   }
 
+  /**
+   * Same as `tasks.goTo`.
+   */
   public goTo(
     goal: PathfindGoal,
     options: GoToTaskOptions = {},
@@ -72,6 +81,9 @@ export class SoulFirePathfinder {
     return this.tasks.goTo(goal, options);
   }
 
+  /**
+   * Same as `tasks.runGoTo`.
+   */
   public run(
     goal: PathfindGoal,
     options: GoToTaskOptions = {},
@@ -79,6 +91,9 @@ export class SoulFirePathfinder {
     return this.tasks.runGoTo(goal, options);
   }
 
+  /**
+   * Same as `tasks.followEntity`: `distance` defaults to 3.
+   */
   public follow(
     target: EntityTarget,
     distance = 3,
@@ -87,6 +102,9 @@ export class SoulFirePathfinder {
     return this.tasks.followEntity(target, distance, options);
   }
 
+  /**
+   * Same as `tasks.runFollowEntity`: `distance` defaults to 3.
+   */
   public runFollow(
     target: EntityTarget,
     distance = 3,
@@ -118,20 +136,56 @@ function entityTarget(target: EntityTarget): {
   };
 }
 
+/**
+ * Builders for `PathfindGoal`. A goal's `dimension` defaults to the bot's
+ * current one; another dimension is refused.
+ */
 export interface PathGoals {
+  /**
+   * Within `radius` blocks (euclidean) of the block. `radius` defaults to 0:
+   * stand on it.
+   */
   block(position: BlockTarget, radius?: number): PathfindGoal;
+  /**
+   * Within `radius` blocks of a world position; 0 means that exact block.
+   */
   near(position: WorldTarget, radius: number): PathfindGoal;
+  /**
+   * Within `radius` blocks of an entity, updated as it moves.
+   */
   entity(target: EntityTarget, radius: number): PathfindGoal;
+  /**
+   * An X/Z column at any height. `radius` defaults to 0: that exact column.
+   */
   xz(
     x: number,
     z: number,
     options?: { dimension?: string; radius?: number },
   ): PathfindGoal;
+  /**
+   * A Y level, anywhere in X and Z.
+   */
   y(y: number, dimension?: string): PathfindGoal;
+  /**
+   * Reaches the block and breaks it.
+   */
   breakBlock(position: BlockTarget): PathfindGoal;
+  /**
+   * Reaches `position` and places the selected block there.
+   */
   placeBlock(position: BlockTarget): PathfindGoal;
+  /**
+   * At least `radius` blocks away from a position.
+   */
   awayFromPosition(position: WorldTarget, radius: number): PathfindGoal;
+  /**
+   * At least `radius` blocks away from an entity.
+   */
   awayFromEntity(target: EntityTarget, radius: number): PathfindGoal;
+  /**
+   * Reached when any of `nested` is. At least one goal; nested at most 16
+   * levels deep.
+   */
   any(nested: readonly PathfindGoal[]): PathfindGoal;
 }
 

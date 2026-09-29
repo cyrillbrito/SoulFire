@@ -44,6 +44,11 @@ export class SoulFireRecipes {
     private readonly tasks: SoulFireTasks,
   ) {}
 
+  /**
+   * Recipes in the bot's recipe book (the ones it has unlocked), sorted by id.
+   * `pageSize` defaults to 100, at most 1000; pass `nextPageToken` back as
+   * `pageToken` for the next page.
+   */
   public list(
     request: RecipeRequest<typeof ListRecipesRequestSchema> = {},
     options?: CallOptions,
@@ -54,6 +59,11 @@ export class SoulFireRecipes {
     );
   }
 
+  /**
+   * Whether the player inventory holds the ingredients for `count` crafts of
+   * `recipeId`, what is missing, and the station the recipe needs. `count`
+   * defaults to 1.
+   */
   public canCraft(
     request: RecipeRequest<typeof CanCraftRequestSchema>,
     options?: CallOptions,
@@ -64,6 +74,9 @@ export class SoulFireRecipes {
     );
   }
 
+  /**
+   * Offers of the merchant menu the bot has open.
+   */
   public listVillagerTrades(
     options?: CallOptions,
   ): Promise<ListVillagerTradesResponse> {
@@ -73,6 +86,10 @@ export class SoulFireRecipes {
     );
   }
 
+  /**
+   * Same as `tasks.craft`: `count` is recipe operations, not output items, and
+   * defaults to 1.
+   */
   public craft(
     recipeId: string,
     count = 1,
@@ -81,6 +98,10 @@ export class SoulFireRecipes {
     return this.tasks.craft(recipeId, count, options);
   }
 
+  /**
+   * Same as `tasks.runCraft`: `count` is recipe operations, not output items,
+   * and defaults to 1.
+   */
   public runCraft(
     recipeId: string,
     count = 1,
@@ -89,6 +110,9 @@ export class SoulFireRecipes {
     return this.tasks.runCraft(recipeId, count, options);
   }
 
+  /**
+   * Same as `tasks.smelt`: `count` is input items to cook, and defaults to 1.
+   */
   public smelt(
     input: MessageInitShape<typeof ItemSelectorSchema>,
     count = 1,
@@ -97,6 +121,10 @@ export class SoulFireRecipes {
     return this.tasks.smelt(input, count, options);
   }
 
+  /**
+   * Same as `tasks.runSmelt`: `count` is input items to cook, and defaults to
+   * 1.
+   */
   public runSmelt(
     input: MessageInitShape<typeof ItemSelectorSchema>,
     count = 1,
@@ -105,6 +133,9 @@ export class SoulFireRecipes {
     return this.tasks.runSmelt(input, count, options);
   }
 
+  /**
+   * Same as `tasks.brew`: `count` is bottles to brew, and defaults to 1.
+   */
   public brew(
     input: MessageInitShape<typeof ItemSelectorSchema>,
     ingredient: MessageInitShape<typeof ItemSelectorSchema>,
@@ -114,6 +145,9 @@ export class SoulFireRecipes {
     return this.tasks.brew(input, ingredient, count, options);
   }
 
+  /**
+   * Same as `tasks.runBrew`: `count` is bottles to brew, and defaults to 1.
+   */
   public runBrew(
     input: MessageInitShape<typeof ItemSelectorSchema>,
     ingredient: MessageInitShape<typeof ItemSelectorSchema>,
@@ -123,6 +157,10 @@ export class SoulFireRecipes {
     return this.tasks.runBrew(input, ingredient, count, options);
   }
 
+  /**
+   * Same as `tasks.villagerTrade`: `offerIndex` is the zero-based index from
+   * `listVillagerTrades`, and `count` defaults to 1.
+   */
   public villagerTrade(
     offerIndex: number,
     count = 1,
@@ -131,6 +169,10 @@ export class SoulFireRecipes {
     return this.tasks.villagerTrade(offerIndex, count, options);
   }
 
+  /**
+   * Same as `tasks.runVillagerTrade`: `offerIndex` is the zero-based index from
+   * `listVillagerTrades`, and `count` defaults to 1.
+   */
   public runVillagerTrade(
     offerIndex: number,
     count = 1,

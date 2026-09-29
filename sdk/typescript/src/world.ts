@@ -67,6 +67,14 @@ export class SoulFireWorld {
     );
   }
 
+  /**
+   * Blocks matching `selector` in `region`, in loaded chunks only. `region`
+   * defaults to a sphere of radius 16 around the bot; a sphere's radius is at
+   * most 128, and a box of more than 4,194,304 blocks is refused. Sorted
+   * nearest to the region's center first unless `sort` says otherwise.
+   * `pageSize` defaults to 100, at most 500; pass `nextPageToken` back as
+   * `pageToken` for the next page.
+   */
   public queryBlocks(
     request: BotScoped<typeof QueryBlocksRequestSchema>,
     options?: CallOptions,
@@ -87,6 +95,11 @@ export class SoulFireWorld {
     );
   }
 
+  /**
+   * Entities within `radius` of `origin`, the bot itself excluded. `origin`
+   * defaults to the bot's position, and `radius` to 32, at most 256. Sorted and
+   * paged like `queryBlocks`.
+   */
   public queryEntities(
     request: BotScoped<typeof QueryEntitiesRequestSchema>,
     options?: CallOptions,
@@ -97,6 +110,11 @@ export class SoulFireWorld {
     );
   }
 
+  /**
+   * The first thing a ray hits: a block, or an entity (with `includeEntities`)
+   * if one is closer. `origin` defaults to the bot's eyes, `direction` to where
+   * it looks, and `maximumDistance` to 6, at most 256.
+   */
   public raycast(
     request: BotScoped<typeof RaycastRequestSchema>,
     options?: CallOptions,
@@ -107,6 +125,9 @@ export class SoulFireWorld {
     );
   }
 
+  /**
+   * `raycast` from the bot's eyes, along where it looks.
+   */
   public raycastFromPlayer(
     request: PlayerRaycastRequest = {},
     options?: CallOptions,
@@ -117,6 +138,11 @@ export class SoulFireWorld {
     );
   }
 
+  /**
+   * The block the bot looks at, or undefined if none is within
+   * `maximumDistance`. `maximumDistance` defaults to 256, which is also the
+   * most.
+   */
   public async blockAtCursor(
     maximumDistance = 256,
     options?: CallOptions,
@@ -128,6 +154,11 @@ export class SoulFireWorld {
     return response.block;
   }
 
+  /**
+   * The entity the bot looks at, or undefined if none is within
+   * `maximumDistance` or a block is in the way. `maximumDistance` defaults to
+   * 3.5.
+   */
   public async entityAtCursor(
     maximumDistance = 3.5,
     options?: CallOptions,
@@ -139,6 +170,12 @@ export class SoulFireWorld {
     return response.entity;
   }
 
+  /**
+   * Damage `target` would take from an explosion of `power` at `center`, after
+   * its armor, resistance, enchantments and absorption. The damage radius is
+   * twice `power`; `power` must be above 0 and at most 128. Target and center
+   * must be observable in the bot's dimension.
+   */
   public estimateExplosionDamage(
     request: BotScoped<typeof EstimateExplosionDamageRequestSchema>,
     options?: CallOptions,
@@ -149,6 +186,9 @@ export class SoulFireWorld {
     );
   }
 
+  /**
+   * Whether a ray from the bot's eyes to the center of the block reaches it.
+   */
   public canSeeBlock(
     request: BotScoped<typeof CanSeeBlockRequestSchema>,
     options?: CallOptions,
@@ -159,6 +199,10 @@ export class SoulFireWorld {
     );
   }
 
+  /**
+   * How long the bot would take to break the block with what it holds now,
+   * counting its effects, attributes and surroundings.
+   */
   public estimateDigTime(
     request: BotScoped<typeof EstimateDigTimeRequestSchema>,
     options?: CallOptions,

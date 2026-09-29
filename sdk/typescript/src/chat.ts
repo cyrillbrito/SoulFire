@@ -60,6 +60,9 @@ export class SoulFireChat {
     private readonly eventStream?: BotEventStream,
   ) {}
 
+  /**
+   * To public chat. `message` can't be blank or longer than 256 characters.
+   */
   public async send(
     message: string,
     options: ChatMutationOptions = {},
@@ -77,6 +80,9 @@ export class SoulFireChat {
     return requireCompletedAction(response.result);
   }
 
+  /**
+   * Runs a command; the leading `/` is optional.
+   */
   public async command(
     command: string,
     options: ChatMutationOptions = {},
@@ -94,6 +100,9 @@ export class SoulFireChat {
     return requireCompletedAction(response.result);
   }
 
+  /**
+   * Sends `/msg <recipient> <message>`.
+   */
   public async whisper(
     recipient: string,
     message: string,
@@ -113,6 +122,10 @@ export class SoulFireChat {
     return requireCompletedAction(response.result);
   }
 
+  /**
+   * Tab-completion suggestions for `input` (a command if it starts with `/`) at
+   * `options.cursor`, which defaults to the end of `input`.
+   */
   public complete(
     input: string,
     options: TabCompleteOptions = {},
@@ -127,6 +140,12 @@ export class SoulFireChat {
     );
   }
 
+  /**
+   * Chat events matching `matcher`, as they arrive, until the caller stops
+   * iterating. A string matches as a substring of the plain text; a RegExp's
+   * groups go in `captures` and `groups`. `options.sources` keeps only those
+   * sources.
+   */
   public async *watch(
     matcher: ChatMatcher,
     options: WatchChatOptions = {},
@@ -158,6 +177,10 @@ export class SoulFireChat {
     }
   }
 
+  /**
+   * The next chat event matching `matcher` (as in `watch`). No timeout unless
+   * `timeoutMs` is set.
+   */
   public async waitFor(
     matcher: ChatMatcher,
     options: WaitForChatOptions = {},

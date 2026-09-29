@@ -39,6 +39,11 @@ export class SoulFireCamera {
     private readonly client: Client<typeof BotService>,
   ) {}
 
+  /**
+   * Renders what the bot sees as a PNG (base64 in `imageBase64`). The size
+   * defaults to 854x480, at most 1920x1080. The camera defaults to the bot's
+   * eyes, facing where it looks; `cameraX/Y/Z`, `yRot` and `xRot` move it.
+   */
   public capture(
     options: CameraRenderOptions = {},
     call?: CallOptions,
@@ -49,6 +54,9 @@ export class SoulFireCamera {
     );
   }
 
+  /**
+   * The `capture` image, decoded.
+   */
   public async captureBytes(
     options: CameraRenderOptions = {},
     call?: CallOptions,
@@ -56,6 +64,10 @@ export class SoulFireCamera {
     return decodeCameraImage(await this.capture(options, call));
   }
 
+  /**
+   * Rendered frames, one per `intervalMs`, which defaults to 1000, from 100 to
+   * 60000. A slow reader gets the newest frame and a count of the dropped ones.
+   */
   public frames(
     options: CameraStreamOptions = {},
   ): AsyncIterable<BotPovFrame> {
@@ -66,6 +78,11 @@ export class SoulFireCamera {
     );
   }
 
+  /**
+   * Top-down terrain around `centerX` and `centerZ`, which default to the bot's
+   * position. `radius` defaults to 64, from 1 to 256, and `sampleStep` to 1,
+   * from 1 to 16. Entities too with `includeEntities`.
+   */
   public worldMap(
     options: WorldMapOptions = {},
     call?: CallOptions,

@@ -31,6 +31,10 @@ export class SoulFireRegistry {
     return this.client.getRegistryIdentity(this.scope(), options);
   }
 
+  /**
+   * Entries of one registry, sorted by id, filtered by `idPrefix` and by `tags`
+   * (an entry must have all of them). `pageSize` defaults to 100, at most 1000.
+   */
   public entries(
     request: RegistryRequest<typeof ListRegistryEntriesRequestSchema>,
     options?: CallOptions,

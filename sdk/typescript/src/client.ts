@@ -166,8 +166,15 @@ export interface RequiredPluginRequirement {
   versionRange?: string;
 }
 
+/**
+ * Either `botIds` or `count`, not both.
+ */
 export interface BotSelection {
   botIds?: readonly string[];
+  /**
+   * Picks this many matching bots, shuffled if the instance's shuffle-accounts
+   * setting is on.
+   */
   count?: number;
 }
 
@@ -282,6 +289,10 @@ export class SoulFire {
     this.#sdkClient = createClient(SdkService, this.#transport);
   }
 
+  /**
+   * Connects and checks the server is compatible: its SDK API version,
+   * `requiredCapabilities` and `requiredPlugins`.
+   */
   public static async connect(options: SoulFireOptions): Promise<SoulFire> {
     const client = new SoulFire(options);
     try {
@@ -293,6 +304,9 @@ export class SoulFire {
     }
   }
 
+  /**
+   * A client that skips that check, for example to log in first.
+   */
   public static unauthenticated(options: SoulFireOptions): SoulFire {
     return new SoulFire(options);
   }
@@ -366,6 +380,9 @@ export class SoulFire {
     return createClient(service, this.#transport);
   }
 
+  /**
+   * A handle for `instanceId`, without a request.
+   */
   public instance(instanceId: string): SoulFireInstance {
     return new SoulFireInstance(
       instanceId,
@@ -565,6 +582,9 @@ export class SoulFireInstance {
     return response.result.value;
   }
 
+  /**
+   * Deletes the instance and its data for good. Its bots are stopped first.
+   */
   public delete(options?: CallOptions): Promise<void> {
     return this.#instanceClient
       .deleteInstance({ id: this.id }, options)
@@ -669,6 +689,10 @@ export class SoulFireInstance {
     );
   }
 
+  /**
+   * Every bot of the instance, online or not. Online ones come with their live
+   * state, without the inventory.
+   */
   public async bots(options?: CallOptions): Promise<BotListEntry[]> {
     const response = await this.#botClient.getBotList(
       { instanceId: this.id },
@@ -677,6 +701,9 @@ export class SoulFireInstance {
     return response.bots;
   }
 
+  /**
+   * A snapshot of every bot's desired and runtime state, then each change.
+   */
   public watchBotStatuses(
     options?: CallOptions,
   ): AsyncIterable<WatchBotStatusesResponse> {
@@ -708,6 +735,10 @@ export class SoulFireInstance {
     );
   }
 
+  /**
+   * Marks bots to run; they connect in the background. `selection` defaults to
+   * every bot not marked to run.
+   */
   public async start(
     selection?: BotSelection,
     options?: CallOptions,
@@ -731,6 +762,10 @@ export class SoulFireInstance {
     return response.bots;
   }
 
+  /**
+   * Marks bots as stopped; they disconnect in the background. `selection`
+   * defaults to every bot marked to run.
+   */
   public async stop(
     selection?: BotSelection,
     options?: CallOptions,
@@ -754,6 +789,10 @@ export class SoulFireInstance {
     return response.bots;
   }
 
+  /**
+   * Gives bots a fresh connection. `selection` defaults to every bot marked to
+   * run.
+   */
   public async restart(
     selection?: BotSelection,
     options?: CallOptions,
@@ -827,6 +866,10 @@ export class SoulFireInstance {
   }
 }
 
+/**
+ * One bot. Methods that resolve to a `BotActionResult` throw
+ * `SoulFireActionError` unless the action completed.
+ */
 export class SoulFireBot {
   #controlToken: string | undefined;
 
@@ -926,6 +969,9 @@ export class SoulFireBot {
     );
   }
 
+  /**
+   * Marks the bot to run; it connects in the background (see `waitForOnline`).
+   */
   public async start(options?: CallOptions): Promise<BotStatus> {
     const response = await this.botClient.setBotsDesiredState(
       {
@@ -938,6 +984,9 @@ export class SoulFireBot {
     return requiredBotStatus(response.bots, this.id);
   }
 
+  /**
+   * Marks the bot as stopped; it disconnects in the background.
+   */
   public async stop(options?: CallOptions): Promise<BotStatus> {
     const response = await this.botClient.setBotsDesiredState(
       {
@@ -950,6 +999,9 @@ export class SoulFireBot {
     return requiredBotStatus(response.bots, this.id);
   }
 
+  /**
+   * Gives the bot a fresh connection.
+   */
   public async restart(options?: CallOptions): Promise<BotStatus> {
     const response = await this.botClient.restartBots(
       { instanceId: this.instanceId, botIds: [this.id] },
@@ -966,6 +1018,9 @@ export class SoulFireBot {
     return response.status;
   }
 
+  /**
+   * Status, and while online the live state with the full inventory.
+   */
   public info(options?: CallOptions): Promise<BotInfoResponse> {
     return this.botClient.getBotInfo(
       { instanceId: this.instanceId, botId: this.id },
@@ -973,6 +1028,9 @@ export class SoulFireBot {
     );
   }
 
+  /**
+   * Throws if the bot is offline.
+   */
   public async liveState(options?: CallOptions): Promise<BotLiveState> {
     const response = await this.info(options);
     if (response.liveState === undefined) {
@@ -981,6 +1039,9 @@ export class SoulFireBot {
     return response.liveState;
   }
 
+  /**
+   * Resolves once the bot is online, at once if it already is.
+   */
   public async waitForOnline(options?: {
     call?: CallOptions;
     signal?: AbortSignal;
@@ -1008,6 +1069,12 @@ export class SoulFireBot {
     throw new Error(`Bot ${this.id} event stream ended before it came online`);
   }
 
+  /**
+   * The bot's live events. The first is its status; the stream stays open while
+   * the bot is stopped and follows it across reconnects. The default filter
+   * takes state changes, chat, lifecycle, inventory, damage, resource packs and
+   * titles.
+   */
   public events(
     filter: MessageInitShape<typeof BotEventFilterSchema> =
       DEFAULT_EVENT_FILTER,
@@ -1023,6 +1090,9 @@ export class SoulFireBot {
     );
   }
 
+  /**
+   * Opens a `BotSession`: the event stream and the state it adds up to.
+   */
   public observe(options?: BotSessionOptions): Promise<BotSession> {
     return BotSession.open(
       (request, callOptions) => this.liveClient.watchBotEvents(
@@ -1037,6 +1107,9 @@ export class SoulFireBot {
     );
   }
 
+  /**
+   * A chat message, or a command if it starts with `/`.
+   */
   public async sendChat(
     message: string,
     options?: CallOptions,
@@ -1052,6 +1125,9 @@ export class SoulFireBot {
     return requireCompletedAction(response.result);
   }
 
+  /**
+   * The block at `position`, if its chunk is loaded.
+   */
   public getBlock(
     request: ScopedRequest<typeof GetBlockRequestSchema>,
     options?: CallOptions,
@@ -1066,6 +1142,10 @@ export class SoulFireBot {
     );
   }
 
+  /**
+   * Blocks with one of `blockIds`, nearest first: `maxCount` of them (at most
+   * 256) within `maxDistance` of the bot (at most 128).
+   */
   public findBlocks(
     request: ScopedRequest<typeof FindBlocksRequestSchema>,
     options?: CallOptions,
@@ -1080,6 +1160,10 @@ export class SoulFireBot {
     );
   }
 
+  /**
+   * Entities within `radius` of the bot (at most 128), only of `entityTypes` if
+   * given. Players only with `includePlayers: true`.
+   */
   public listNearbyEntities(
     request: ScopedRequest<typeof ListNearbyEntitiesRequestSchema>,
     options?: CallOptions,
@@ -1094,6 +1178,11 @@ export class SoulFireBot {
     );
   }
 
+  /**
+   * Breaks the block at `position` with what the main hand holds, and resolves
+   * once it's broken. `cancel: true` stops a dig in progress instead. Needs the
+   * block within reach; times out after a minute.
+   */
   public digBlock(
     request: ScopedRequest<typeof DigBlockRequestSchema>,
     options?: CallOptions,
@@ -1108,6 +1197,10 @@ export class SoulFireBot {
     ).then((response) => requireCompletedAction(response.result));
   }
 
+  /**
+   * Places the held block against the `face` of `against`, like a right click
+   * on it: the new block goes on that side.
+   */
   public placeBlock(
     request: ScopedRequest<typeof PlaceBlockRequestSchema>,
     options?: CallOptions,
@@ -1122,6 +1215,10 @@ export class SoulFireBot {
     ).then((response) => requireCompletedAction(response.result));
   }
 
+  /**
+   * Right-clicks a block face: doors, buttons, beds, levers. `sneaking` sneaks
+   * for this click, so the held item's own use doesn't take over.
+   */
   public interactBlock(
     request: ScopedRequest<typeof InteractBlockRequestSchema>,
     options?: CallOptions,
@@ -1136,6 +1233,10 @@ export class SoulFireBot {
     ).then((response) => requireCompletedAction(response.result));
   }
 
+  /**
+   * Uses the item in `hand`: eat, drink, throw, draw a bow. `releaseItem` ends
+   * it.
+   */
   public useItem(
     request: ScopedRequest<typeof UseItemRequestSchema>,
     options?: CallOptions,
@@ -1150,6 +1251,9 @@ export class SoulFireBot {
     ).then((response) => requireCompletedAction(response.result));
   }
 
+  /**
+   * Lets go of an item in use: fires a drawn bow, stops eating.
+   */
   public releaseItem(
     request: ScopedRequest<typeof ReleaseItemRequestSchema> = {},
     options?: CallOptions,
@@ -1164,6 +1268,9 @@ export class SoulFireBot {
     ).then((response) => requireCompletedAction(response.result));
   }
 
+  /**
+   * Hits an entity within reach once, by network id.
+   */
   public attackEntity(
     request: ScopedRequest<typeof AttackEntityRequestSchema>,
     options?: CallOptions,
@@ -1178,6 +1285,9 @@ export class SoulFireBot {
     ).then((response) => requireCompletedAction(response.result));
   }
 
+  /**
+   * Right-clicks an entity within reach: trading, mounting.
+   */
   public interactEntity(
     request: ScopedRequest<typeof InteractEntityRequestSchema>,
     options?: CallOptions,
@@ -1192,6 +1302,9 @@ export class SoulFireBot {
     ).then((response) => requireCompletedAction(response.result));
   }
 
+  /**
+   * Only the animation.
+   */
   public swingArm(
     request: ScopedRequest<typeof SwingArmRequestSchema>,
     options?: CallOptions,
@@ -1206,6 +1319,9 @@ export class SoulFireBot {
     ).then((response) => requireCompletedAction(response.result));
   }
 
+  /**
+   * Respawns a dead bot, or leaves the End credits.
+   */
   public respawn(
     request: ScopedRequest<typeof RespawnRequestSchema> = {},
     options?: CallOptions,
@@ -1220,6 +1336,10 @@ export class SoulFireBot {
     ).then((response) => requireCompletedAction(response.result));
   }
 
+  /**
+   * Uses a bed within reach and resolves once the server confirms the bot is
+   * sleeping.
+   */
   public sleep(
     request: ScopedRequest<typeof SleepRequestSchema>,
     options?: CallOptions,
@@ -1244,6 +1364,9 @@ export class SoulFireBot {
     ).then((response) => requireCompletedAction(response.result));
   }
 
+  /**
+   * Rides an entity and resolves once the server confirms it.
+   */
   public async mount(
     request: ScopedRequest<typeof MountEntityRequestSchema>,
     options?: CallOptions,
@@ -1274,6 +1397,10 @@ export class SoulFireBot {
     ).then((response) => requireCompletedAction(response.result));
   }
 
+  /**
+   * Movement input while controlling a vehicle. It stays until changed; unset
+   * fields keep theirs.
+   */
   public async setVehicleControl(
     request: ScopedRequest<typeof SetVehicleControlRequestSchema>,
     options?: CallOptions,
@@ -1290,6 +1417,10 @@ export class SoulFireBot {
     return response;
   }
 
+  /**
+   * Writes a sign: exactly four `lines` (an empty string clears one), on the
+   * front if `frontText`.
+   */
   public updateSign(
     request: ScopedRequest<typeof UpdateSignRequestSchema>,
     options?: CallOptions,
@@ -1304,6 +1435,10 @@ export class SoulFireBot {
     ).then((response) => requireCompletedAction(response.result));
   }
 
+  /**
+   * Writes the writable book in hotbar slot `inventorySlot` (0-8). A `title`
+   * signs it.
+   */
   public writeBook(
     request: ScopedRequest<typeof WriteBookRequestSchema>,
     options?: CallOptions,
@@ -1346,6 +1481,9 @@ export class SoulFireBot {
     ).then((response) => requireCompletedAction(response.result));
   }
 
+  /**
+   * Starts gliding. The bot must be falling with a usable elytra.
+   */
   public startElytraFlight(
     options?: CallOptions,
   ): Promise<BotActionResult> {
@@ -1358,6 +1496,9 @@ export class SoulFireBot {
     ).then((response) => requireCompletedAction(response.result));
   }
 
+  /**
+   * Sets slot 0-45 of the inventory menu; no `item` clears it.
+   */
   public setCreativeSlot(
     request: ScopedRequest<typeof SetCreativeSlotRequestSchema>,
     options?: CallOptions,
@@ -1372,6 +1513,11 @@ export class SoulFireBot {
     ).then((response) => requireCompletedAction(response.result));
   }
 
+  /**
+   * Waits until every chunk within `radiusChunks` of the bot's chunk is loaded:
+   * 0 (the default) means its own chunk, and it's at most 16. Times out after
+   * `timeoutMs`, which defaults to 30 s, at most 5 min.
+   */
   public waitForChunks(
     request: ScopedRequest<typeof WaitForChunksRequestSchema> = {},
     options?: CallOptions,
@@ -1386,6 +1532,11 @@ export class SoulFireBot {
     );
   }
 
+  /**
+   * Pathfinds to `goal`, streaming progress until COMPLETED, FAILED or
+   * CANCELLED. A new `goTo` cancels this one. Times out after
+   * `options.timeoutSeconds`, which defaults to 5 min, at most 1 h.
+   */
   public goTo(
     request: ScopedRequest<typeof GoToRequestSchema>,
     options?: CallOptions,
@@ -1400,6 +1551,9 @@ export class SoulFireBot {
     );
   }
 
+  /**
+   * Cancels the `goTo` in progress.
+   */
   public stopPathfinding(options?: CallOptions): Promise<void> {
     return this.liveClient
       .stopPathfinding(
@@ -1412,6 +1566,10 @@ export class SoulFireBot {
       .then(() => undefined);
   }
 
+  /**
+   * The open menu, or the player's inventory: layout, slots and the carried
+   * item.
+   */
   public inventoryState(
     options?: CallOptions,
   ): Promise<BotInventoryStateResponse> {
@@ -1421,6 +1579,11 @@ export class SoulFireBot {
     );
   }
 
+  /**
+   * Clicks `slot` of the open menu like a mouse; -999 clicks outside it,
+   * dropping what the cursor holds. `clickType` defaults to LEFT_CLICK.
+   * `hotbarSlot` (0-8) is the slot SWAP_HOTBAR swaps with, and defaults to 0.
+   */
   public async clickInventory(
     slot: number,
     clickType: ClickType = ClickType.LEFT_CLICK,
@@ -1440,6 +1603,9 @@ export class SoulFireBot {
     requireSuccess(response, "Inventory click failed");
   }
 
+  /**
+   * Shift-clicks `slot`: its stack moves to the other part of the menu.
+   */
   public transferInventorySlot(
     slot: number,
     options?: CallOptions,
@@ -1452,6 +1618,10 @@ export class SoulFireBot {
     );
   }
 
+  /**
+   * Drops the stack in `slot`, or only one item when `all` is false. `all`
+   * defaults to true.
+   */
   public dropInventorySlot(
     slot: number,
     all = true,
@@ -1465,6 +1635,10 @@ export class SoulFireBot {
     );
   }
 
+  /**
+   * Picks up the stack in `fromSlot` and puts it in `toSlot`; what stays on the
+   * cursor goes back.
+   */
   public async moveInventoryStack(
     fromSlot: number,
     toSlot: number,
@@ -1478,6 +1652,9 @@ export class SoulFireBot {
     }
   }
 
+  /**
+   * Selects hotbar slot `slot`, from 0 to 8.
+   */
   public async selectHotbar(
     slot: number,
     options?: CallOptions,
@@ -1489,6 +1666,11 @@ export class SoulFireBot {
     requireSuccess(response, "Selecting a hotbar slot failed");
   }
 
+  /**
+   * Presses or releases movement keys. Keys left out keep their state, and a
+   * pressed key stays pressed until changed or `resetMovement`. Sprinting needs
+   * `forward` and a food level of 6 or more.
+   */
   public async setMovement(
     movement: BotMovement,
     options?: CallOptions,
@@ -1504,6 +1686,9 @@ export class SoulFireBot {
     requireSuccess(response, "Updating movement failed");
   }
 
+  /**
+   * Releases every movement key.
+   */
   public async resetMovement(options?: CallOptions): Promise<void> {
     const response = await this.botClient.resetMovement(
       { instanceId: this.instanceId, botId: this.id },
@@ -1512,6 +1697,10 @@ export class SoulFireBot {
     requireSuccess(response, "Resetting movement failed");
   }
 
+  /**
+   * Turns the bot. `yaw` is in degrees: 0 south, 90 west, -90 east, 180 north.
+   * `pitch` too: -90 up, 0 level, 90 down.
+   */
   public async look(
     yaw: number,
     pitch: number,
@@ -1540,6 +1729,9 @@ export class SoulFireBot {
     requireSuccess(response, "Closing container failed");
   }
 
+  /**
+   * The server dialog on screen (Minecraft 1.21.6+), if any.
+   */
   public dialog(options?: CallOptions): Promise<BotGetDialogResponse> {
     return this.botClient.getDialog(
       { instanceId: this.instanceId, botId: this.id },
@@ -1547,6 +1739,9 @@ export class SoulFireBot {
     );
   }
 
+  /**
+   * Same as `camera.capture`.
+   */
   public renderPov(
     request: {
       width?: number;
@@ -1591,6 +1786,11 @@ export class SoulFireBot {
     );
   }
 
+  /**
+   * Takes exclusive control: until the lease ends, only this client can act on
+   * the bot. Renew it before it runs out. `ttlSeconds` defaults to 30, from 5
+   * to 300.
+   */
   public async acquireControl(
     ttlSeconds = 30,
     options?: CallOptions,
@@ -1671,6 +1871,9 @@ export class SoulFireBot {
   }
 }
 
+/**
+ * `await using` releases it.
+ */
 export class SoulFireBotControlLease {
   #lease: BotControlLease | undefined;
 
@@ -1688,6 +1891,9 @@ export class SoulFireBotControlLease {
     return this.#lease;
   }
 
+  /**
+   * `ttlSeconds` defaults to 30, from 5 to 300.
+   */
   public async renew(
     ttlSeconds = 30,
     options?: CallOptions,
