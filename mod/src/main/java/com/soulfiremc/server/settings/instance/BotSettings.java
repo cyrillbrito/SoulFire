@@ -21,6 +21,7 @@ import com.soulfiremc.server.settings.lib.SettingsObject;
 import com.soulfiremc.server.settings.lib.SettingsSource;
 import com.soulfiremc.server.settings.property.*;
 import com.viaversion.viaaprilfools.api.AprilFoolsProtocolVersion;
+import com.viaversion.viafabricplus.api.protocoltranslator.ProtocolTranslation;
 import com.viaversion.viafabricplus.protocoltranslator.ProtocolTranslationImpl;
 import com.viaversion.viaversion.api.protocol.version.ProtocolVersion;
 import com.viaversion.viaversion.api.protocol.version.VersionType;
@@ -173,7 +174,10 @@ public final class BotSettings implements SettingsObject {
   }
 
   public static List<ProtocolVersion> getAvailableProtocolVersions() {
-    return ProtocolVersion.getReversedProtocols();
+    return ProtocolVersion.getReversedProtocols()
+      .stream()
+      .filter(version -> version != ProtocolTranslation.AUTO_DETECT_VERSION)
+      .toList();
   }
 
   private static ComboProperty.ComboOption[] getProtocolVersionOptions() {
