@@ -3,6 +3,7 @@
   "private": true,
   "packageManager": "bun@1.4.2",
   "workspaces": [
+    "e2e",
     "sdk/beat-game",
     "sdk/typescript"
   ],

@@ -1,0 +1,19 @@
+{
+  "name": "@soulfiremc/e2e",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --experimental-strip-types run.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "2.15.0",
+    "@effect/platform-node": "0.108.2",
+    "@soulfiremc/sdk": "workspace:*",
+    "effect": "3.22.2"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.3",
+    "typescript": "7.0.2"
+  }
+}

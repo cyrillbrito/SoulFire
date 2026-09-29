@@ -1,0 +1,3 @@
+# SoulFire's data dir for the runs, and each run's logs
+.soulfire/
+runs/
