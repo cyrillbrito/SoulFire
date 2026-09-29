@@ -3,6 +3,10 @@ import {
   type BotActionResult,
 } from "./generated/soulfire/bot_live_pb.js";
 
+/**
+ * Thrown when a bot action ends in a status other than COMPLETED. `result`
+ * holds the status and the error.
+ */
 export class SoulFireActionError extends Error {
   public constructor(public readonly result: BotActionResult) {
     super(result.error ?? `Bot action ${result.actionId} did not complete`);
@@ -10,6 +14,10 @@ export class SoulFireActionError extends Error {
   }
 }
 
+/**
+ * Returns `result` if the action completed, and throws `SoulFireActionError`
+ * otherwise.
+ */
 export function requireCompletedAction(
   result: BotActionResult | undefined,
 ): BotActionResult {
