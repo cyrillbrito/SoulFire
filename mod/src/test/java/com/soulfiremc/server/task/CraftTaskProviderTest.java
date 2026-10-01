@@ -29,11 +29,21 @@ import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.item.crafting.Ingredient;
+import net.minecraft.world.item.crafting.RecipeBookCategories;
+import net.minecraft.world.item.crafting.RecipeBookCategory;
+import net.minecraft.world.item.crafting.display.RecipeDisplay;
+import net.minecraft.world.item.crafting.display.RecipeDisplayEntry;
+import net.minecraft.world.item.crafting.display.RecipeDisplayId;
+import net.minecraft.world.item.crafting.display.ShapedCraftingRecipeDisplay;
+import net.minecraft.world.item.crafting.display.SlotDisplay;
+import net.minecraft.world.item.crafting.display.StonecutterRecipeDisplay;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import java.util.Collections;
 import java.util.List;
+import java.util.Optional;
+import java.util.OptionalInt;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -145,6 +155,51 @@ final class CraftTaskProviderTest {
 
   private static List<Ingredient> stairsIngredients(Holder<Item> cobblestone) {
     return Collections.nCopies(6, Ingredient.of(HolderSet.direct(cobblestone)));
+  }
+
+  @Test
+  void namesTheTypeOfARecipeItCannotCraft() {
+    var cutter = recipe(269, RecipeBookCategories.STONECUTTER, new StonecutterRecipeDisplay(
+      new SlotDisplay.ItemSlotDisplay(Items.COBBLESTONE),
+      new SlotDisplay.ItemSlotDisplay(Items.COBBLESTONE_STAIRS),
+      new SlotDisplay.ItemSlotDisplay(Items.STONECUTTER)
+    ));
+
+    var error = assertThrows(
+      StatusRuntimeException.class,
+      () -> CraftTaskProvider.requireCraftingRecipe(cutter)
+    );
+    assertEquals(Status.Code.FAILED_PRECONDITION, error.getStatus().getCode());
+    var description = error.getStatus().getDescription();
+    assertTrue(description.startsWith("display:269 is a minecraft:stonecutter recipe"), description);
+  }
+
+  @Test
+  void acceptsAShapedRecipe() {
+    var cobblestone = new SlotDisplay.ItemSlotDisplay(Items.COBBLESTONE);
+    var shaped = recipe(268, RecipeBookCategories.CRAFTING_BUILDING_BLOCKS, new ShapedCraftingRecipeDisplay(
+      1,
+      1,
+      List.of(cobblestone),
+      new SlotDisplay.ItemSlotDisplay(Items.COBBLESTONE_STAIRS),
+      new SlotDisplay.ItemSlotDisplay(Items.CRAFTING_TABLE)
+    ));
+
+    assertDoesNotThrow(() -> CraftTaskProvider.requireCraftingRecipe(shaped));
+  }
+
+  private static RecipeDisplayEntry recipe(
+    int id,
+    RecipeBookCategory category,
+    RecipeDisplay display
+  ) {
+    return new RecipeDisplayEntry(
+      new RecipeDisplayId(id),
+      display,
+      OptionalInt.empty(),
+      category,
+      Optional.empty()
+    );
   }
 
   private static ItemStack itemStack(Item item) {

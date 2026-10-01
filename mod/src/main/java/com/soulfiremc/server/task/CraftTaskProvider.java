@@ -107,13 +107,7 @@ public final class CraftTaskProvider implements BotTaskProvider<CraftTask> {
         .asRuntimeException();
     }
     var entry = RecipeSupport.find(context.bot(), input.getRecipeId());
-    if (!RecipeSupport.isCraftingRecipe(entry)) {
-      throw Status.FAILED_PRECONDITION
-        .withDescription(
-          "CraftTask supports shaped and shapeless crafting recipes"
-        )
-        .asRuntimeException();
-    }
+    requireCraftingRecipe(entry);
     if (entry.craftingRequirements().isEmpty()) {
       throw Status.FAILED_PRECONDITION
         .withDescription(
@@ -1017,6 +1011,17 @@ public final class CraftTaskProvider implements BotTaskProvider<CraftTask> {
   ) {
     private boolean matches(ItemStack stack) {
       return ingredientMatches(acceptedStacks, stack);
+    }
+  }
+
+  static void requireCraftingRecipe(RecipeDisplayEntry entry) {
+    if (!RecipeSupport.isCraftingRecipe(entry)) {
+      throw Status.FAILED_PRECONDITION
+        .withDescription(
+          "display:%d is a %s recipe; CraftTask supports minecraft:crafting_shaped and minecraft:crafting_shapeless recipes"
+            .formatted(entry.id().index(), RecipeSupport.type(entry))
+        )
+        .asRuntimeException();
     }
   }
 
