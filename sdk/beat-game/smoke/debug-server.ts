@@ -189,7 +189,7 @@ function indexOperations(
 }
 
 function listen(server: Server, port: number): Effect.Effect<AddressInfo, Error> {
-  return Effect.async<AddressInfo, Error>((resume) => {
+  return Effect.callback<AddressInfo, Error>((resume) => {
     const onError = (cause: Error) => resume(Effect.fail(cause));
     server.once("error", onError);
     server.listen(port, "127.0.0.1", () => {
@@ -209,7 +209,7 @@ function listen(server: Server, port: number): Effect.Effect<AddressInfo, Error>
 }
 
 function close(server: Server): Effect.Effect<void> {
-  return Effect.async<void>((resume) => {
+  return Effect.callback<void>((resume) => {
     server.close(() => resume(Effect.void));
     server.closeIdleConnections();
     server.closeAllConnections();
@@ -287,7 +287,7 @@ async function handleRequest(
       writeJson(response, 200, { ok: true, result: exit.value });
       return;
     }
-    const failure = Option.getOrUndefined(Cause.failureOption(exit.cause));
+    const failure = Option.getOrUndefined(Cause.findErrorOption(exit.cause));
     const status = failure instanceof SmokeDebugRequestError
       ? failure.status
       : 500;

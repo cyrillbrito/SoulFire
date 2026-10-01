@@ -10,7 +10,7 @@ release decision.
 
 - Run the `Publish SDKs` workflow with the final version.
 - Verify package provenance, signatures, installability, and release notes.
-- Confirm the same Effect, `@effect/platform`, protobuf, ConnectRPC, and
+- Confirm the same Effect v4, platform runtime, protobuf, ConnectRPC, and
   CPython 3.14 ranges that passed the release candidate checks.
 
 Completion means fresh projects can install the exact release from npm, PyPI,

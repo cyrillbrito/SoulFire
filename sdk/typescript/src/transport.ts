@@ -1,5 +1,5 @@
 import type { CallOptions } from "@connectrpc/connect";
-import { Effect, Option, Stream } from "effect";
+import { Cause, Effect, Stream } from "effect";
 
 import { rpcError, type SoulFireRpcError } from "./errors.js";
 
@@ -19,7 +19,7 @@ export function rpcStream<A>(
   operation: string,
   call: (signal: AbortSignal) => AsyncIterable<A>,
 ): Stream.Stream<A, SoulFireRpcError> {
-  return Stream.unwrapScoped(
+  return Stream.unwrap(
     Effect.acquireRelease(
       Effect.try({
         try: () => {
@@ -42,14 +42,14 @@ export function rpcStream<A>(
         }),
     ).pipe(
       Effect.map(({ iterator }) =>
-        Stream.repeatEffectOption(
+        Stream.fromEffectRepeat(
           Effect.tryPromise({
             try: () => iterator.next(),
-            catch: (cause) => Option.some(rpcError(operation, cause)),
+            catch: (cause) => rpcError(operation, cause),
           }).pipe(
             Effect.flatMap((result) =>
               result.done
-                ? Effect.fail(Option.none())
+                ? Cause.done()
                 : Effect.succeed(result.value),
             ),
           ),

@@ -8,7 +8,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { Effect, Either } from "effect";
+import { Effect, Result } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
@@ -40,11 +40,11 @@ describe("beat-game checkpoint stores", () => {
     const conflict = await Effect.runPromise(store.save(
       { ...initial, revision: 2 },
       0,
-    ).pipe(Effect.either));
-    expect(Either.isLeft(conflict)).toBe(true);
-    if (Either.isLeft(conflict)) {
-      expect(conflict.left).toBeInstanceOf(BeatGameCheckpointError);
-      expect(conflict.left.actualRevision).toBe(1);
+    ).pipe(Effect.result));
+    expect(Result.isFailure(conflict)).toBe(true);
+    if (Result.isFailure(conflict)) {
+      expect(conflict.failure).toBeInstanceOf(BeatGameCheckpointError);
+      expect(conflict.failure.actualRevision).toBe(1);
     }
   });
 
@@ -92,11 +92,11 @@ describe("beat-game checkpoint stores", () => {
     }));
 
     const loaded = await Effect.runPromise(
-      store.load(initial.runId).pipe(Effect.either),
+      store.load(initial.runId).pipe(Effect.result),
     );
-    expect(Either.isLeft(loaded)).toBe(true);
-    if (Either.isLeft(loaded)) {
-      expect(loaded.left).toBeInstanceOf(BeatGameCheckpointError);
+    expect(Result.isFailure(loaded)).toBe(true);
+    if (Result.isFailure(loaded)) {
+      expect(loaded.failure).toBeInstanceOf(BeatGameCheckpointError);
     }
   });
 
@@ -119,11 +119,11 @@ describe("beat-game checkpoint stores", () => {
           },
         },
       },
-    }, undefined).pipe(Effect.either));
+    }, undefined).pipe(Effect.result));
 
-    expect(Either.isLeft(result)).toBe(true);
-    if (Either.isLeft(result)) {
-      expect(result.left).toBeInstanceOf(BeatGameCheckpointError);
+    expect(Result.isFailure(result)).toBe(true);
+    if (Result.isFailure(result)) {
+      expect(result.failure).toBeInstanceOf(BeatGameCheckpointError);
     }
   });
 
@@ -148,11 +148,11 @@ describe("beat-game checkpoint stores", () => {
           },
         },
       },
-    }, undefined).pipe(Effect.either));
+    }, undefined).pipe(Effect.result));
 
-    expect(Either.isLeft(result)).toBe(true);
-    if (Either.isLeft(result)) {
-      expect(result.left).toBeInstanceOf(BeatGameCheckpointError);
+    expect(Result.isFailure(result)).toBe(true);
+    if (Result.isFailure(result)) {
+      expect(result.failure).toBeInstanceOf(BeatGameCheckpointError);
     }
   });
 });

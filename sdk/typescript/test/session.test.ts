@@ -5,9 +5,8 @@ import {
   Effect,
   Fiber,
   Stream,
-  TestClock,
-  TestContext,
 } from "effect";
+import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vitest";
 import { rpcError } from "../src/errors.js";
 import { BotEventSchema } from "../src/generated/soulfire/bot_live_pb.js";
@@ -22,7 +21,7 @@ describe("observation scopes", () => {
           let active = 0;
           const resumed = yield* Deferred.make<void>();
           const session = yield* BotSession.open((request) =>
-            Stream.unwrapScoped(
+            Stream.unwrap(
               Effect.acquireRelease(
                 Effect.sync(() => {
                   requests.push(request);
@@ -74,7 +73,7 @@ describe("observation scopes", () => {
           yield* session.close();
           expect(active).toBe(0);
         }),
-      ).pipe(Effect.provide(TestContext.TestContext)),
+      ).pipe(Effect.provide(TestClock.layer())),
     ));
 
   it("closes a subscription interrupted before its first event", () =>
@@ -84,7 +83,7 @@ describe("observation scopes", () => {
           let active = 0;
           const started = yield* Deferred.make<void>();
           const open = BotSession.open(() =>
-            Stream.unwrapScoped(
+            Stream.unwrap(
               Effect.acquireRelease(
                 Effect.sync(() => {
                   active += 1;
@@ -112,10 +111,10 @@ describe("observation scopes", () => {
       const failure = rpcError("watch", new ConnectError("revoked", Code.PermissionDenied));
       const session = yield* BotSession.open(() => Stream.concat(
         Stream.make(create(BotEventSchema, { envelope: { sequence: 1n } })),
-        Stream.fromEffect(Deferred.await(release).pipe(Effect.zipRight(Effect.fail(failure)))),
+        Stream.fromEffect(Deferred.await(release).pipe(Effect.andThen(Effect.fail(failure)))),
       ));
       const waiter = yield* session.once("stateDelta").pipe(Effect.forkScoped);
-      yield* Effect.yieldNow();
+      yield* Effect.yieldNow;
       yield* Deferred.succeed(release, undefined);
       expect(yield* Fiber.join(waiter).pipe(Effect.flip)).toBe(failure);
       expect(yield* session.once("stateDelta").pipe(Effect.flip)).toBe(failure);

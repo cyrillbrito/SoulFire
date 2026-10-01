@@ -14,7 +14,7 @@ import {
   createGrpcWebTransport,
   type GrpcWebTransportOptions,
 } from "@connectrpc/connect-web";
-import * as HttpClient from "@effect/platform/HttpClient";
+import * as HttpClient from "effect/http/HttpClient";
 import { Context, Effect, Layer, Option, Stream, type Scope } from "effect";
 import {
   operationError,
@@ -162,7 +162,7 @@ export interface RequiredPluginRequirement {
 }
 
 /**
- * Either `botIds` or `count`, not both.
+ * Result `botIds` or `count`, not both.
  */
 export interface BotSelection {
   botIds?: readonly string[];
@@ -419,7 +419,7 @@ export class SoulFireClient {
   public instances(
     options?: CallOptions,
   ): Effect.Effect<InstanceListResponse_Instance[], SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const response = yield* rpc("SoulFire.instances", (signal) =>
         this.#instanceClient.listInstances({}, withSignal(options, signal)),
       );
@@ -431,7 +431,7 @@ export class SoulFireClient {
     friendlyName: string,
     options?: CallOptions,
   ): Effect.Effect<SoulFireInstance, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const response = yield* rpc("SoulFire.createInstance", (signal) =>
         this.#instanceClient.createInstance(
           { friendlyName },
@@ -456,7 +456,7 @@ export class SoulFireClient {
     code: string,
     options?: CallOptions,
   ): Effect.Effect<NextAuthFlowResponse, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const response = yield* rpc("SoulFire.completeLogin", (signal) =>
         this.#loginClient.emailCode(
           { authFlowToken, code },
@@ -501,7 +501,7 @@ export class SoulFireClient {
   #handshake(
     options: SoulFireOptions,
   ): Effect.Effect<void, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const response = yield* rpc("SoulFire.handshake", (signal) =>
         this.#sdkClient.handshake(
           {
@@ -605,7 +605,7 @@ export class SoulFireInstance {
   public info(
     options?: CallOptions,
   ): Effect.Effect<InstanceInfo, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const response = yield* rpc("SoulFireInstance.info", (signal) =>
         this.#instanceClient.getInstanceInfo(
           { id: this.id },
@@ -741,7 +741,7 @@ export class SoulFireInstance {
     options?: CallOptions,
   ): Stream.Stream<CredentialsAuthResponse, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         return rpcStream("SoulFireInstance.loginCredentials", (signal) =>
           this.#requireMcAuthClient().loginCredentials(
             { ...request, instanceId: this.id },
@@ -757,7 +757,7 @@ export class SoulFireInstance {
     options?: CallOptions,
   ): Stream.Stream<DeviceCodeAuthResponse, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         return rpcStream("SoulFireInstance.loginDeviceCode", (signal) =>
           this.#requireMcAuthClient().loginDeviceCode(
             { ...request, instanceId: this.id },
@@ -787,7 +787,7 @@ export class SoulFireInstance {
   public bots(
     options?: CallOptions,
   ): Effect.Effect<BotListEntry[], SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const response = yield* rpc("SoulFireInstance.bots", (signal) =>
         this.#botClient.getBotList(
           { instanceId: this.id },
@@ -805,7 +805,7 @@ export class SoulFireInstance {
     options?: CallOptions,
   ): Stream.Stream<WatchBotStatusesResponse, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         return rpcStream("SoulFireInstance.watchBotStatuses", (signal) =>
           this.#botClient.watchBotStatuses(
             { instanceId: this.id },
@@ -828,7 +828,7 @@ export class SoulFireInstance {
     options?: CallOptions,
   ): Stream.Stream<InstanceEvent, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         if (this.#instanceLiveClient === undefined) {
           return yield* Effect.fail(
             operationError(
@@ -859,7 +859,7 @@ export class SoulFireInstance {
     selection?: BotSelection,
     options?: CallOptions,
   ): Effect.Effect<BotStatus[], SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const botIds = yield* this.#selectBotIds(
         selection,
         (bot) => bot.status?.desiredState !== BotDesiredState.RUNNING,
@@ -890,7 +890,7 @@ export class SoulFireInstance {
     selection?: BotSelection,
     options?: CallOptions,
   ): Effect.Effect<BotStatus[], SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const botIds = yield* this.#selectBotIds(
         selection,
         (bot) => bot.status?.desiredState === BotDesiredState.RUNNING,
@@ -921,7 +921,7 @@ export class SoulFireInstance {
     selection?: BotSelection,
     options?: CallOptions,
   ): Effect.Effect<BotStatus[], SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const botIds = yield* this.#selectBotIds(
         selection,
         (bot) => bot.status?.desiredState === BotDesiredState.RUNNING,
@@ -945,7 +945,7 @@ export class SoulFireInstance {
     countFilter: (bot: BotListEntry) => boolean,
     options: CallOptions | undefined,
   ): Effect.Effect<string[], SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       if (selection?.botIds !== undefined && selection.count !== undefined) {
         return yield* Effect.fail(
           operationError(
@@ -976,7 +976,7 @@ export class SoulFireInstance {
   #shuffleAccountsEnabled(
     options?: CallOptions,
   ): Effect.Effect<boolean, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const response = yield* rpc(
         "SoulFireInstance.shuffleAccountsEnabled",
         (signal) =>
@@ -1117,7 +1117,7 @@ export class SoulFireBot {
   public start(
     options?: CallOptions,
   ): Effect.Effect<BotStatus, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const response = yield* rpc("SoulFireBot.start", (signal) =>
         this.botClient.setBotsDesiredState(
           {
@@ -1141,7 +1141,7 @@ export class SoulFireBot {
   public stop(
     options?: CallOptions,
   ): Effect.Effect<BotStatus, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const response = yield* rpc("SoulFireBot.stop", (signal) =>
         this.botClient.setBotsDesiredState(
           {
@@ -1165,7 +1165,7 @@ export class SoulFireBot {
   public restart(
     options?: CallOptions,
   ): Effect.Effect<BotStatus, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const response = yield* rpc("SoulFireBot.restart", (signal) =>
         this.botClient.restartBots(
           { instanceId: this.instanceId, botIds: [this.id] },
@@ -1182,7 +1182,7 @@ export class SoulFireBot {
   public status(
     options?: CallOptions,
   ): Effect.Effect<BotStatus, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const response = yield* this.info(options);
       if (response.status === undefined) {
         return yield* Effect.fail(
@@ -1216,7 +1216,7 @@ export class SoulFireBot {
   public liveState(
     options?: CallOptions,
   ): Effect.Effect<BotLiveState, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const response = yield* this.info(options);
       if (response.liveState === undefined) {
         return yield* Effect.fail(
@@ -1236,7 +1236,7 @@ export class SoulFireBot {
   public waitForOnline(options?: {
     call?: CallOptions;
   }): Effect.Effect<BotStatus, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const current = yield* this.info(options?.call);
       if (current.status === undefined)
         return yield* Effect.fail(
@@ -1286,7 +1286,7 @@ export class SoulFireBot {
     options?: CallOptions,
   ): Stream.Stream<BotEvent, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         return rpcStream("SoulFireBot.events", (signal) =>
           this.liveClient.watchBotEvents(
             {
@@ -1329,7 +1329,7 @@ export class SoulFireBot {
     message: string,
     options?: CallOptions,
   ): Effect.Effect<BotActionResult, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const response = yield* rpc("SoulFireBot.sendChat", (signal) =>
         this.liveClient.sendChat(
           {
@@ -1700,7 +1700,7 @@ export class SoulFireBot {
     request: ScopedRequest<typeof MountEntityRequestSchema>,
     options?: CallOptions,
   ): Effect.Effect<MountEntityResponse, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const response = yield* rpc("SoulFireBot.mount", (signal) =>
         this.liveClient.mountEntity(
           {
@@ -1750,7 +1750,7 @@ export class SoulFireBot {
     request: ScopedRequest<typeof SetVehicleControlRequestSchema>,
     options?: CallOptions,
   ): Effect.Effect<SetVehicleControlResponse, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const response = yield* rpc("SoulFireBot.setVehicleControl", (signal) =>
         this.liveClient.setVehicleControl(
           {
@@ -1954,7 +1954,7 @@ export class SoulFireBot {
     options?: CallOptions,
   ): Stream.Stream<PathfindProgress, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         return rpcStream("SoulFireBot.goTo", (signal) =>
           this.liveClient.goTo(
             {
@@ -2015,7 +2015,7 @@ export class SoulFireBot {
     hotbarSlot = 0,
     options?: CallOptions,
   ): Effect.Effect<void, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const response = yield* rpc("SoulFireBot.clickInventory", (signal) =>
         this.botClient.clickInventorySlot(
           {
@@ -2071,7 +2071,7 @@ export class SoulFireBot {
     toSlot: number,
     options?: CallOptions,
   ): Effect.Effect<void, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       yield* this.clickInventory(fromSlot, ClickType.LEFT_CLICK, 0, options);
       yield* this.clickInventory(toSlot, ClickType.LEFT_CLICK, 0, options);
       const state = yield* this.inventoryState(options);
@@ -2088,7 +2088,7 @@ export class SoulFireBot {
     slot: number,
     options?: CallOptions,
   ): Effect.Effect<void, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const response = yield* rpc("SoulFireBot.selectHotbar", (signal) =>
         this.botClient.setHotbarSlot(
           { instanceId: this.instanceId, botId: this.id, slot },
@@ -2111,7 +2111,7 @@ export class SoulFireBot {
     movement: BotMovement,
     options?: CallOptions,
   ): Effect.Effect<void, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const response = yield* rpc("SoulFireBot.setMovement", (signal) =>
         this.botClient.setMovementState(
           {
@@ -2135,7 +2135,7 @@ export class SoulFireBot {
   public resetMovement(
     options?: CallOptions,
   ): Effect.Effect<void, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const response = yield* rpc("SoulFireBot.resetMovement", (signal) =>
         this.botClient.resetMovement(
           { instanceId: this.instanceId, botId: this.id },
@@ -2158,7 +2158,7 @@ export class SoulFireBot {
     pitch: number,
     options?: CallOptions,
   ): Effect.Effect<void, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const response = yield* rpc("SoulFireBot.look", (signal) =>
         this.botClient.setRotation(
           { instanceId: this.instanceId, botId: this.id, yaw, pitch },
@@ -2175,7 +2175,7 @@ export class SoulFireBot {
   public openInventory(
     options?: CallOptions,
   ): Effect.Effect<void, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const response = yield* rpc("SoulFireBot.openInventory", (signal) =>
         this.botClient.openInventory(
           { instanceId: this.instanceId, botId: this.id },
@@ -2192,7 +2192,7 @@ export class SoulFireBot {
   public closeContainer(
     options?: CallOptions,
   ): Effect.Effect<void, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const response = yield* rpc("SoulFireBot.closeContainer", (signal) =>
         this.botClient.closeContainer(
           { instanceId: this.instanceId, botId: this.id },
@@ -2284,7 +2284,7 @@ export class SoulFireBot {
     ttlSeconds = 30,
     options?: CallOptions,
   ): Effect.Effect<SoulFireBotControlLease, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       if (this.#controlToken !== undefined) {
         return yield* Effect.fail(
           operationError(
@@ -2337,7 +2337,7 @@ export class SoulFireBot {
     ttlSeconds: number,
     options?: CallOptions,
   ): Effect.Effect<BotControlLease, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const response = yield* rpc("SoulFireBot.renewControl", (signal) =>
         this.liveClient.renewBotControl(
           {
@@ -2366,7 +2366,7 @@ export class SoulFireBot {
     lease: BotControlLease,
     options?: CallOptions,
   ): Effect.Effect<void, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       yield* rpc("SoulFireBot.releaseControl", (signal) =>
         this.liveClient.releaseBotControl(
           {
@@ -2430,7 +2430,7 @@ export class SoulFireBotControlLease {
     ttlSeconds = 30,
     options?: CallOptions,
   ): Effect.Effect<BotControlLease, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const lease = yield* this.bot.renewControl(
         this.value,
         ttlSeconds,
@@ -2444,7 +2444,7 @@ export class SoulFireBotControlLease {
   public release(
     options?: CallOptions,
   ): Effect.Effect<void, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const lease = this.#lease;
       if (lease === undefined) {
         return;
@@ -2492,9 +2492,10 @@ function requireSuccess(
   }
 }
 
-export class SoulFireService extends Context.Tag(
-  "@soulfiremc/sdk/SoulFireService",
-)<SoulFireService, SoulFireClient>() {}
+export class SoulFireService extends Context.Service<
+  SoulFireService,
+  SoulFireClient
+>()("@soulfiremc/sdk/SoulFireService") {}
 
 export const SoulFire = {
   connect: SoulFireClient.connect,
@@ -2509,9 +2510,9 @@ export const SoulFire = {
     );
   },
   layer(options: SoulFireOptions) {
-    return Layer.scoped(SoulFireService, SoulFireClient.connect(options));
+    return Layer.effect(SoulFireService, SoulFireClient.connect(options));
   },
   layerWithHttpClient(options: SoulFireOptions) {
-    return Layer.scoped(SoulFireService, this.connectWithHttpClient(options));
+    return Layer.effect(SoulFireService, this.connectWithHttpClient(options));
   },
 };

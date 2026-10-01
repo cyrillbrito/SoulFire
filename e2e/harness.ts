@@ -8,7 +8,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { create } from "@bufbuild/protobuf";
 import { ValueSchema } from "@bufbuild/protobuf/wkt";
-import type { SoulFireBot, SoulFireRpcError, SoulFireTaskFailed } from "@soulfiremc/sdk";
+import type { SoulFireBot, SoulFireOperationError } from "@soulfiremc/sdk";
 import {
   MinecraftAccountProto_AccountTypeProto,
   MinecraftAccountProto_OfflineJavaDataSchema,
@@ -32,15 +32,15 @@ export class CommandFailed extends Data.TaggedError("CommandFailed")<{ readonly 
 /** Something a test or the setup expected didn't happen. */
 export class CheckFailed extends Data.TaggedError("CheckFailed")<{ readonly message: string }> {}
 
-export type TestError = CommandFailed | CheckFailed | SoulFireRpcError | SoulFireTaskFailed;
+export type TestError = CommandFailed | CheckFailed | SoulFireOperationError;
 
 /** Fails with `message` unless `condition` holds. */
 export const check = (condition: boolean, message: string): Effect.Effect<void, CheckFailed> =>
   condition ? Effect.void : Effect.fail(new CheckFailed({ message }));
 
 /** Retries `effect` until it succeeds or `timeout` has passed; then fails with its last error. */
-export const eventually = <A, E, R>(effect: Effect.Effect<A, E, R>, timeout: Duration.DurationInput, interval: Duration.DurationInput = "250 millis") =>
-  Effect.retry(effect, Schedule.spaced(interval).pipe(Schedule.upTo(timeout)));
+export const eventually = <A, E, R>(effect: Effect.Effect<A, E, R>, timeout: Duration.Input, interval: Duration.Input = "250 millis") =>
+  Effect.retry(effect, Schedule.spaced(interval).pipe(Schedule.upTo({ duration: timeout })));
 
 const run = (command: string, args: readonly string[], options: { maxBuffer?: number } = {}) =>
   Effect.tryPromise({

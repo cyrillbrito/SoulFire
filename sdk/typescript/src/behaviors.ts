@@ -81,15 +81,16 @@ export function retry<A, E, R>(behavior: BotBehavior<A, E, R>, options: RetryOpt
   const backoff = positiveFinite(options.backoff ?? 1, "backoff");
   const maximumDelay = nonNegativeFinite(options.maximumDelayMs ?? Number.MAX_SAFE_INTEGER, "maximumDelayMs");
   const schedule = Schedule.exponential(initialDelay, backoff).pipe(
-    Schedule.modifyDelay((delay) => Duration.millis(Math.min(Duration.toMillis(delay), maximumDelay))),
-    Schedule.intersect(Schedule.recurs(attempts - 1)),
+    Schedule.modifyDelay(({ duration }) =>
+      Effect.succeed(Duration.min(duration, Duration.millis(maximumDelay)))),
+    Schedule.upTo({ times: attempts - 1 }),
   );
   return defineBehavior((bot) => Effect.suspend(() => behavior.run(bot)).pipe(Effect.retry({ schedule, while: options.while ?? (() => true) })));
 }
 
 export function timeout<A, E, R>(behavior: BotBehavior<A, E, R>, durationMs: number): BotBehavior<A, E | SoulFireBehaviorError, R> {
   const duration = positiveFinite(durationMs, "durationMs");
-  return defineBehavior((bot) => behavior.run(bot).pipe(Effect.timeoutFail({ duration, onTimeout: () => new SoulFireBehaviorError({ behavior: "timeout", message: `Behavior exceeded ${duration} ms` }) })));
+  return defineBehavior((bot) => behavior.run(bot).pipe(Effect.timeoutOrElse({ duration, orElse: () => Effect.fail(new SoulFireBehaviorError({ behavior: "timeout", message: `Behavior exceeded ${duration} ms` })) })));
 }
 
 export interface UntilOptions { readonly maximumIterations?: number; }
@@ -119,7 +120,7 @@ export function conditional<A, E, R, B = void, E2 = never, R2 = never, EP = neve
 }
 
 export function fallback<A, E, R>(primary: BotBehavior<A, E, R>, ...alternatives: readonly BotBehavior<A, E, R>[]): BotBehavior<A, E, R> {
-  return defineBehavior((bot) => alternatives.reduce((current, alternative) => current.pipe(Effect.orElse(() => alternative.run(bot))), primary.run(bot)));
+  return defineBehavior((bot) => alternatives.reduce((current, alternative) => current.pipe(Effect.catch(() => alternative.run(bot))), primary.run(bot)));
 }
 export function cleanup<A, E, R, E2, R2>(behavior: BotBehavior<A, E, R>, finalizer: BotBehavior<unknown, E2, R2>): BotBehavior<A, E, R | R2> {
   return defineBehavior((bot) => behavior.run(bot).pipe(Effect.ensuring(finalizer.run(bot).pipe(Effect.orDie))));
@@ -339,7 +340,7 @@ function completeTask(
 > {
   return Stream.runFold(
     events,
-    Option.none<BotTaskEvent>(),
+    () => Option.none<BotTaskEvent>(),
     (_, event) => Option.some(event),
   ).pipe(
     Effect.flatMap((last) => {

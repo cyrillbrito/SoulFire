@@ -408,7 +408,7 @@ describe("beat-game behavior programs", () => {
       });
       return policy.avoidFluids
         ? recordPath.pipe(
-          Effect.zipRight(Effect.fail(new BeatGameDriverError({
+          Effect.andThen(Effect.fail(new BeatGameDriverError({
             operation: "pathfind",
             code: "unreachable",
             retryable: false,
@@ -1139,7 +1139,7 @@ describe("beat-game behavior programs", () => {
       Effect.sync(() => {
         driver.paths.push({ position: target, radius, policy });
       }).pipe(
-        Effect.zipRight(Effect.fail(new BeatGameDriverError({
+        Effect.andThen(Effect.fail(new BeatGameDriverError({
           operation: "pathfind",
           retryable: true,
           message: "No safe route to drop",
@@ -1334,12 +1334,12 @@ describe("beat-game behavior programs", () => {
     installStaircaseMovementSimulation(driver, from);
 
     const result = await Effect.runPromise(
-      excavateStaircase(driver, { from, to }).pipe(Effect.either),
+      excavateStaircase(driver, { from, to }).pipe(Effect.result),
     );
 
     expect(result).toMatchObject({
-      _tag: "Left",
-      left: {
+      _tag: "Failure",
+      failure: {
         operation: "select-staircase-tool",
         code: "not_found",
         retryable: true,
@@ -1662,7 +1662,7 @@ describe("beat-game behavior programs", () => {
             },
           };
         }).pipe(
-          Effect.zipRight(Effect.fail(new BeatGameDriverError({
+          Effect.andThen(Effect.fail(new BeatGameDriverError({
             operation: "pathfind",
             retryable: true,
             message: "fell into an existing room",
@@ -1764,12 +1764,12 @@ describe("beat-game behavior programs", () => {
 
     installStaircaseMovementSimulation(driver, from);
     const result = await Effect.runPromise(
-      excavateStaircase(driver, { from, to }).pipe(Effect.either),
+      excavateStaircase(driver, { from, to }).pipe(Effect.result),
     );
 
     expect(result).toMatchObject({
-      _tag: "Left",
-      left: { code: "unsupported_opening", retryable: true },
+      _tag: "Failure",
+      failure: { code: "unsupported_opening", retryable: true },
     });
     expect(driver.actions).not.toContainEqual(expect.objectContaining({
       type: "place-block",
@@ -1886,7 +1886,7 @@ describe("beat-game behavior programs", () => {
 
     installStaircaseMovementSimulation(driver, from);
     const result = await Effect.runPromise(
-      excavateStaircase(driver, { from, to }).pipe(Effect.either),
+      excavateStaircase(driver, { from, to }).pipe(Effect.result),
     );
 
     expect(driver.actions).not.toContainEqual(expect.objectContaining({
@@ -1896,8 +1896,8 @@ describe("beat-game behavior programs", () => {
       position: feetCenter(to),
     }));
     expect(result).toMatchObject({
-      _tag: "Left",
-      left: {
+      _tag: "Failure",
+      failure: {
         code: "fluid_exposed",
         retryable: true,
       },
@@ -1949,7 +1949,7 @@ describe("beat-game behavior programs", () => {
 
     installStaircaseMovementSimulation(driver, from);
     const result = await Effect.runPromise(
-      excavateStaircase(driver, { from, to }).pipe(Effect.either),
+      excavateStaircase(driver, { from, to }).pipe(Effect.result),
     );
 
     expect(driver.actions).toContainEqual({
@@ -1965,8 +1965,8 @@ describe("beat-game behavior programs", () => {
       z: from.z + 0.5,
     });
     expect(result).toMatchObject({
-      _tag: "Left",
-      left: {
+      _tag: "Failure",
+      failure: {
         code: "fluid_exposed",
         retryable: true,
       },
@@ -2009,12 +2009,12 @@ describe("beat-game behavior programs", () => {
 
     installStaircaseMovementSimulation(driver, from);
     const result = await Effect.runPromise(
-      excavateStaircase(driver, { from, to }).pipe(Effect.either),
+      excavateStaircase(driver, { from, to }).pipe(Effect.result),
     );
 
     expect(result).toMatchObject({
-      _tag: "Left",
-      left: { code: "unsupported_opening", retryable: true },
+      _tag: "Failure",
+      failure: { code: "unsupported_opening", retryable: true },
     });
     expect(driver.paths).toContainEqual(expect.objectContaining({
       position: feetCenter(firstStep),
@@ -2783,11 +2783,11 @@ describe("beat-game behavior programs", () => {
     const result = await Effect.runPromise(craftItem(driver, {
       resultItemId: "minecraft:fishing_rod",
       count: 1,
-    }).pipe(Effect.either));
+    }).pipe(Effect.result));
 
-    expect(result._tag).toBe("Left");
-    if (result._tag === "Left") {
-      expect(result.left.code).toBe("resource-exhausted");
+    expect(result._tag).toBe("Failure");
+    if (result._tag === "Failure") {
+      expect(result.failure.code).toBe("resource-exhausted");
     }
   });
 
@@ -3178,7 +3178,7 @@ describe("beat-game behavior programs", () => {
     driver.pathResolver = (position, radius, policy) =>
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(enterPortal(driver, { portal }));
 
@@ -5111,7 +5111,7 @@ describe("beat-game behavior programs", () => {
           && position.z === castingStand.z
           && radius === 0
           && policy.allowMining === false
-        ? record.pipe(Effect.zipRight(Effect.fail(
+        ? record.pipe(Effect.andThen(Effect.fail(
           new BeatGameDriverError({
             operation: "pathfind",
             code: "task_failed",

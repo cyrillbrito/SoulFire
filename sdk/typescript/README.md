@@ -10,14 +10,14 @@ workflow through `Effect.runPromise` when your application uses async functions.
 ## Install
 
 ```bash
-bun add @soulfiremc/sdk effect @effect/platform
+bun add @soulfiremc/sdk effect@^4
 ```
 
-The SDK requires a compatible Effect runtime. Use
+The SDK requires Effect v4. Use
 `@soulfiremc/sdk/node`, `@soulfiremc/sdk/browser`, or
 `@soulfiremc/sdk/bun` to use the matching live HTTP layer from SoulFire. The
 universal entry point also accepts any
-`@effect/platform/HttpClient`, which keeps tests, workers, Deno, and custom
+`effect/http/HttpClient`, which keeps tests, workers, Deno, and custom
 transport policies portable.
 
 ## Install a managed local server on Node.js
@@ -104,9 +104,9 @@ await Effect.runPromise(
 );
 ```
 
-`SoulFire.layerWithHttpClient` accepts an `@effect/platform/HttpClient`. This
+`SoulFire.layerWithHttpClient` accepts an `effect/http/HttpClient`. This
 is the preferred portability boundary when an application already uses Effect
-Platform. The Node entry uses `NodeHttpClient.layerUndici`; browser and Bun
+HTTP. The Node entry uses `NodeHttpClient.layerUndici`; browser and Bun
 entries use `FetchHttpClient.layer`.
 
 The lower-level `makeEffectHttpClientFetch` adapter is exported from

@@ -47,7 +47,7 @@ export class InMemoryBeatGameCheckpointStore
     checkpoint: BeatGameCheckpoint,
     expectedRevision: number | undefined,
   ): Effect.Effect<BeatGameCheckpoint, BeatGameCheckpointError> =>
-    Effect.gen(this, function* () {
+    Effect.gen({ self: this }, function* () {
       yield* Effect.try({
         try: () => assertValidCheckpoint(checkpoint),
         catch: (cause) =>
@@ -75,7 +75,7 @@ export class InMemoryBeatGameCheckpointStore
     runId: string,
     expectedRevision?: number,
   ): Effect.Effect<void, BeatGameCheckpointError> =>
-    Effect.gen(this, function* () {
+    Effect.gen({ self: this }, function* () {
       const current = this.#checkpoints.get(runId);
       if (
         expectedRevision !== undefined

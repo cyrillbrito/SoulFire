@@ -1,5 +1,5 @@
 import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient";
-import * as HttpClient from "@effect/platform/HttpClient";
+import * as HttpClient from "effect/http/HttpClient";
 import { Effect, Layer, type Scope } from "effect";
 
 import { type SoulFireOptions } from "./client.js";
@@ -15,7 +15,7 @@ import { makeEffectHttpClientFetch } from "./platform.js";
 
 export * from "./index.js";
 
-const nodeHttpClientLayer = NodeHttpClient.layerUndiciWithoutDispatcher.pipe(
+const nodeHttpClientLayer = NodeHttpClient.layerUndiciNoDispatcher.pipe(
   Layer.provide(NodeHttpClient.dispatcherLayerGlobal),
 );
 
@@ -62,7 +62,7 @@ function install(
 function installLayer(
   options: SoulFireInstallOptions = {},
 ): Layer.Layer<SoulFireService, SoulFireConnectionError> {
-  return Layer.scoped(SoulFireService, install(options));
+  return Layer.effect(SoulFireService, install(options));
 }
 
 export const SoulFire = {

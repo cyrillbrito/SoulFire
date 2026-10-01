@@ -162,7 +162,7 @@ export class BotSession {
   private constructor(
     private readonly eventsHub: PubSub.PubSub<Exit.Exit<BotEvent, SoulFireOperationError>>,
     private readonly ready: Deferred.Deferred<void, SoulFireOperationError>,
-    private readonly scope: Scope.CloseableScope,
+    private readonly scope: Scope.Closeable,
   ) {}
 
   public static open(
@@ -225,12 +225,12 @@ export class BotSession {
     return options.timeoutMs === undefined
       ? next
       : next.pipe(
-          Effect.timeoutFail({
+          Effect.timeoutOrElse({
             duration: options.timeoutMs,
-            onTimeout: () =>
-              new SoulFireTimeoutError({
+            orElse: () =>
+              Effect.fail(new SoulFireTimeoutError({
                 operation: "session.waitFor", message: "Timed out waiting for a bot event",
-              }),
+              })),
           }),
         );
   }
@@ -250,7 +250,7 @@ export class BotSession {
     stream: BotEventStreamFactory,
     options: BotSessionOptions,
   ): Effect.Effect<void> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       let receivedEvent = false;
       let delay = DEFAULT_RECONNECT_DELAY_MS;
       while (true) {
@@ -258,7 +258,7 @@ export class BotSession {
           afterSequence: this.#state.sequence, streamEpoch: this.#state.epoch,
         };
         const exit = yield* stream({ ...cursor, filter: options.filter ?? defaultFilter(), heartbeatIntervalSeconds: options.heartbeatIntervalSeconds ?? 15 }, {}).pipe(
-          Stream.runForEach((event) => Effect.gen(this, function* () {
+          Stream.runForEach((event) => Effect.gen({ self: this }, function* () {
             this.#state = reduceBotSessionState(this.#state, event);
             receivedEvent = true;
             delay = DEFAULT_RECONNECT_DELAY_MS;
@@ -268,7 +268,7 @@ export class BotSession {
           Effect.exit,
         );
         if (Exit.isFailure(exit)) {
-          const failure = Cause.failureOption(exit.cause);
+          const failure = Cause.findErrorOption(exit.cause);
           if (!receivedEvent || Option.isNone(failure) || failure.value._tag !== "SoulFireRpcError" || !failure.value.retryable) {
             yield* Deferred.failCause(this.ready, exit.cause);
             this.#failure = exit.cause;

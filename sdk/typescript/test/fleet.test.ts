@@ -141,7 +141,7 @@ describe("SoulFireFleet", () => {
                 index === 0
                   ? { maximumRespawns: 1 }
                   : Deferred.succeed(waiting, undefined).pipe(
-                      Effect.zipRight(Effect.never),
+                      Effect.andThen(Effect.never),
                     ),
               AutoRespawnTaskResultSchema,
               { concurrency: 1 },

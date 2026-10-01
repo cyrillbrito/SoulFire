@@ -464,8 +464,7 @@ Use these package boundaries:
 - `@soulfiremc/sdk` provides the runtime-neutral Effect API.
 - `@soulfiremc/sdk/browser`, `@soulfiremc/sdk/node`, and
   `@soulfiremc/sdk/bun` provide platform layers and convenience constructors.
-- `effect` provides execution and host interoperability primitives.
-- `@effect/platform` provides portable runtime service contracts.
+- `effect` v4 provides execution, host interoperability, and portable runtime service contracts.
 
 An Effect application composes SoulFire with its layers and runtime. An async
 application runs one scoped workflow with `Effect.runPromise`. It forwards
@@ -496,37 +495,36 @@ aborts pending transport reads before closing their iterators.
 
 ### Cross-runtime TypeScript support
 
-Use `@effect/platform` as the portability boundary for HTTP, fetch, files, process execution, sockets, and other runtime capabilities. Accept its service interfaces in the core SDK, then let applications provide the matching runtime layer from `@effect/platform-browser`, `@effect/platform-node`, or `@effect/platform-bun`. Deno and worker support should use the fetch-based platform layer wherever their ConnectRPC transport supports it.
+Use Effect v4 service interfaces for HTTP, files, process execution, sockets, and other runtime capabilities. Applications provide matching layers from `@effect/platform-browser`, `@effect/platform-node`, or `@effect/platform-bun`. Deno and worker transports use `effect/http/FetchHttpClient` where ConnectRPC supports their Fetch implementation.
 
 Keep the platform-specific packages out of the browser-safe core dependency graph. Provide explicit runtime entry points or layer constructors instead of detecting a runtime and importing its adapter dynamically. This keeps bundles predictable and lets applications replace transports in tests.
 
 The Effect package roles should be:
 
-- `effect`: canonical operations, streams, scopes, schedules, schemas, services, and Promise or async-iterable interop.
-- `@effect/platform`: portable transport and runtime service contracts.
+- `effect` v4: operations, streams, scopes, schedules, schemas, portable runtime services, and Promise or async-iterable interop.
 - `@effect/platform-node` supplies the Node.js HTTP layer. Browser, Bun,
-  Deno, and worker transports use `@effect/platform/FetchHttpClient` while
+  Deno, and worker transports use `effect/http/FetchHttpClient` while
   their stable Web Fetch implementations meet ConnectRPC's requirements.
   Other runtime services can come from `@effect/platform-browser` and
   `@effect/platform-bun` as the SDK adopts them.
 - `@effect/opentelemetry`: optional tracing and metrics integration that consumes SoulFire spans and attributes.
 - `@effect/vitest`: development-only helpers for deterministic Effect, stream, scope, and interruption tests.
-- `@effect/rpc`: an optional source of client API design ideas, not the SoulFire wire protocol.
+- `effect/rpc`: an optional source of client API design ideas, not the SoulFire wire protocol.
 
 The SDK should:
 
 - Keep protobuf and ConnectRPC as the language-neutral wire contract.
 - Express transport, fetch, file access, process control, and runtime concerns as replaceable services or layers.
-- Adapt an `@effect/platform/HttpClient` to ConnectRPC without forcing a global `fetch`.
+- Adapt an `effect/http/HttpClient` to ConnectRPC without forcing a global `fetch`.
 - Let ordinary applications supply a standard `fetch`, `AbortSignal`, `Promise`, `AsyncIterable`, or `ReadableStream` at the package boundary.
 - Ship browser-safe exports that do not import Node.js modules.
 - Load local-server installation code only from the Node.js-specific entry point.
 - Test Node.js and browser runtimes as release requirements.
 - Add Bun, Deno, and worker tests where the selected ConnectRPC transport supports them.
-- Avoid depending on an unstable `@effect/platform` module in the stable SDK unless that module is stable when dependencies are frozen.
+- Use stable Effect modules in the SDK when dependencies are frozen.
 - Test that only one compatible Effect runtime is installed when the SDK is consumed through workspaces, npm, pnpm, Bun, and Deno.
 
-`@effect/rpc` should not replace SoulFire's protobuf protocol. It may inform internal ergonomics, but doing so must not weaken TypeScript and Python protocol parity, server reflection, or plugin descriptor interoperability.
+`effect/rpc` should not replace SoulFire's protobuf protocol. It may inform internal ergonomics, but doing so must not weaken TypeScript and Python protocol parity, server reflection, or plugin descriptor interoperability.
 
 ### Modern Python baseline
 
@@ -2746,7 +2744,7 @@ Reflective invocation is valuable but more complex than generated packages. Type
 
 The SDK should use the latest stable Effect release when dependencies are frozen. Do not make a stable SoulFire SDK depend on a prerelease Effect major.
 
-Keep the protobuf transport behind SoulFire Effect services and layers. Adopt `@effect/platform` modules only after verifying their stability, browser behavior, bundle impact, and compatibility with ConnectRPC.
+Keep the protobuf transport behind SoulFire Effect services and layers. Check Effect modules for stability, browser behavior, bundle impact, and compatibility with ConnectRPC before adoption.
 
 The SDK keeps one Effect implementation. Async hosts use standard Effect runtime and stream adapters.
 

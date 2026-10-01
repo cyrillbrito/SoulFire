@@ -72,14 +72,14 @@ export class JsonFileBeatGameCheckpointStore
           assertValidCheckpoint(checkpoint);
           const current = await this.#read(checkpoint.runId);
           const validation = Effect.runSync(
-            Effect.either(validateCheckpointRevision(
+            Effect.result(validateCheckpointRevision(
               checkpoint,
               current,
               expectedRevision,
             )),
           );
-          if (validation._tag === "Left") {
-            throw validation.left;
+          if (validation._tag === "Failure") {
+            throw validation.failure;
           }
           await mkdir(this.directory, { recursive: true });
           const path = this.#path(checkpoint.runId);

@@ -5,7 +5,7 @@ import type {
 } from "@bufbuild/protobuf";
 import type { Value } from "@bufbuild/protobuf/wkt";
 import type { CallOptions } from "@connectrpc/connect";
-import { Effect, Either, Stream } from "effect";
+import { Effect, Result, Stream } from "effect";
 import { operationError, type SoulFireOperationError } from "./errors.js";
 
 import type { SoulFireInstance } from "./client.js";
@@ -236,7 +236,7 @@ export class SoulFireFleetTaskGroup<
     reason = "",
     options?: { call?: CallOptions; concurrency?: number },
   ): Effect.Effect<FleetTaskReport<undefined>, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const concurrency = yield* Effect.try({
         try: () =>
           Math.max(
@@ -282,7 +282,7 @@ export class SoulFireFleet {
     selector: FleetSelector = {},
     options?: CallOptions,
   ): Effect.Effect<readonly FleetBot[], SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       yield* Effect.try({
         try: () => {
           for (const capability of selector.requiredCapabilities ?? []) {
@@ -393,7 +393,7 @@ export class SoulFireFleet {
     resultSchema?: Result,
     options: FleetTaskStartOptions = {},
   ): Effect.Effect<SoulFireFleetTaskGroup<Result>, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const { concurrency: requestedConcurrency = 8, ...taskOptions } = options;
       const concurrency = yield* Effect.try({
         try: () =>
@@ -409,7 +409,7 @@ export class SoulFireFleet {
         bots,
         (bot, index) =>
           Effect.uninterruptibleMask((restore) =>
-            Effect.gen(this, function* () {
+            Effect.gen({ self: this }, function* () {
               const value =
                 typeof input === "function"
                   ? input(bot, index, bots.length)
@@ -424,7 +424,7 @@ export class SoulFireFleet {
               started.push(member);
               return member;
             }),
-          ).pipe(Effect.either),
+          ).pipe(Effect.result),
         { concurrency },
       ).pipe(
         Effect.onError(() =>
@@ -439,8 +439,8 @@ export class SoulFireFleet {
       const members: FleetTaskMember<Result>[] = [];
       const failures: FleetTaskStartFailure[] = [];
       outcomes.forEach((outcome, index) => {
-        if (Either.isRight(outcome)) members.push(outcome.right);
-        else failures.push({ bot: bots[index]!, error: outcome.left });
+        if (Result.isSuccess(outcome)) members.push(outcome.success);
+        else failures.push({ bot: bots[index]!, error: outcome.failure });
       });
       return new SoulFireFleetTaskGroup(members, failures);
     });
@@ -450,7 +450,7 @@ export class SoulFireFleet {
     selector: FleetSelector = {},
     options: FleetDistributionOptions = {},
   ): Effect.Effect<readonly FleetAssignment<Item>[], SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const bots = yield* this.select(selector, options.call);
       return yield* Effect.try({
         try: () => {

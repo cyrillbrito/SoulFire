@@ -62,7 +62,7 @@ export class SoulFireCamera {
     options: CameraRenderOptions = {},
     call?: CallOptions,
   ): Effect.Effect<Uint8Array, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       return decodeCameraImage(yield* this.capture(options, call));
     });
   }
@@ -75,7 +75,7 @@ export class SoulFireCamera {
     options: CameraStreamOptions = {},
   ): Stream.Stream<BotPovFrame, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         const { call, ...request } = options;
         return rpcStream("SoulFireCamera.frames", (signal) =>
           this.client.watchBotPov(

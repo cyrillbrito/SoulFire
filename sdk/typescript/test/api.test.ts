@@ -1,8 +1,8 @@
 import { create, createRegistry } from "@bufbuild/protobuf";
 import { anyPack } from "@bufbuild/protobuf/wkt";
 import { Code, ConnectError, createRouterTransport } from "@connectrpc/connect";
-import * as HttpClient from "@effect/platform/HttpClient";
-import * as HttpClientResponse from "@effect/platform/HttpClientResponse";
+import * as HttpClient from "effect/http/HttpClient";
+import * as HttpClientResponse from "effect/http/HttpClientResponse";
 import { Effect, Stream } from "effect";
 import { describe, expect, it, vi } from "vitest";
 

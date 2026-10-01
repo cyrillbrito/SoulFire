@@ -1,5 +1,5 @@
-import * as FetchHttpClient from "@effect/platform/FetchHttpClient";
-import * as HttpClient from "@effect/platform/HttpClient";
+import * as FetchHttpClient from "effect/http/FetchHttpClient";
+import * as HttpClient from "effect/http/HttpClient";
 import { Effect, Layer, type Scope } from "effect";
 
 import { type SoulFireOptions } from "./client.js";
@@ -58,7 +58,7 @@ function install(
 function installLayer(
   options: SoulFireInstallOptions = {},
 ): Layer.Layer<SoulFireService, SoulFireConnectionError> {
-  return Layer.scoped(SoulFireService, install(options));
+  return Layer.effect(SoulFireService, install(options));
 }
 
 export const SoulFire = {

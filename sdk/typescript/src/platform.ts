@@ -1,6 +1,6 @@
-import type * as HttpClient from "@effect/platform/HttpClient";
-import * as HttpClientRequest from "@effect/platform/HttpClientRequest";
-import type { HttpMethod } from "@effect/platform/HttpMethod";
+import type * as HttpClient from "effect/http/HttpClient";
+import * as HttpClientRequest from "effect/http/HttpClientRequest";
+import type { HttpMethod } from "effect/http/HttpMethod";
 import { Effect, Stream } from "effect";
 
 /**

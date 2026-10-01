@@ -49,7 +49,7 @@ export class SoulFireWorld {
   public player(
     options?: CallOptions,
   ): Effect.Effect<PlayerSnapshot, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const response = yield* rpc("SoulFireWorld.player", (signal) =>
         this.client.getPlayerSnapshot(
           this.scope(),
@@ -170,7 +170,7 @@ export class SoulFireWorld {
     maximumDistance = 256,
     options?: CallOptions,
   ): Effect.Effect<BlockSnapshot | undefined, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const response = yield* this.raycastFromPlayer(
         { maximumDistance, includeEntities: false },
         options,
@@ -188,7 +188,7 @@ export class SoulFireWorld {
     maximumDistance = 3.5,
     options?: CallOptions,
   ): Effect.Effect<EntitySnapshot | undefined, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const response = yield* this.raycastFromPlayer(
         { maximumDistance, includeEntities: true },
         options,

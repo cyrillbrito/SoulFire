@@ -1,6 +1,6 @@
 import type { MessageInitShape } from "@bufbuild/protobuf";
 import type { CallOptions, Client } from "@connectrpc/connect";
-import { Effect, Option, Stream } from "effect";
+import { Effect, Filter, Option, Stream } from "effect";
 import {
   operationError,
   rpcError,
@@ -71,7 +71,7 @@ export class SoulFireChat {
     message: string,
     options: ChatMutationOptions = {},
   ): Effect.Effect<BotActionResult, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const response = yield* rpc("SoulFireChat.send", (signal) =>
         this.client.sendPublicChat(
           {
@@ -98,7 +98,7 @@ export class SoulFireChat {
     command: string,
     options: ChatMutationOptions = {},
   ): Effect.Effect<BotActionResult, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const response = yield* rpc("SoulFireChat.command", (signal) =>
         this.client.sendCommand(
           {
@@ -126,7 +126,7 @@ export class SoulFireChat {
     message: string,
     options: ChatMutationOptions = {},
   ): Effect.Effect<BotActionResult, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const response = yield* rpc("SoulFireChat.whisper", (signal) =>
         this.client.sendWhisper(
           {
@@ -187,14 +187,14 @@ export class SoulFireChat {
     const sources =
       options.sources === undefined ? undefined : new Set(options.sources);
     return this.eventStream({ includeChat: true }, options.call).pipe(
-      Stream.filterMap((envelope) => {
+      Stream.filterMap(Filter.fromPredicateOption((envelope) => {
         if (
           envelope.event.case !== "chat" ||
           (sources !== undefined && !sources.has(envelope.event.value.source))
         )
           return Option.none();
-        return Option.fromNullable(matchChat(envelope.event.value, matcher));
-      }),
+        return Option.fromNullishOr(matchChat(envelope.event.value, matcher));
+      })),
     );
   }
 
@@ -222,15 +222,15 @@ export class SoulFireChat {
     return options.timeoutMs === undefined
       ? next
       : next.pipe(
-          Effect.timeoutFail({
+          Effect.timeoutOrElse({
             duration: options.timeoutMs,
-            onTimeout: () =>
-              rpcError(
+            orElse: () =>
+              Effect.fail(rpcError(
                 "chat.waitFor",
                 new Error(
                   `Timed out after ${options.timeoutMs} ms waiting for chat`,
                 ),
-              ),
+              )),
           }),
         );
   }

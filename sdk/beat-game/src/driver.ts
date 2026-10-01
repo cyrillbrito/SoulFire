@@ -13,7 +13,7 @@ import {
   type SoulFireBot,
   type SoulFireBotControlLease,
 } from "@soulfiremc/sdk";
-import { Effect, Stream } from "effect";
+import { Effect, Semaphore, Stream } from "effect";
 
 import { BeatGameDriverError } from "./errors.js";
 import type {
@@ -545,7 +545,7 @@ export function makeSoulFireBeatGameDriver(
 ): BeatGameDriver {
   const mapError = (operation: string) => (cause: unknown) =>
     driverError(operation, cause);
-  const controlMutex = Effect.runSync(Effect.makeSemaphore(1));
+  const controlMutex = Semaphore.makeUnsafe(1);
   let controlLease: SoulFireBotControlLease | undefined;
   let controlUsers = 0;
   const acquireSharedControl = controlMutex.withPermits(1)(
@@ -576,7 +576,7 @@ export function makeSoulFireBeatGameDriver(
             controlLease = undefined;
           }
         })),
-        Effect.catchAll(() => Effect.void),
+        Effect.catch(() => Effect.void),
       );
     }));
   const pathOptions = (policy: BeatGamePathPolicy) => ({
@@ -1414,7 +1414,7 @@ export function makeSoulFireBeatGameDriver(
           const renew = Effect.sleep(
             CONTROL_LEASE_RENEWAL_INTERVAL_MS,
           ).pipe(
-            Effect.zipRight(lease.renew(CONTROL_LEASE_TTL_SECONDS)),
+            Effect.andThen(lease.renew(CONTROL_LEASE_TTL_SECONDS)),
             Effect.forever,
           );
           return Effect.raceFirst(effect, renew);

@@ -115,7 +115,7 @@ describe("Effect behavior combinators", () => {
     ));
 });
 
-class Counter extends Context.Tag("test/Counter")<Counter, { readonly value: number }>() {}
+class Counter extends Context.Service<Counter, { readonly value: number }>()("test/Counter") {}
 class CustomFailure extends Data.TaggedError("CustomFailure")<{}> {}
 
 it("preserves custom behavior errors and required services through composition", () => {

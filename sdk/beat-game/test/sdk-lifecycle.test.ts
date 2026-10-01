@@ -17,7 +17,7 @@ it("interrupts beat-game setup before the first SDK observation arrives", () =>
           events: () => Stream.never,
           observe: () =>
             BotSession.open(() =>
-              Stream.unwrapScoped(
+              Stream.unwrap(
                 Effect.acquireRelease(
                   Effect.sync(() => {
                     active += 1;

@@ -72,7 +72,7 @@
     "@bufbuild/protobuf": "2.15.0",
     "@connectrpc/connect": "2.2.0",
     "@connectrpc/connect-web": "2.2.0",
-    "@effect/platform-node": "0.108.2",
+    "@effect/platform-node": "4.0.0",
     "adm-zip": "0.6.1",
     "tar": "7.5.22"
   },
@@ -86,13 +86,11 @@
     "@bufbuild/buf-win32-x64": "1.73.0"
   },
   "peerDependencies": {
-    "@effect/platform": "^0.97.1",
-    "effect": "^3.22.1"
+    "effect": "^4.0.0"
   },
   "devDependencies": {
-    "@effect/platform": "0.97.2",
     "@types/node": "26.6.3",
-    "effect": "3.22.2",
+    "effect": "4.0.0",
     "esbuild": "0.28.2",
     "typescript": "7.0.2",
     "vitest": "5.0.2"

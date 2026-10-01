@@ -55,7 +55,6 @@ import {
   Effect,
   Exit,
   Fiber,
-  FiberId,
   Ref,
   Schedule,
   Scope,
@@ -320,14 +319,14 @@ const program = Effect.scoped(Effect.gen(function* () {
   });
 
   const smokeScope = yield* Effect.scope;
-  const fixtureFiber = yield* Effect.fork(Scope.extend(
+  const fixtureFiber = yield* Effect.forkChild(Scope.provide(
     Effect.acquireRelease(
       startMinecraftFixture,
       stopMinecraftFixture,
     ),
     smokeScope,
   ));
-  const soulfireFiber = yield* Effect.fork(Scope.extend(Effect.gen(function* () {
+  const soulfireFiber = yield* Effect.forkChild(Scope.provide(Effect.gen(function* () {
     const [dedicatedJar, javaPath] = yield* Effect.all(
       [findDedicatedJar, findJava],
       { concurrency: "unbounded" },
@@ -379,7 +378,7 @@ const program = Effect.scoped(Effect.gen(function* () {
     yield* Effect.addFinalizer(() =>
       soulfire.stopLocalServer().pipe(
         Effect.ignore,
-        Effect.zipRight(
+        Effect.andThen(
           fromPromise("remove SoulFire process record", () =>
             rm(soulfireProcessFile, { force: true })
           ).pipe(Effect.ignore),
@@ -798,7 +797,7 @@ const program = Effect.scoped(Effect.gen(function* () {
     const owner = currentDebugActionContext();
     let trace: SmokeActivePathTrace | undefined;
     return Effect.gen(function* () {
-      const fiberId = FiberId.threadName(yield* Effect.fiberId);
+      const fiberId = String(yield* Effect.fiberId);
       const observation = yield* baseDriver.observe;
       trace = {
         pathId,
@@ -851,7 +850,7 @@ const program = Effect.scoped(Effect.gen(function* () {
           return Effect.void;
         }
         const completedAt = new Date().toISOString();
-        const status = Exit.isInterrupted(exit) ? "interrupted" : "failed";
+        const status = Exit.hasInterrupts(exit) ? "interrupted" : "failed";
         if (status === "interrupted") {
           pathInterruptions += 1;
         } else {
@@ -1036,7 +1035,7 @@ const program = Effect.scoped(Effect.gen(function* () {
       const startedAt = new Date().toISOString();
       const owner = currentDebugActionContext();
       return Effect.gen(function* () {
-        const fiberId = FiberId.threadName(yield* Effect.fiberId);
+        const fiberId = String(yield* Effect.fiberId);
         yield* record("task-started", {
           operationId,
           startedAt,
@@ -1060,7 +1059,7 @@ const program = Effect.scoped(Effect.gen(function* () {
                 result: exit.value,
               }).pipe(Effect.orDie);
             }
-            const status = Exit.isInterrupted(exit)
+            const status = Exit.hasInterrupts(exit)
               ? "interrupted"
               : "failed";
             return record(`task-${status}`, {
@@ -1082,7 +1081,7 @@ const program = Effect.scoped(Effect.gen(function* () {
         const startedAt = new Date().toISOString();
         const owner = currentDebugActionContext();
         return Effect.gen(function* () {
-          const fiberId = FiberId.threadName(yield* Effect.fiberId);
+          const fiberId = String(yield* Effect.fiberId);
           yield* record("primitive-started", {
             operationId,
             startedAt,
@@ -1103,7 +1102,7 @@ const program = Effect.scoped(Effect.gen(function* () {
                   action,
                 }).pipe(Effect.orDie);
               }
-              const status = Exit.isInterrupted(exit)
+              const status = Exit.hasInterrupts(exit)
                 ? "interrupted"
                 : "failed";
               return record(`primitive-${status}`, {
@@ -1218,7 +1217,7 @@ const program = Effect.scoped(Effect.gen(function* () {
         safetyInterruptions += 1;
       }
     }).pipe(
-      Effect.zipRight(record("beat-game-event", { event })),
+      Effect.andThen(record("beat-game-event", { event })),
     )
   ).pipe(Effect.forkScoped);
   if (debugApiEnabled) {
@@ -1734,7 +1733,7 @@ const program = Effect.scoped(Effect.gen(function* () {
   });
 }).pipe(
   Effect.timeout(Duration.millis(timeoutMs + 5 * 60_000)),
-  Effect.tapErrorCause((cause) =>
+  Effect.tapCause((cause) =>
     record("smoke-failed", { cause: String(cause) }).pipe(Effect.ignore)
   ),
 ));
@@ -2067,10 +2066,10 @@ function stopMinecraftFixture(
       "--tail",
       "20000",
       fixture.containerName,
-    ]).pipe(Effect.either);
-    if (logs._tag === "Right") {
+    ]).pipe(Effect.result);
+    if (logs._tag === "Success") {
       yield* fromPromise("write Minecraft logs", () =>
-        minecraftLog.append(`${logs.right.stdout}${logs.right.stderr}`)
+        minecraftLog.append(`${logs.success.stdout}${logs.success.stderr}`)
       ).pipe(Effect.ignore);
     }
     if (fixture.managed && !fixtureConfiguration.keepContainer) {
@@ -2448,8 +2447,8 @@ function controlEndEncounter(
           }
         });
       }),
-      Effect.catchAll(() => Effect.void),
-      Effect.zipRight(Effect.sleep(1_000)),
+      Effect.catch(() => Effect.void),
+      Effect.andThen(Effect.sleep(1_000)),
     );
     return yield* Effect.forever(tick);
   });
@@ -2579,8 +2578,8 @@ function guardStartupAir(bot: SoulFireBot): Effect.Effect<never> {
         ? bot.setMovement({ jump: true })
         : bot.resetMovement()
     ),
-    Effect.catchAll(() => Effect.void),
-    Effect.zipRight(Effect.sleep(100)),
+    Effect.catch(() => Effect.void),
+    Effect.andThen(Effect.sleep(100)),
   );
   return tick.pipe(Effect.forever);
 }
@@ -2592,13 +2591,13 @@ function poll<A>(
   delayMs: number,
 ): Effect.Effect<A, Error> {
   return effect.pipe(
-    Effect.catchAll((cause) =>
+    Effect.catch((cause) =>
       attempts <= 1
         ? Effect.fail(new Error(`${description} did not become ready`, {
           cause,
         }))
         : Effect.sleep(delayMs).pipe(
-          Effect.zipRight(poll(
+          Effect.andThen(poll(
             effect,
             description,
             attempts - 1,
@@ -3333,7 +3332,7 @@ function captureSmokeActivePath(options: Readonly<{
       includeDescriptions: true,
     }).pipe(
       Effect.map((result) => ({ ok: true as const, result })),
-      Effect.catchAll((cause) => Effect.succeed({
+      Effect.catch((cause) => Effect.succeed({
         ok: false as const,
         error: cause instanceof Error ? cause.message : String(cause),
       })),
@@ -3784,7 +3783,7 @@ function debugExitFailure(
     cause: Cause.pretty(exit.cause),
     interruptors: Array.from(
       Cause.interruptors(exit.cause),
-      FiberId.threadName,
+      String,
     ),
   };
 }
@@ -3950,7 +3949,7 @@ NodeRuntime.runMain(program.pipe(
       );
     })
   ),
-  Effect.tapErrorCause((cause) =>
+  Effect.tapCause((cause) =>
     Effect.sync(() => {
       process.stderr.write(
         `Beat-game E2E smoke failed. Artifacts: ${artifactDirectory}\n${

@@ -130,7 +130,7 @@ export class SoulFireAdmin {
   public generateWebDavToken(
     options?: CallOptions,
   ): Effect.Effect<string, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       return (yield* rpc("SoulFireAdmin.generateWebDavToken", (signal) =>
         this.#client.generateWebDAVToken({}, withSignal(options, signal)),
       )).token;
@@ -140,7 +140,7 @@ export class SoulFireAdmin {
   public generateApiToken(
     options?: CallOptions,
   ): Effect.Effect<string, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       return (yield* rpc("SoulFireAdmin.generateApiToken", (signal) =>
         this.#client.generateAPIToken({}, withSignal(options, signal)),
       )).token;
@@ -226,7 +226,7 @@ export class SoulFireAdmin {
   public users(
     options?: CallOptions,
   ): Effect.Effect<UserListResponse_User[], SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       return (yield* rpc("SoulFireAdmin.users", (signal) =>
         this.#users.listUsers({}, withSignal(options, signal)),
       )).users;
@@ -246,7 +246,7 @@ export class SoulFireAdmin {
     request: Input<typeof UserCreateRequestSchema>,
     options?: CallOptions,
   ): Effect.Effect<string, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       return (yield* rpc("SoulFireAdmin.createUser", (signal) =>
         this.#users.createUser(request, withSignal(options, signal)),
       )).id;
@@ -296,7 +296,7 @@ export class SoulFireAdmin {
     userId: string,
     options?: CallOptions,
   ): Effect.Effect<string, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       return (yield* rpc("SoulFireAdmin.generateUserApiToken", (signal) =>
         this.#users.generateUserAPIToken(
           { id: userId },
@@ -310,7 +310,7 @@ export class SoulFireAdmin {
     userId: string,
     options?: CallOptions,
   ): Effect.Effect<UserPluginPermissionGrant[], SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       return (yield* rpc("SoulFireAdmin.userPluginPermissionGrants", (signal) =>
         this.#users.listUserPluginPermissionGrants(
           { userId },
@@ -353,7 +353,7 @@ export class SoulFireAdmin {
     request: Input<typeof PreviousLogRequestSchema>,
     options?: CallOptions,
   ): Effect.Effect<LogString[], SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       return (yield* rpc("SoulFireAdmin.previousLogs", (signal) =>
         this.#logs.getPrevious(request, withSignal(options, signal)),
       )).messages;
@@ -365,7 +365,7 @@ export class SoulFireAdmin {
     options?: CallOptions,
   ): Stream.Stream<LogResponse, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         return rpcStream("SoulFireAdmin.logs", (signal) =>
           this.#logs.subscribe(request, withSignal(options, signal)),
         );
@@ -429,7 +429,7 @@ export class SoulFireAdmin {
     instanceId: string,
     options?: CallOptions,
   ): Effect.Effect<PluginRuntimeStat[], SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       return (yield* rpc("SoulFireAdmin.pluginStats", (signal) =>
         this.#pluginStats.getInstancePluginStats(
           { instanceId },
@@ -446,7 +446,7 @@ export class SoulFireAdmin {
     InstanceAuditLogResponse_AuditLogEntry[],
     SoulFireOperationError
   > {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       return (yield* rpc("SoulFireAdmin.auditLog", (signal) =>
         this.#instances.getAuditLog(
           { id: instanceId },
@@ -460,7 +460,7 @@ export class SoulFireAdmin {
     instanceId: string,
     options?: CallOptions,
   ): Effect.Effect<ScriptInfo[], SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       return (yield* rpc("SoulFireAdmin.scripts", (signal) =>
         this.#scripts.listScripts({ instanceId }, withSignal(options, signal)),
       )).scripts;
@@ -528,7 +528,7 @@ export class SoulFireAdmin {
     options?: CallOptions,
   ): Stream.Stream<ScriptEvent, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         return rpcStream("SoulFireAdmin.activateScript", (signal) =>
           this.#scripts.activateScript(
             { ...request, instanceId },
@@ -574,7 +574,7 @@ export class SoulFireAdmin {
     options?: CallOptions,
   ): Stream.Stream<ScriptLogEntry, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         return rpcStream("SoulFireAdmin.scriptLogs", (signal) =>
           this.#scripts.subscribeScriptLogs(
             { ...request, instanceId },
@@ -622,7 +622,7 @@ export class SoulFireAdmin {
     options?: CallOptions,
   ): Stream.Stream<ScriptEvent, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         return rpcStream("SoulFireAdmin.dryRunScript", (signal) =>
           this.#scripts.dryRunScript(
             { ...request, instanceId },

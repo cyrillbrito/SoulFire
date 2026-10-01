@@ -342,7 +342,7 @@ export function collectNearbyDrops(
           );
         const reached = yield* pickupRoute.pipe(
           Effect.as(true),
-          Effect.catchAll(() => Effect.succeed(false)),
+          Effect.catch(() => Effect.succeed(false)),
         );
         if (!reached) {
           attemptedDrops.add(dropKey);
@@ -671,7 +671,7 @@ export function excavateStaircase(
         staircaseFeetCenter(options.from),
         0.5,
         mergePathPolicy(options.path),
-      ).pipe(Effect.zipRight(waitForVerticalSettlement(driver)));
+      ).pipe(Effect.andThen(waitForVerticalSettlement(driver)));
     const stagingPosition = stagingObservation.player.position;
     if (stagingPosition.dimension !== options.from.dimension) {
       return yield* Effect.fail(behaviorError(
@@ -710,8 +710,8 @@ export function excavateStaircase(
             "openSpaceHandoffRadius",
           ),
           mergePathPolicy(options.path),
-        ).pipe(Effect.either);
-        if (handoff._tag === "Right") {
+        ).pipe(Effect.result);
+        if (handoff._tag === "Success") {
           return;
         }
       }
@@ -734,8 +734,8 @@ export function excavateStaircase(
         driver,
         step,
         options.path,
-      ).pipe(Effect.either);
-      if (traversal._tag === "Left") {
+      ).pipe(Effect.result);
+      if (traversal._tag === "Failure") {
         const displaced = yield* driver.observe;
         if (
           displaced.player.position.dimension === step.dimension
@@ -748,7 +748,7 @@ export function excavateStaircase(
           );
           return;
         }
-        return yield* Effect.fail(traversal.left);
+        return yield* Effect.fail(traversal.failure);
       }
     }
     if (!samePosition(staircaseTo, options.to)) {
@@ -1263,7 +1263,7 @@ function waitForRespawnConfirmation(
           ));
         }
         return Effect.sleep(RESPAWN_CONFIRMATION_POLL_INTERVAL_MS).pipe(
-          Effect.zipRight(poll(attemptsRemaining - 1)),
+          Effect.andThen(poll(attemptsRemaining - 1)),
         );
       }),
     );
@@ -1748,8 +1748,8 @@ function ensurePortalFrameBlock(
         against: placement.against,
         face: placement.face,
         hand: "main",
-      }).pipe(Effect.either);
-      if (placementResult._tag === "Left") {
+      }).pipe(Effect.result);
+      if (placementResult._tag === "Failure") {
         yield* Effect.sleep(100);
         continue;
       }
@@ -1847,7 +1847,7 @@ function waitForExactBlockState(
         return Effect.succeed(block);
       }
       return Effect.sleep(delayMs).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           waitForExactBlockState(
             driver,
             position,
@@ -2065,25 +2065,25 @@ export function enterPortal(
           0,
           mergePathPolicy(options.path),
         ),
-      ).pipe(Effect.either);
-      if (directApproach._tag === "Right" && directApproach.right) {
+      ).pipe(Effect.result);
+      if (directApproach._tag === "Success" && directApproach.success) {
         yield* completePortalTransition(
           driver,
           observation.player.position.dimension,
         );
         return;
       }
-      if (directApproach._tag === "Left") {
+      if (directApproach._tag === "Failure") {
         const recoveryObservation = yield* driver.observe;
         if (
           !canRecoverPortalApproachWithStaircase(
-            directApproach.left,
+            directApproach.failure,
             recoveryObservation.player.position,
             approachTarget,
             options.path,
           )
         ) {
-          return yield* Effect.fail(directApproach.left);
+          return yield* Effect.fail(directApproach.failure);
         }
         const destination = floorFeetPosition(approachTarget);
         const current = floorFeetPosition(
@@ -2115,7 +2115,7 @@ export function enterPortal(
                 destination,
               )
             ) {
-              return yield* Effect.fail(directApproach.left);
+              return yield* Effect.fail(directApproach.failure);
             }
             yield* excavateStaircase(driver, {
               from: staircaseStartPosition(destination, stagedPosition),
@@ -2170,12 +2170,12 @@ export function enterPortal(
           180,
           250,
         ).pipe(
-          Effect.timeoutFail({
+          Effect.timeoutOrElse({
             duration: 45_000,
-            onTimeout: () => behaviorError(
+            orElse: () => Effect.fail(behaviorError(
               driver,
               "The Nether portal did not change dimensions after contact",
-            ),
+            )),
           }),
         );
       }),
@@ -2454,15 +2454,15 @@ export function enterEndPortal(
       });
       yield* waitForDimensionChange(driver, initialDimension, 50);
     }).pipe(
-      Effect.timeoutFail({
+      Effect.timeoutOrElse({
         duration: positiveInteger(
           options.transitionTimeoutMs ?? 45_000,
           "transitionTimeoutMs",
         ),
-        onTimeout: () => behaviorError(
+        orElse: () => Effect.fail(behaviorError(
           driver,
           "The End portal did not change dimensions after entry",
-        ),
+        )),
       }),
       Effect.ensuring(
         driver.act({ type: "reset-movement" }).pipe(Effect.ignore),
@@ -2508,12 +2508,12 @@ function climbEndPortalRim(
     });
     yield* waitForEndPortalRim(driver, rim, 150, 10);
   }).pipe(
-    Effect.timeoutFail({
+    Effect.timeoutOrElse({
       duration: 5_000,
-      onTimeout: () => behaviorError(
+      orElse: () => Effect.fail(behaviorError(
         driver,
         "Could not climb onto the End portal rim",
-      ),
+      )),
     }),
     Effect.ensuring(driver.act({ type: "reset-movement" }).pipe(
       Effect.ignore,
@@ -2553,7 +2553,7 @@ function waitForEndPortalRim(
         ));
       }
       return Effect.sleep(delayMs).pipe(
-        Effect.zipRight(waitForEndPortalRim(
+        Effect.andThen(waitForEndPortalRim(
           driver,
           rim,
           attempts - 1,
@@ -2854,8 +2854,8 @@ export function fightEnderDragon(
           targetUnavailableTimeoutSeconds: 2,
           strafe: false,
           ...(options.path === undefined ? {} : { path: options.path }),
-        }).pipe(Effect.either);
-        if (ranged._tag === "Left") {
+        }).pipe(Effect.result);
+        if (ranged._tag === "Failure") {
           yield* attackEntity(driver, {
             target: crystal,
             maximumAttacks: 4,
@@ -2906,7 +2906,7 @@ export function fightEnderDragon(
       targetUnavailableTimeoutSeconds: 3,
       strafe: false,
       ...(options.path === undefined ? {} : { path: options.path }),
-    }).pipe(Effect.catchAll(() =>
+    }).pipe(Effect.catch(() =>
       attackEntity(driver, {
         target: dragon,
         maximumAttacks: 16,
@@ -2974,7 +2974,7 @@ function waitForDragonOrDefeatResult(
             ));
           }
           return Effect.sleep(delayMs).pipe(
-            Effect.zipRight(waitForDragonOrDefeatResult(
+            Effect.andThen(waitForDragonOrDefeatResult(
               driver,
               center,
               radius,
@@ -3007,7 +3007,7 @@ function waitForDragonDefeatResult(
         ));
       }
       return Effect.sleep(delayMs).pipe(
-        Effect.zipRight(waitForDragonDefeatResult(
+        Effect.andThen(waitForDragonDefeatResult(
           driver,
           center,
           radius,
@@ -3470,7 +3470,7 @@ function waitForMovedDragonEgg(
         return Effect.succeed(moved);
       }
       return Effect.sleep(delayMs).pipe(
-        Effect.zipRight(waitForMovedDragonEgg(
+        Effect.andThen(waitForMovedDragonEgg(
           driver,
           center,
           radius,
@@ -3498,7 +3498,7 @@ function waitForInventoryItem(
         return Effect.succeed(false);
       }
       return Effect.sleep(delayMs).pipe(
-        Effect.zipRight(waitForInventoryItem(
+        Effect.andThen(waitForInventoryItem(
           driver,
           itemId,
           attempts - 1,
@@ -3523,7 +3523,7 @@ function waitForDimensionExit(
         return Effect.succeed(false);
       }
       return Effect.sleep(delayMs).pipe(
-        Effect.zipRight(waitForDimensionExit(
+        Effect.andThen(waitForDimensionExit(
           driver,
           attempts - 1,
           delayMs,
@@ -3543,7 +3543,7 @@ function waitForDimensionChange(
       observation.player.position.dimension !== initialDimension
         ? Effect.void
         : Effect.sleep(delayMs).pipe(
-          Effect.zipRight(waitForDimensionChange(
+          Effect.andThen(waitForDimensionChange(
             driver,
             initialDimension,
             delayMs,
@@ -3592,7 +3592,7 @@ function waitForRotation(
         ));
       }
       return Effect.sleep(delayMs).pipe(
-        Effect.zipRight(waitForRotation(
+        Effect.andThen(waitForRotation(
           driver,
           yaw,
           pitch,
@@ -3806,12 +3806,12 @@ function leavePortalForReentry(
         Effect.ensuring(driver.act({ type: "reset-movement" }).pipe(
           Effect.ignore,
         )),
-        Effect.either,
+        Effect.result,
       ));
-      if (attempt._tag === "Right") {
-        return attempt.right;
+      if (attempt._tag === "Success") {
+        return attempt.success;
       }
-      lastFailure = attempt.left;
+      lastFailure = attempt.failure;
     }
     return yield* Effect.fail(lastFailure ?? behaviorError(
       driver,
@@ -4016,7 +4016,7 @@ function waitForPortalExit(
         ));
       }
       return Effect.sleep(delayMs).pipe(
-        Effect.zipRight(waitForPortalExit(
+        Effect.andThen(waitForPortalExit(
           driver,
           passage,
           initialDimension,
@@ -4648,7 +4648,7 @@ function refuseFloodedStaircaseStep(
   step: BeatGameBlockPosition,
 ): Effect.Effect<void, BeatGameDriverError> {
   return Effect.sleep(100).pipe(
-    Effect.zipRight(Effect.all([
+    Effect.andThen(Effect.all([
       queryExactBlock(driver, step),
       queryExactBlock(driver, { ...step, y: step.y + 1 }),
       queryExactBlock(driver, { ...step, y: step.y + 2 }),
@@ -4696,8 +4696,8 @@ function walkStaircaseStep(
       staircaseFeetCenter(target),
       0.5,
       staircaseStepPathPolicy(path),
-    ).pipe(Effect.either);
-    if (traversal._tag === "Left") {
+    ).pipe(Effect.result);
+    if (traversal._tag === "Failure") {
       yield* walkPreparedStaircaseStepDirectly(driver, target);
     }
     yield* Effect.sleep(150);
@@ -4765,9 +4765,9 @@ function settleOnStaircaseTread(
     STAIRCASE_INITIAL_LANDING_ATTEMPTS,
     50,
   ).pipe(
-    Effect.either,
+    Effect.result,
     Effect.flatMap((landing) =>
-      landing._tag === "Right"
+      landing._tag === "Success"
         ? Effect.void
         : clearBlockedStaircaseTreadFromAbove(driver, target).pipe(
           Effect.flatMap((recovered) =>
@@ -4865,7 +4865,7 @@ function waitForStaircaseLanding(
         ));
       }
       return Effect.sleep(delayMs).pipe(
-        Effect.zipRight(waitForStaircaseLanding(
+        Effect.andThen(waitForStaircaseLanding(
           driver,
           target,
           attempts - 1,
@@ -4911,7 +4911,7 @@ function waitForVerticalSettlement(
         ));
       }
       return Effect.sleep(50).pipe(
-        Effect.zipRight(waitForVerticalSettlement(
+        Effect.andThen(waitForVerticalSettlement(
           driver,
           position.y,
           nextStableObservations,
@@ -4934,13 +4934,13 @@ function placeStaircaseBlock(
     type: "select-item",
     selector: { itemIds: [material] },
   }).pipe(
-    Effect.zipRight(driver.act({
+    Effect.andThen(driver.act({
       type: "place-block",
       against,
       face,
       hand: "main",
     })),
-    Effect.catchAll((cause) =>
+    Effect.catch((cause) =>
       waitForExactBlock(
         driver,
         expected,
@@ -4964,8 +4964,8 @@ function placeStaircaseBlock(
               type: "dig-block",
               position: expected,
             }).pipe(
-              Effect.zipRight(Effect.sleep(150)),
-              Effect.zipRight(waitForExactBlock(
+              Effect.andThen(Effect.sleep(150)),
+              Effect.andThen(waitForExactBlock(
                 driver,
                 expected,
                 { replaceable: true },
@@ -4983,8 +4983,8 @@ function placeStaircaseBlock(
             )
             : Effect.void;
           return clearUnstableBlock.pipe(
-            Effect.zipRight(Effect.sleep(100)),
-            Effect.zipRight(placeStaircaseBlock(
+            Effect.andThen(Effect.sleep(100)),
+            Effect.andThen(placeStaircaseBlock(
               driver,
               material,
               against,
@@ -5417,7 +5417,7 @@ function castNetherPortalFromLavaPool(
                   water,
                   options.path,
                 ).pipe(
-                  Effect.zipRight(driver.act({
+                  Effect.andThen(driver.act({
                     type: "select-item",
                     selector: { itemIds: ["minecraft:water_bucket"] },
                   })),
@@ -5464,8 +5464,8 @@ function castNetherPortalFromLavaPool(
           support,
           4,
           mergePathPolicy(options.path),
-        ).pipe(Effect.either);
-        if (reached._tag === "Right") {
+        ).pipe(Effect.result);
+        if (reached._tag === "Success") {
           // Temporary scaffold cleanup is not part of portal correctness.
           // Keep an unreachable support instead of failing a complete frame.
           yield* driver.act({
@@ -5507,9 +5507,9 @@ function reachPortalCastingStand(
     ]),
   } satisfies BeatGamePathPolicy;
   return driver.pathfind(stand, 0, strictPolicy).pipe(
-    Effect.either,
+    Effect.result,
     Effect.flatMap((strict) => {
-      if (strict._tag === "Right") {
+      if (strict._tag === "Success") {
         return Effect.void;
       }
       return driver.pathfind(stand, 0, {
@@ -5519,9 +5519,9 @@ function reachPortalCastingStand(
           // without scripting another remote staircase.
           allowPlacing: true,
         }).pipe(
-          Effect.either,
+          Effect.result,
           Effect.flatMap((placing) =>
-            placing._tag === "Right"
+            placing._tag === "Success"
               ? Effect.void
               : driver.pathfind(stand, 0, {
                 ...strictPolicy,
@@ -5773,9 +5773,9 @@ function recoverPortalCastingWaterBucket(
           },
           requireTargetableSource: true,
         },
-      ).pipe(Effect.either);
-      if (approached._tag === "Left") {
-        lastFailure = approached.left;
+      ).pipe(Effect.result);
+      if (approached._tag === "Failure") {
+        lastFailure = approached.failure;
         yield* Effect.sleep(100);
         continue;
       }
@@ -5783,11 +5783,11 @@ function recoverPortalCastingWaterBucket(
         type: "select-item",
         selector: { itemIds: ["minecraft:bucket"] },
       }).pipe(
-        Effect.zipRight(useBucketToward(driver, source.position)),
-        Effect.either,
+        Effect.andThen(useBucketToward(driver, source.position)),
+        Effect.result,
       );
-      if (pickup._tag === "Left") {
-        lastFailure = pickup.left;
+      if (pickup._tag === "Failure") {
+        lastFailure = pickup.failure;
         yield* Effect.sleep(100);
         continue;
       }
@@ -6059,8 +6059,8 @@ function leavePortalCastingScaffoldCells(
         allowPlacing: false,
         avoidFluids: true,
         maxFallDistance: 1,
-      }).pipe(Effect.either);
-      if (reached._tag === "Right") {
+      }).pipe(Effect.result);
+      if (reached._tag === "Success") {
         return;
       }
     }
@@ -6198,7 +6198,7 @@ function placeBucketOnTopOf(
     });
   });
   return attempt.pipe(
-    Effect.catchAll((cause) =>
+    Effect.catch((cause) =>
       observeExactBlock(driver, target).pipe(
         Effect.flatMap((block) =>
           block?.blockId === expectedBlockId
@@ -6219,7 +6219,7 @@ function placeBucketOnTopOf(
         ),
       )
     ),
-    Effect.zipRight(waitForExactBlockState(
+    Effect.andThen(waitForExactBlockState(
       driver,
       target,
       (block) =>
@@ -6549,7 +6549,7 @@ function waitForBlock(
         return Effect.succeed(block);
       }
       return Effect.sleep(delayMs).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           waitForBlock(
             driver,
             query,
@@ -6578,7 +6578,7 @@ function waitForExactBlock(
         return Effect.succeed(block);
       }
       return Effect.sleep(delayMs).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           waitForExactBlock(
             driver,
             position,
@@ -6762,9 +6762,9 @@ function craftItemDependencies(
                 options,
                 [...ancestors, resultItemId],
                 remainingDepth - 1,
-              ).pipe(Effect.either);
-              if (result._tag === "Left") {
-                lastFailure = result.left;
+              ).pipe(Effect.result);
+              if (result._tag === "Failure") {
+                lastFailure = result.failure;
                 continue;
               }
               craftability = yield* driver.canCraft(

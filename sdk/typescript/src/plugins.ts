@@ -110,7 +110,7 @@ export class ReflectivePlugin {
     input: JsonValue,
     options?: CallOptions,
   ): Effect.Effect<ReflectiveMessage, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const method = yield* Effect.try({
         try: () => this.#method(serviceName, methodName),
         catch: (cause) => operationError("plugin.call", cause),
@@ -155,7 +155,7 @@ export class ReflectivePlugin {
     options?: CallOptions,
   ): Stream.Stream<ReflectiveMessage, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         const method = yield* Effect.try({
           try: () => this.#method(serviceName, methodName),
           catch: (cause) => operationError("plugin.stream", cause),
@@ -239,7 +239,7 @@ export class ReflectivePlugin {
     input: JsonValue,
     options: TaskStartOptions = {},
   ): Effect.Effect<SoulFireTask<DescMessage>, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const task = this.descriptor.taskTypes.find(
         (candidate) => candidate.inputTypeUrl === inputTypeUrl,
       );
@@ -398,7 +398,7 @@ export class PluginCatalog {
   public refresh(
     options?: CallOptions,
   ): Effect.Effect<readonly PluginApiDescriptor[], SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const response = yield* rpc("PluginCatalog.refresh", (signal) =>
         this.#client.listPluginApis({}, withSignal(options, signal)),
       );
@@ -411,7 +411,7 @@ export class PluginCatalog {
     pluginId: string,
     options?: CallOptions,
   ): Effect.Effect<Uint8Array, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const descriptor = yield* Effect.try({
         try: () => this.requireDescriptor(pluginId),
         catch: (cause) => operationError("PluginCatalog.descriptorSet", cause),
@@ -447,7 +447,7 @@ export class PluginCatalog {
     pluginId: string,
     options?: CallOptions,
   ): Effect.Effect<ReflectivePlugin, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const descriptor = yield* Effect.try({
         try: () => this.requireDescriptor(pluginId),
         catch: (cause) => operationError("PluginCatalog.reflective", cause),
@@ -510,7 +510,7 @@ export class PluginCatalog {
     options: WatchPluginEventOptions = {},
   ): Stream.Stream<PluginEvent, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         const { pluginIds = [], typeUrls = [], call, ...request } = options;
         return rpcStream("PluginCatalog.events", (signal) =>
           this.#client.watchPluginEvents(
@@ -535,7 +535,7 @@ export class PluginCatalog {
     options: Omit<WatchPluginEventOptions, "pluginIds" | "typeUrls"> = {},
   ): Stream.Stream<TypedPluginEvent<T>, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         const typeUrl = typeUrlFor(schema);
         const descriptor = yield* Effect.try({
           try: () => this.requireDescriptor(pluginId),

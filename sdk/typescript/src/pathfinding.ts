@@ -55,7 +55,7 @@ export class SoulFirePathfinder {
     goal: PathfindGoal,
     options: PlanPathOptions = {},
   ): Effect.Effect<PathPlan, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const response = yield* rpc("SoulFirePathfinder.plan", (signal) =>
         this.client.planPath(
           {

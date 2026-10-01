@@ -1,4 +1,4 @@
-import { Effect, type Scope } from "effect";
+import { Effect, Semaphore, type Scope } from "effect";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHmac } from "node:crypto";
 import { mkdir, readFile } from "node:fs/promises";
@@ -124,7 +124,7 @@ export function installLocalServer(
           windowsHide: true,
         },
       );
-    const semaphore = yield* Effect.makeSemaphore(1);
+    const semaphore = yield* Semaphore.make(1);
     let child: ChildProcessWithoutNullStreams;
     let info: LocalSoulFireServer;
     const start = Effect.fn("SoulFire.install.start")(function* () {
@@ -152,15 +152,15 @@ export function installLocalServer(
         errors.close();
       });
       yield* waitForServerReady(current, output, errors).pipe(
-        Effect.timeoutFail({
+        Effect.timeoutOrElse({
           duration: startupTimeout,
-          onTimeout: () =>
-            operationError(
+          orElse: () =>
+            Effect.fail(operationError(
               "install.ready",
               new Error(
                 "SoulFire did not finish loading before the startup timeout",
               ),
-            ),
+            )),
         }),
         Effect.onError(() => stopChild(current)),
       );
@@ -200,7 +200,7 @@ export function installLocalServer(
       isRunning: () => child.exitCode === null && child.signalCode === null,
       logs: () => [...logs],
       restart: () =>
-        semaphore.withPermits(1)(stop.pipe(Effect.zipRight(start()))),
+        semaphore.withPermits(1)(stop.pipe(Effect.andThen(start()))),
       stop: () => semaphore.withPermits(1)(stop),
       close: () => semaphore.withPermits(1)(stop),
     };
@@ -212,7 +212,7 @@ function waitForServerReady(
   output: readline.Interface,
   errors: readline.Interface,
 ): Effect.Effect<void, SoulFireOperationError> {
-  return Effect.async<void, SoulFireOperationError>((resume) => {
+  return Effect.callback<void, SoulFireOperationError>((resume) => {
     const cleanup = () => {
       output.off("line", onLine);
       errors.off("line", onLine);
@@ -255,17 +255,16 @@ function stopChild(child: ChildProcessWithoutNullStreams): Effect.Effect<void> {
       child.signalCode !== null
     )
       return Effect.void;
-    return Effect.async<void>((resume) => {
+    return Effect.callback<void>((resume) => {
       const onExit = () => resume(Effect.void);
       child.once("exit", onExit);
       child.kill("SIGTERM");
       return Effect.sync(() => child.off("exit", onExit));
     }).pipe(
-      Effect.timeoutTo({
+      Effect.timeoutOrElse({
         duration: 5000,
-        onSuccess: () => Effect.void,
-        onTimeout: () =>
-          Effect.async<void>((resume) => {
+        orElse: () =>
+          Effect.callback<void>((resume) => {
             if (child.exitCode !== null || child.signalCode !== null) {
               resume(Effect.void);
               return;
@@ -276,7 +275,6 @@ function stopChild(child: ChildProcessWithoutNullStreams): Effect.Effect<void> {
             return Effect.sync(() => child.off("exit", onExit));
           }),
       }),
-      Effect.flatten,
     );
   });
 }

@@ -19,7 +19,7 @@ export default {
     const { x, y, z } = CENTER;
     const pen = `x=${x - HALF},y=${y - 1},z=${z - HALF},dx=${2 * HALF},dy=3,dz=${2 * HALF}`;
     const removeCows = rcon(`kill @e[type=minecraft:cow,${pen}]`, { check: false });
-    const cleanUp = Effect.zipRight(removeCows, rcon(`clear ${BOT_NAME}`, { check: false })).pipe(Effect.ignore);
+    const cleanUp = Effect.andThen(removeCows, rcon(`clear ${BOT_NAME}`, { check: false })).pipe(Effect.ignore);
 
     return Effect.gen(function* () {
       yield* rcon(`forceload add ${x - 16} ${z - 16} ${x + 16} ${z + 16}`);

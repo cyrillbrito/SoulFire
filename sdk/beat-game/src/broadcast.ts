@@ -1,11 +1,9 @@
-import { Effect, Queue, Stream } from "effect";
-
-const END = Symbol("ReplayBroadcastEnd");
+import { Cause, Effect, Queue, Semaphore, Stream } from "effect";
 
 export class ReplayBroadcast<A> {
   readonly #history: A[] = [];
-  readonly #subscribers = new Set<Queue.Enqueue<A | typeof END>>();
-  readonly #mutex = Effect.runSync(Effect.makeSemaphore(1));
+  readonly #subscribers = new Set<Queue.Enqueue<A, Cause.Done>>();
+  readonly #mutex = Semaphore.makeUnsafe(1);
   #ended = false;
 
   public constructor(private readonly replay: number) {
@@ -14,18 +12,18 @@ export class ReplayBroadcast<A> {
     }
   }
 
-  public readonly stream: Stream.Stream<A> = Stream.unwrapScoped(
-    Effect.gen(this, function* () {
-      const queue = yield* Queue.unbounded<A | typeof END>();
+  public readonly stream: Stream.Stream<A> = Stream.unwrap(
+    Effect.gen({ self: this }, function* () {
+      const queue = yield* Queue.unbounded<A, Cause.Done>();
       const ended = yield* this.#mutex.withPermits(1)(
-        Effect.gen(this, function* () {
+        Effect.gen({ self: this }, function* () {
           const ended = this.#ended;
           if (!ended) {
             this.#subscribers.add(queue);
           }
           yield* Queue.offerAll(queue, this.#history);
           if (ended) {
-            yield* Queue.offer(queue, END);
+            yield* Queue.end(queue);
           }
           return ended;
         }),
@@ -36,19 +34,16 @@ export class ReplayBroadcast<A> {
             Effect.sync(() => {
               this.#subscribers.delete(queue);
             }),
-          ).pipe(Effect.zipRight(Queue.shutdown(queue)))
+          ).pipe(Effect.andThen(Queue.shutdown(queue)))
         );
       }
-      return Stream.fromQueue(queue).pipe(
-        Stream.takeWhile((value) => value !== END),
-        Stream.map((value) => value as A),
-      );
+      return Stream.fromQueue(queue);
     }),
   );
 
   public publish(value: A): Effect.Effect<void> {
     return this.#mutex.withPermits(1)(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         if (this.#ended) {
           return;
         }
@@ -69,14 +64,14 @@ export class ReplayBroadcast<A> {
 
   public end(): Effect.Effect<void> {
     return this.#mutex.withPermits(1)(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         if (this.#ended) {
           return;
         }
         this.#ended = true;
         yield* Effect.forEach(
           this.#subscribers,
-          (subscriber) => Queue.offer(subscriber, END),
+          Queue.end,
           { discard: true },
         );
         this.#subscribers.clear();

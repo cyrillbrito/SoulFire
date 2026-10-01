@@ -823,7 +823,7 @@ export class SoulFireTask<Result extends DescMessage | undefined = undefined> {
   public refresh(
     options?: CallOptions,
   ): Effect.Effect<BotTask, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       this.#snapshot = yield* rpc("SoulFireTask.refresh", (signal) =>
         this.client.getBotTask(
           { taskId: this.id },
@@ -844,7 +844,7 @@ export class SoulFireTask<Result extends DescMessage | undefined = undefined> {
     call?: CallOptions;
   }): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         return rpcStream("SoulFireTask.events", (signal) =>
           this.client.watchBotTask(
             {
@@ -865,7 +865,7 @@ export class SoulFireTask<Result extends DescMessage | undefined = undefined> {
   public wait(options?: {
     call?: CallOptions;
   }): Effect.Effect<BotTask, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       if (this.terminal) return this.#snapshot;
       yield* this.events(options).pipe(
         Stream.runForEach((event) =>
@@ -883,7 +883,7 @@ export class SoulFireTask<Result extends DescMessage | undefined = undefined> {
     reason = "",
     options?: CallOptions,
   ): Effect.Effect<BotTask, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       this.#snapshot = yield* rpc("SoulFireTask.cancel", (signal) =>
         this.client.cancelBotTask(
           { taskId: this.id, reason },
@@ -907,7 +907,7 @@ export class SoulFireTask<Result extends DescMessage | undefined = undefined> {
     Result extends DescMessage ? MessageShape<Result> : BotTask,
     SoulFireOperationError
   > {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const task = yield* this.wait(options);
       if (task.status !== BotTaskStatus.COMPLETED) {
         return yield* Effect.fail(
@@ -995,7 +995,7 @@ export class SoulFireTasks {
     resultSchema?: Result,
     options: TaskStartOptions = {},
   ): Effect.Effect<SoulFireTask<Result>, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const { call, deadline, ...taskOptions } = options;
       const request = create(inputSchema, input);
       const task = yield* rpc("SoulFireTasks.start", (signal) =>
@@ -1031,7 +1031,7 @@ export class SoulFireTasks {
     options: TaskStartOptions = {},
   ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         const { call, deadline, ...taskOptions } = options;
         const request = create(inputSchema, input);
         return rpcStream("SoulFireTasks.run", (signal) =>
@@ -1065,7 +1065,7 @@ export class SoulFireTasks {
     SoulFireTask<typeof GoToTaskResultSchema>,
     SoulFireOperationError
   > {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const { path, ...taskOptions } = options;
       return yield* this.start(
         GoToTaskSchema,
@@ -1081,7 +1081,7 @@ export class SoulFireTasks {
     options: GoToTaskOptions = {},
   ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         const { path, ...taskOptions } = options;
         return this.run(
           GoToTaskSchema,
@@ -1103,7 +1103,7 @@ export class SoulFireTasks {
     SoulFireTask<typeof FollowEntityTaskResultSchema>,
     SoulFireOperationError
   > {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const {
         path,
         targetUnavailableTimeoutSeconds = 0,
@@ -1138,7 +1138,7 @@ export class SoulFireTasks {
     options: FollowEntityTaskOptions = {},
   ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         const {
           path,
           targetUnavailableTimeoutSeconds = 0,
@@ -1175,7 +1175,7 @@ export class SoulFireTasks {
     SoulFireTask<typeof AttackEntityTaskResultSchema>,
     SoulFireOperationError
   > {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const {
         path,
         attackRange = 3,
@@ -1217,7 +1217,7 @@ export class SoulFireTasks {
     options: AttackEntityTaskOptions = {},
   ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         const {
           path,
           attackRange = 3,
@@ -1265,7 +1265,7 @@ export class SoulFireTasks {
     SoulFireTask<typeof AttackNearestTaskResultSchema>,
     SoulFireOperationError
   > {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const {
         radius = 32,
         path,
@@ -1307,7 +1307,7 @@ export class SoulFireTasks {
     options: AttackNearestTaskOptions = {},
   ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         const {
           radius = 32,
           path,
@@ -1355,7 +1355,7 @@ export class SoulFireTasks {
     SoulFireTask<typeof RangedAttackTaskResultSchema>,
     SoulFireOperationError
   > {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const { input, taskOptions } = rangedAttackInput(target, options);
       return yield* this.start(
         RangedAttackTaskSchema,
@@ -1371,7 +1371,7 @@ export class SoulFireTasks {
     options: RangedAttackTaskOptions = {},
   ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         const { input, taskOptions } = rangedAttackInput(target, options);
         return this.run(RangedAttackTaskSchema, input, taskOptions);
       }),
@@ -1388,7 +1388,7 @@ export class SoulFireTasks {
     SoulFireTask<typeof FleeTaskResultSchema>,
     SoulFireOperationError
   > {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const {
         triggerRadius = 8,
         safeDistance = 16,
@@ -1420,7 +1420,7 @@ export class SoulFireTasks {
     options: FleeTaskOptions = {},
   ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         const {
           triggerRadius = 8,
           safeDistance = 16,
@@ -1472,7 +1472,7 @@ export class SoulFireTasks {
     options: GuardTaskOptions = {},
   ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         return this.runGuardSubject(
           { case: "position", value: position },
           threats,
@@ -1494,7 +1494,7 @@ export class SoulFireTasks {
     SoulFireTask<typeof GuardTaskResultSchema>,
     SoulFireOperationError
   > {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const reference = yield* Effect.try({
         try: () => entityReference(entity),
         catch: (cause) => operationError("SoulFireTasks.protect", cause),
@@ -1514,7 +1514,7 @@ export class SoulFireTasks {
     options: GuardTaskOptions = {},
   ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         return this.runGuardSubject(
           {
             case: "entity",
@@ -1541,7 +1541,7 @@ export class SoulFireTasks {
     SoulFireTask<typeof GuardTaskResultSchema>,
     SoulFireOperationError
   > {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const { input, taskOptions } = yield* Effect.try({
         try: () =>
           guardTaskInput(subject, threats, completeWhenClearDefault, options),
@@ -1563,7 +1563,7 @@ export class SoulFireTasks {
     options: GuardTaskOptions,
   ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         const { input, taskOptions } = yield* Effect.try({
           try: () =>
             guardTaskInput(subject, threats, completeWhenClearDefault, options),
@@ -1584,7 +1584,7 @@ export class SoulFireTasks {
     SoulFireTask<typeof SleepTaskResultSchema>,
     SoulFireOperationError
   > {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const {
         bed,
         searchRadius = 24,
@@ -1612,7 +1612,7 @@ export class SoulFireTasks {
     options: SleepTaskOptions = {},
   ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         const {
           bed,
           searchRadius = 24,
@@ -1645,7 +1645,7 @@ export class SoulFireTasks {
     SoulFireTask<typeof FishTaskResultSchema>,
     SoulFireOperationError
   > {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const {
         maximumCatches = 1,
         maximumFailedCasts = 0,
@@ -1677,7 +1677,7 @@ export class SoulFireTasks {
     options: FishTaskOptions = {},
   ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         const {
           maximumCatches = 0,
           maximumFailedCasts = 0,
@@ -1714,7 +1714,7 @@ export class SoulFireTasks {
     SoulFireTask<typeof FarmTaskResultSchema>,
     SoulFireOperationError
   > {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const {
         cropIds = [],
         center,
@@ -1750,7 +1750,7 @@ export class SoulFireTasks {
     options: FarmTaskOptions = {},
   ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         const {
           cropIds = [],
           center,
@@ -1792,7 +1792,7 @@ export class SoulFireTasks {
     SoulFireTask<typeof BreedTaskResultSchema>,
     SoulFireOperationError
   > {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const {
         animals = {},
         food,
@@ -1832,7 +1832,7 @@ export class SoulFireTasks {
     options: BreedTaskOptions = {},
   ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         const {
           animals = {},
           food,
@@ -1877,7 +1877,7 @@ export class SoulFireTasks {
     SoulFireTask<typeof ExploreTaskResultSchema>,
     SoulFireOperationError
   > {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const {
         origin,
         radius = 256,
@@ -1909,7 +1909,7 @@ export class SoulFireTasks {
     options: ExploreTaskOptions = {},
   ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         const {
           origin,
           radius = 256,
@@ -1948,7 +1948,7 @@ export class SoulFireTasks {
     SoulFireTask<typeof ContainerTransferTaskResultSchema>,
     SoulFireOperationError
   > {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const { input, taskOptions } = containerTransferInput(
         ContainerTransferDirection.DEPOSIT,
         container,
@@ -1970,7 +1970,7 @@ export class SoulFireTasks {
     options: ContainerTransferTaskOptions = {},
   ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         const { input, taskOptions } = containerTransferInput(
           ContainerTransferDirection.DEPOSIT,
           container,
@@ -1993,7 +1993,7 @@ export class SoulFireTasks {
     SoulFireTask<typeof ContainerTransferTaskResultSchema>,
     SoulFireOperationError
   > {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const { input, taskOptions } = containerTransferInput(
         ContainerTransferDirection.WITHDRAW,
         container,
@@ -2015,7 +2015,7 @@ export class SoulFireTasks {
     options: ContainerTransferTaskOptions = {},
   ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         const { input, taskOptions } = containerTransferInput(
           ContainerTransferDirection.WITHDRAW,
           container,
@@ -2039,7 +2039,7 @@ export class SoulFireTasks {
     SoulFireTask<typeof MaintainLoadoutTaskResultSchema>,
     SoulFireOperationError
   > {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const { input, taskOptions } = yield* Effect.try({
         try: () => maintainLoadoutInput(container, requirements, options),
         catch: (cause) =>
@@ -2060,7 +2060,7 @@ export class SoulFireTasks {
     options: MaintainLoadoutTaskOptions = {},
   ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         const { input, taskOptions } = yield* Effect.try({
           try: () => maintainLoadoutInput(container, requirements, options),
           catch: (cause) =>
@@ -2103,7 +2103,7 @@ export class SoulFireTasks {
     SoulFireTask<typeof AutoEatTaskResultSchema>,
     SoulFireOperationError
   > {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const {
         foodLevel = 14,
         checkIntervalTicks = 20,
@@ -2136,7 +2136,7 @@ export class SoulFireTasks {
     options: AutoEatTaskOptions = {},
   ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         const {
           foodLevel = 14,
           checkIntervalTicks = 20,
@@ -2170,7 +2170,7 @@ export class SoulFireTasks {
     SoulFireTask<typeof AutoRespawnTaskResultSchema>,
     SoulFireOperationError
   > {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const {
         respawnDelayTicks = 0,
         maximumRespawns = 0,
@@ -2189,7 +2189,7 @@ export class SoulFireTasks {
     options: AutoRespawnTaskOptions = {},
   ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         const {
           respawnDelayTicks = 0,
           maximumRespawns = 0,
@@ -2213,7 +2213,7 @@ export class SoulFireTasks {
     SoulFireTask<typeof AutoTotemTaskResultSchema>,
     SoulFireOperationError
   > {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const {
         checkIntervalTicks = 20,
         maximumEquips = 0,
@@ -2239,7 +2239,7 @@ export class SoulFireTasks {
     options: AutoTotemTaskOptions = {},
   ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         const {
           checkIntervalTicks = 20,
           maximumEquips = 0,
@@ -2270,7 +2270,7 @@ export class SoulFireTasks {
     SoulFireTask<typeof AutoArmorTaskResultSchema>,
     SoulFireOperationError
   > {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const {
         checkIntervalTicks = 20,
         maximumEquips = 0,
@@ -2290,7 +2290,7 @@ export class SoulFireTasks {
     options: AutoArmorTaskOptions = {},
   ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         const {
           checkIntervalTicks = 20,
           maximumEquips = 0,
@@ -2316,7 +2316,7 @@ export class SoulFireTasks {
     SoulFireTask<typeof CollectBlocksTaskResultSchema>,
     SoulFireOperationError
   > {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const {
         tags = [],
         count = 1,
@@ -2350,7 +2350,7 @@ export class SoulFireTasks {
     options: CollectBlocksTaskOptions = {},
   ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         const {
           tags = [],
           count = 1,
@@ -2391,7 +2391,7 @@ export class SoulFireTasks {
     SoulFireTask<typeof ExcavateTaskResultSchema>,
     SoulFireOperationError
   > {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const { path, maximumBlocks = 0, ...taskOptions } = options;
       return yield* this.start(
         ExcavateTaskSchema,
@@ -2413,7 +2413,7 @@ export class SoulFireTasks {
     options: ExcavateTaskOptions = {},
   ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         const { path, maximumBlocks = 0, ...taskOptions } = options;
         return this.run(
           ExcavateTaskSchema,
@@ -2440,7 +2440,7 @@ export class SoulFireTasks {
     SoulFireTask<typeof BuildTaskResultSchema>,
     SoulFireOperationError
   > {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const { input, taskOptions } = yield* Effect.try({
         try: () => buildInput(origin, blocks, options),
         catch: (cause) => operationError("SoulFireTasks.build", cause),
@@ -2460,7 +2460,7 @@ export class SoulFireTasks {
     options: BuildTaskOptions = {},
   ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         const { input, taskOptions } = yield* Effect.try({
           try: () => buildInput(origin, blocks, options),
           catch: (cause) => operationError("SoulFireTasks.runBuild", cause),
@@ -2482,7 +2482,7 @@ export class SoulFireTasks {
     SoulFireTask<typeof CraftTaskResultSchema>,
     SoulFireOperationError
   > {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const { station, ...taskOptions } = options;
       return yield* this.start(
         CraftTaskSchema,
@@ -2507,7 +2507,7 @@ export class SoulFireTasks {
     options: CraftTaskOptions = {},
   ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         const { station, ...taskOptions } = options;
         return this.run(
           CraftTaskSchema,
@@ -2534,7 +2534,7 @@ export class SoulFireTasks {
     SoulFireTask<typeof SmeltTaskResultSchema>,
     SoulFireOperationError
   > {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const { fuel, station, ...taskOptions } = options;
       return yield* this.start(
         SmeltTaskSchema,
@@ -2559,7 +2559,7 @@ export class SoulFireTasks {
     options: SmeltTaskOptions = {},
   ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         const { fuel, station, ...taskOptions } = options;
         return this.run(
           SmeltTaskSchema,
@@ -2588,7 +2588,7 @@ export class SoulFireTasks {
     SoulFireTask<typeof BrewTaskResultSchema>,
     SoulFireOperationError
   > {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const { fuel, station, expectedResult, ...taskOptions } = options;
       return yield* this.start(
         BrewTaskSchema,
@@ -2616,7 +2616,7 @@ export class SoulFireTasks {
     options: BrewTaskOptions = {},
   ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         const { fuel, station, expectedResult, ...taskOptions } = options;
         return this.run(
           BrewTaskSchema,
@@ -2647,7 +2647,7 @@ export class SoulFireTasks {
     SoulFireTask<typeof VillagerTradeTaskResultSchema>,
     SoulFireOperationError
   > {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const { closeWhenDone = false, expectedResult, ...taskOptions } = options;
       return yield* this.start(
         VillagerTradeTaskSchema,
@@ -2672,7 +2672,7 @@ export class SoulFireTasks {
     options: VillagerTradeTaskOptions = {},
   ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         const {
           closeWhenDone = false,
           expectedResult,
@@ -2700,7 +2700,7 @@ export class SoulFireTasks {
     resultSchema?: Result,
     options?: CallOptions,
   ): Effect.Effect<SoulFireTask<Result>, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const task = yield* rpc("SoulFireTasks.get", (signal) =>
         this.client.getBotTask({ taskId }, withSignal(options, signal)),
       );
@@ -2727,7 +2727,7 @@ export class SoulFireTasks {
   public list(
     options: TaskListOptions = {},
   ): Effect.Effect<BotTask[], SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const { call, ...request } = options;
       const tasks: BotTask[] = [];
       let pageToken = request.pageToken ?? "";
@@ -2761,7 +2761,7 @@ export class SoulFireTasks {
     call?: CallOptions;
   }): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         return rpcStream("SoulFireTasks.watch", (signal) =>
           this.client.watchBotTasks(
             {

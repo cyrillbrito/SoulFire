@@ -54,7 +54,7 @@ export class SoulFireProtocol {
     direction: PacketDirection,
     options?: CallOptions,
   ): Effect.Effect<readonly PacketSchema[], SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const response = yield* rpc("SoulFireProtocol.schemas", (signal) =>
         this.client.listPacketSchemas(
           { ...this.scope(), direction },
@@ -69,7 +69,7 @@ export class SoulFireProtocol {
     options: WatchPacketsOptions = {},
   ): Stream.Stream<RawPacketEvent, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         const { call, ...request } = options;
         return rpcStream("SoulFireProtocol.packets", (signal) =>
           this.client.watchPackets(
@@ -91,7 +91,7 @@ export class SoulFireProtocol {
     },
     SoulFireOperationError
   > {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const response = yield* rpc("SoulFireProtocol.send", (signal) =>
         this.client.sendRawPacket(
           {

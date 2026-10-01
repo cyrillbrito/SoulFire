@@ -115,7 +115,7 @@ export class SoulFireRecipes {
     options: CraftTaskOptions = {},
   ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         return this.tasks.runCraft(recipeId, count, options);
       }),
     );
@@ -145,7 +145,7 @@ export class SoulFireRecipes {
     options: SmeltTaskOptions = {},
   ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         return this.tasks.runSmelt(input, count, options);
       }),
     );
@@ -176,7 +176,7 @@ export class SoulFireRecipes {
     options: BrewTaskOptions = {},
   ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         return this.tasks.runBrew(input, ingredient, count, options);
       }),
     );
@@ -207,7 +207,7 @@ export class SoulFireRecipes {
     options: VillagerTradeTaskOptions = {},
   ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         return this.tasks.runVillagerTrade(offerIndex, count, options);
       }),
     );

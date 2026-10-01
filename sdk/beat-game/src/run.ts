@@ -4,6 +4,7 @@ import {
   Effect,
   Fiber,
   Ref,
+  Semaphore,
   Stream,
   type Scope,
 } from "effect";
@@ -948,8 +949,8 @@ interface RunState {
   readonly checkedRecoveryContainers: Ref.Ref<ReadonlySet<string>>;
   readonly paused: Ref.Ref<boolean>;
   readonly stopped: Deferred.Deferred<void>;
-  readonly checkpointMutex: Effect.Semaphore;
-  readonly eventMutex: Effect.Semaphore;
+  readonly checkpointMutex: Semaphore.Semaphore;
+  readonly eventMutex: Semaphore.Semaphore;
   readonly events: ReplayBroadcast<BeatGameEvent>;
   readonly snapshots: ReplayBroadcast<BeatGameSnapshot>;
   readonly sequence: Ref.Ref<bigint>;
@@ -1101,8 +1102,8 @@ export function beatGameWithDriver(
     );
     const paused = yield* Ref.make(false);
     const stopped = yield* Deferred.make<void>();
-    const checkpointMutex = yield* Effect.makeSemaphore(1);
-    const eventMutex = yield* Effect.makeSemaphore(1);
+    const checkpointMutex = yield* Semaphore.make(1);
+    const eventMutex = yield* Semaphore.make(1);
     const events = new ReplayBroadcast<BeatGameEvent>(128);
     const snapshots = new ReplayBroadcast<BeatGameSnapshot>(1);
     const sequence = yield* Ref.make(0n);
@@ -1192,7 +1193,7 @@ export function beatGameWithDriver(
           isPaused
             ? Effect.void
             : Ref.set(paused, true).pipe(
-              Effect.zipRight(changeStatus(
+              Effect.andThen(changeStatus(
                 BeatGameRunStatus.PAUSED,
                 { type: "run-paused" },
               )),
@@ -1204,7 +1205,7 @@ export function beatGameWithDriver(
           !isPaused
             ? Effect.void
             : Ref.set(paused, false).pipe(
-              Effect.zipRight(changeStatus(
+              Effect.andThen(changeStatus(
                 BeatGameRunStatus.RUNNING,
                 { type: "run-resumed" },
               )),
@@ -1216,11 +1217,11 @@ export function beatGameWithDriver(
           isStopped
             ? Effect.void
             : Ref.set(paused, false).pipe(
-              Effect.zipRight(changeStatus(
+              Effect.andThen(changeStatus(
                 BeatGameRunStatus.STOPPED,
                 { type: "run-stopped" },
               )),
-              Effect.zipRight(Deferred.succeed(stopped, undefined)),
+              Effect.andThen(Deferred.succeed(stopped, undefined)),
               Effect.asVoid,
             )
         ),
@@ -1262,7 +1263,7 @@ function liveEnvironmentDriver(
         }),
       })
     ),
-    Effect.catchAll(() => Effect.succeed(fallback)),
+    Effect.catch(() => Effect.succeed(fallback)),
   );
 }
 
@@ -1444,7 +1445,7 @@ function runLoop(
           state,
           liveObservation,
         ).pipe(
-          Effect.catchAll((error) =>
+          Effect.catch((error) =>
             emit(state, {
               type: "diagnostic",
               message: "Could not evaluate night shelter conditions",
@@ -1456,7 +1457,7 @@ function runLoop(
         yield* cancellable(
           state,
           runNightShelterAction(state, liveObservation).pipe(
-            Effect.catchAll((error) =>
+            Effect.catch((error) =>
               emit(state, {
                 type: "diagnostic",
                 message: "Night shelter attempt failed",
@@ -1484,13 +1485,13 @@ function runLoop(
       new Error("The beat-game loop ended without a terminal phase"),
     );
   }).pipe(
-    Effect.catchAll((
+    Effect.catch((
       error,
     ): Effect.Effect<never, BeatGameError> =>
       error instanceof BeatGameCancelled
         ? Effect.fail(error)
         : markFailed(state, error).pipe(
-          Effect.zipRight(Effect.fail(error)),
+          Effect.andThen(Effect.fail(error)),
         )
     ),
   );
@@ -1689,8 +1690,8 @@ function trySleepThroughNight(
             current,
             craftableBed,
             1,
-          ).pipe(Effect.either);
-          if (crafted._tag === "Right") {
+          ).pipe(Effect.result);
+          if (crafted._tag === "Success") {
             current = yield* state.driver.observe;
             bedItemId = carriedBedItemId(current);
           }
@@ -1728,8 +1729,8 @@ function trySleepThroughNight(
           state.strategy.path.maxSearchTimeMs,
           30_000,
         ),
-      }).pipe(Effect.either);
-      if (sleepAttempt._tag === "Left") {
+      }).pipe(Effect.result);
+      if (sleepAttempt._tag === "Failure") {
         continue;
       }
       if (yield* waitForMorningAfterBed(state)) {
@@ -1848,9 +1849,9 @@ function placeNightBed(
           yield* Effect.sleep(100);
         }
         return undefined;
-      }).pipe(Effect.either);
-      if (attempt._tag === "Right" && attempt.right !== undefined) {
-        return attempt.right;
+      }).pipe(Effect.result);
+      if (attempt._tag === "Success" && attempt.success !== undefined) {
+        return attempt.success;
       }
       const current = yield* state.driver.observe;
       if (current.player.dead || carriedBedItemId(current) === undefined) {
@@ -2081,7 +2082,7 @@ function shelterUntilMorning(
       state,
       shelterObservation,
     ).pipe(
-      Effect.catchAll((error) =>
+      Effect.catch((error) =>
         emit(state, {
           type: "diagnostic",
           message: "Could not use a bed before constructing a night shelter",
@@ -2378,7 +2379,7 @@ function prepareStableNightShelterSite(
             ),
           },
         ).pipe(
-          Effect.either,
+          Effect.result,
           Effect.map((result) => ({ type: "path" as const, result })),
         ),
         waitForNightShelterTravelThreat(state).pipe(
@@ -2392,7 +2393,7 @@ function prepareStableNightShelterSite(
         );
         return undefined;
       }
-      if (pathOutcome.result._tag === "Left") {
+      if (pathOutcome.result._tag === "Failure") {
         continue;
       }
       const current = yield* state.driver.observe;
@@ -2467,7 +2468,7 @@ function relocateFromRejectedNightShelterSite(
         true,
         false,
       ).pipe(
-        Effect.either,
+        Effect.result,
         Effect.map((result) => ({ type: "path" as const, result })),
       ),
       waitForNightShelterTravelThreat(state).pipe(
@@ -2481,13 +2482,13 @@ function relocateFromRejectedNightShelterSite(
       );
       return undefined;
     }
-    if (relocationOutcome.result._tag === "Left") {
+    if (relocationOutcome.result._tag === "Failure") {
       yield* emit(state, {
         type: "diagnostic",
         message: "Could not relocate from the rejected night shelter site",
         data: {
           position: origin,
-          error: relocationOutcome.result.left.message,
+          error: relocationOutcome.result.failure.message,
         },
       });
       return undefined;
@@ -2510,7 +2511,7 @@ function waitForNightShelterTravelThreat(
 ): Effect.Effect<ImmediateThreat, BeatGameDriverError> {
   const poll = (): Effect.Effect<ImmediateThreat, BeatGameDriverError> =>
     Effect.sleep(Math.max(100, state.strategy.observationPollMs)).pipe(
-      Effect.zipRight(state.driver.observe),
+      Effect.andThen(state.driver.observe),
       Effect.flatMap((observation) =>
         observation.player.dead
           ? Effect.fail(new BeatGameDriverError({
@@ -2543,7 +2544,7 @@ function respondToNightShelterTravelThreat(
       target: threat.target,
     },
   }).pipe(
-    Effect.zipRight(
+    Effect.andThen(
       threat.response === "flee"
         ? escapeFromTarget(state, threat.target, {
           continueEscapingWhenHit: true,
@@ -2785,15 +2786,15 @@ function runDecisionWithRetry(
           actionCheckpoint,
         ),
       ).pipe(
-        Effect.timeoutFail({
+        Effect.timeoutOrElse({
           duration: state.strategy.actionTimeoutMs,
-          onTimeout: () => actionError(
+          orElse: () => Effect.fail(actionError(
             actionCheckpoint,
             `Action ${action} timed out`,
             true,
-          ),
+          )),
         }),
-        Effect.catchAll((error) =>
+        Effect.catch((error) =>
           number < maximumAttempts && retryable(error)
             ? Effect.gen(function* () {
               yield* emit(state, {
@@ -2864,7 +2865,7 @@ function runDecisionWithRetry(
                 `failed:${error.message}`,
                 new Date().toISOString(),
               )
-            ).pipe(Effect.zipRight(Effect.fail(error)))
+            ).pipe(Effect.andThen(Effect.fail(error)))
         ),
       );
       if (result === undefined) {
@@ -3569,7 +3570,7 @@ function executeDecision(
             requirement: decision.requirement,
           });
         return satisfy.pipe(
-          Effect.zipRight(state.driver.observe),
+          Effect.andThen(state.driver.observe),
           Effect.map((current) =>
             requirementActionResult(
               decision.requirement,
@@ -3577,7 +3578,7 @@ function executeDecision(
               current,
             )
           ),
-          Effect.catchAll((error) =>
+          Effect.catch((error) =>
             error instanceof BeatGameDriverError
                 && error.code === "resource-exhausted"
               ? Effect.succeed({
@@ -3634,7 +3635,7 @@ function executeDecision(
             }),
           );
         return buildAndEnter.pipe(
-          Effect.catchAll((error) =>
+          Effect.catch((error) =>
             error instanceof BeatGameDriverError
                 && isRouteUnavailable(error)
               ? Effect.succeed({
@@ -3670,7 +3671,7 @@ function executeDecision(
         );
       case "throw-eye":
         return moveToEyeBaseline(state).pipe(
-          Effect.zipRight(
+          Effect.andThen(
             state.hooks.throwEye?.(policyContext)
               ?? throwEyeOfEnder(state.driver),
           ),
@@ -3778,7 +3779,7 @@ function executeDecision(
         return activateEndPortal(state.driver, {
           path: state.strategy.path,
         }).pipe(
-          Effect.zipRight(enterEndPortal(state.driver, {
+          Effect.andThen(enterEndPortal(state.driver, {
             path: state.strategy.path,
           })),
           Effect.as({
@@ -3853,7 +3854,7 @@ function executeDecision(
             continueEscapingWhenHit: true,
           })
           : escapeFromTarget(state, result.escapeTarget).pipe(
-            Effect.zipRight(
+            Effect.andThen(
               retreatAndRecover(state, POST_DEFENSE_RECOVERY_DURATION_MS),
             ),
           )
@@ -4033,7 +4034,7 @@ function monitorActionSafety(
     previousObservation: BeatGameObservation,
   ): Effect.Effect<ActionResult, BeatGameError | BeatGameDriverError> =>
     Effect.sleep(Math.max(100, state.strategy.observationPollMs)).pipe(
-      Effect.zipRight(Ref.get(state.paused)),
+      Effect.andThen(Ref.get(state.paused)),
       Effect.flatMap((paused) =>
         paused
           ? Effect.succeed({
@@ -4354,12 +4355,12 @@ function monitorDangerousFall(
         hasDangerousFall(observation)
           ? Effect.succeed(observation.player.position)
           : Effect.sleep(FALL_CLUTCH_POLL_MS).pipe(
-            Effect.zipRight(Effect.suspend(poll)),
+            Effect.andThen(Effect.suspend(poll)),
           )
       ),
       Effect.catchTag("BeatGameDriverError", () =>
         Effect.sleep(FALL_CLUTCH_POLL_MS).pipe(
-          Effect.zipRight(Effect.suspend(poll)),
+          Effect.andThen(Effect.suspend(poll)),
         )
       ),
     );
@@ -5139,7 +5140,7 @@ function escapeFromTarget(
       || shouldDisengageFromThreat(state, latest, target);
     const safeNavigation = navigation.pipe(
       Effect.as({ type: "escaped" } as const),
-      Effect.catchAll(
+      Effect.catch(
         (): Effect.Effect<
           EscapeNavigationFallback,
           BeatGameDriverError
@@ -5400,7 +5401,7 @@ function monitorEscapeSafety(
   return Effect.sleep(
     pollInterval,
   ).pipe(
-    Effect.zipRight(state.driver.observe),
+    Effect.andThen(state.driver.observe),
     Effect.flatMap((observation) => {
       if (observation.player.dead) {
         return Effect.succeed({ type: "dead" } as const);
@@ -6144,7 +6145,7 @@ function blockCreeperExplosion(
     Effect.ensuring(
       state.driver.act({ type: "release-item" }).pipe(
         Effect.ignore,
-        Effect.zipRight(
+        Effect.andThen(
           state.driver.act({ type: "reset-movement" }).pipe(Effect.ignore),
         ),
       ),
@@ -6683,7 +6684,7 @@ function waitForUnsafeAir(
     BeatGameDriverError
   > =>
     Effect.sleep(Math.max(100, state.strategy.observationPollMs)).pipe(
-      Effect.zipRight(state.driver.observe),
+      Effect.andThen(state.driver.observe),
       Effect.flatMap((observation) =>
         observation.player.dead
           ? Effect.succeed("dead" as const)
@@ -6752,7 +6753,7 @@ function monitorAirRecoveryThreat(
 ): Effect.Effect<ImmediateThreat, BeatGameDriverError> {
   const poll = (): Effect.Effect<ImmediateThreat, BeatGameDriverError> =>
     Effect.sleep(Math.max(100, state.strategy.observationPollMs)).pipe(
-      Effect.zipRight(state.driver.observe),
+      Effect.andThen(state.driver.observe),
       Effect.flatMap((observation) =>
         observation.player.dead
           ? Effect.never
@@ -6797,7 +6798,7 @@ function respondToAirRecoveryThreat(
     Effect.flatMap((observation) =>
       shouldShieldCreeperExplosion(observation, threat.target)
         ? blockCreeperExplosion(state, observation, threat.target).pipe(
-          Effect.zipRight(state.driver.observe),
+          Effect.andThen(state.driver.observe),
           Effect.flatMap((latest) =>
             latest.player.dead
               ? Effect.void
@@ -6884,11 +6885,11 @@ function recoverFromFluid(
       yaw: observation.player.rotation.yaw,
       pitch: -90,
     }).pipe(
-      Effect.zipRight(state.driver.act({
+      Effect.andThen(state.driver.act({
         type: "set-movement",
         jump: true,
       })),
-      Effect.zipRight(waitForAirRecovery(
+      Effect.andThen(waitForAirRecovery(
         state,
         60,
         observation.player.position.y,
@@ -6944,7 +6945,7 @@ function recoverFromFluid(
                 ),
               )
           ),
-          Effect.either,
+          Effect.result,
           Effect.flatMap(() => state.driver.observe),
           Effect.flatMap((latest) =>
             latest.player.dead
@@ -7072,18 +7073,18 @@ function tryBreathingPocketCandidates(
                 ),
               },
             ).pipe(
-              Effect.timeoutFail({
+              Effect.timeoutOrElse({
                 duration: AIR_ESCAPE_BREATHING_POCKET_PATH_TIMEOUT_MS,
-                onTimeout: () => new BeatGameDriverError({
+                orElse: () => Effect.fail(new BeatGameDriverError({
                   operation: "pathfind",
                   code: "unreachable",
                   retryable: true,
                   message: `Timed out reaching breathing pocket at ${
                     positionKey(candidate.target)
                   }`,
-                }),
+                })),
               }),
-              Effect.zipRight(state.driver.observe),
+              Effect.andThen(state.driver.observe),
               Effect.flatMap((current) =>
                 hasBreathableHeadSpace(
                   state.driver,
@@ -7121,7 +7122,7 @@ function waitForBreathingPocketRecovery(
     stagnantObservations = 0,
   ): Effect.Effect<boolean, BeatGameDriverError> =>
     Effect.sleep(100).pipe(
-      Effect.zipRight(state.driver.observe),
+      Effect.andThen(state.driver.observe),
       Effect.flatMap((observation) => {
         if (observation.player.dead) {
           return Effect.succeed(false);
@@ -7154,7 +7155,7 @@ function waitForBreathingPocketRecovery(
           type: "set-movement",
           jump: true,
         }).pipe(
-          Effect.zipRight(wait(
+          Effect.andThen(wait(
             observation.player.air,
             AIR_ESCAPE_SURFACE_APPROACH_ATTEMPTS,
           )),
@@ -7189,7 +7190,7 @@ function waitForAirRecovery(
   stagnantObservations = 0,
 ): Effect.Effect<boolean, BeatGameDriverError> {
   return Effect.sleep(100).pipe(
-    Effect.zipRight(state.driver.observe),
+    Effect.andThen(state.driver.observe),
     Effect.flatMap((observation) => {
       if (
         observation.player.dead
@@ -7369,16 +7370,16 @@ function pathfindTowardDrySurface(
           ),
         },
       ).pipe(
-        Effect.timeoutFail({
+        Effect.timeoutOrElse({
           duration: SHORE_PATH_TIMEOUT_MS,
-          onTimeout: () => new BeatGameDriverError({
+          orElse: () => Effect.fail(new BeatGameDriverError({
             operation: "pathfind",
             code: "unreachable",
             retryable: true,
             message: `Timed out pathfinding toward dry surface at ${
               positionKey(target)
             }`,
-          }),
+          })),
         }),
         Effect.catchTag("BeatGameDriverError", () => Effect.void),
       ),
@@ -7563,12 +7564,12 @@ function escapeToOverworldSurface(
       const recovery = yield* returnToOverworldSurface(
         state,
         currentPosition,
-      ).pipe(Effect.either);
-      if (recovery._tag === "Left") {
-        if (recovery.left.operation !== "pathfind") {
-          return yield* Effect.fail(recovery.left);
+      ).pipe(Effect.result);
+      if (recovery._tag === "Failure") {
+        if (recovery.failure.operation !== "pathfind") {
+          return yield* Effect.fail(recovery.failure);
         }
-        lastPathFailure = recovery.left;
+        lastPathFailure = recovery.failure;
         const observation = yield* state.driver.observe;
         if (observation.player.dead) {
           return;
@@ -7742,16 +7743,16 @@ function digAirEscapeObstruction(
       type: "dig-block",
       position: obstruction,
     }).pipe(
-      Effect.timeoutFail({
+      Effect.timeoutOrElse({
         duration: timeoutMs,
-        onTimeout: () => new BeatGameDriverError({
+        orElse: () => Effect.fail(new BeatGameDriverError({
           operation: "act.dig-block",
           code: "deadline_exceeded",
           retryable: true,
           message: `Timed out clearing ${block.blockId} at ${
             positionKey(obstruction)
           } within the available air budget`,
-        }),
+        })),
       }),
     );
     if (!inFluid) {
@@ -7763,7 +7764,7 @@ function digAirEscapeObstruction(
         type: "set-movement",
         sneak: true,
       }).pipe(
-        Effect.zipRight(dig),
+        Effect.andThen(dig),
         Effect.ensuring(
           state.driver.act({ type: "reset-movement" }).pipe(
             Effect.ignore,
@@ -7782,7 +7783,7 @@ function settleForSubmergedDig(
     attemptsRemaining: number,
   ): Effect.Effect<BeatGameObservation, BeatGameDriverError> =>
     Effect.sleep(100).pipe(
-      Effect.zipRight(state.driver.observe),
+      Effect.andThen(state.driver.observe),
       Effect.flatMap((observation) =>
         observation.player.dead
             || observation.player.onGround
@@ -7801,7 +7802,7 @@ function settleForSubmergedDig(
             type: "set-movement",
             sneak: true,
           }).pipe(
-            Effect.zipRight(wait(AIR_ESCAPE_DIG_SETTLE_ATTEMPTS)),
+            Effect.andThen(wait(AIR_ESCAPE_DIG_SETTLE_ATTEMPTS)),
             Effect.ensuring(
               state.driver.act({ type: "reset-movement" }).pipe(
                 Effect.ignore,
@@ -8018,13 +8019,13 @@ function swimTowardOpenAirColumn(
       yaw: rotation.yaw,
       pitch: -20,
     }).pipe(
-      Effect.zipRight(state.driver.act({
+      Effect.andThen(state.driver.act({
         type: "set-movement",
         forward: true,
         jump: true,
         sprint: observation.player.food > CRITICAL_HUNGER_FOOD_LEVEL,
       })),
-      Effect.zipRight(waitForOpenAirColumn(
+      Effect.andThen(waitForOpenAirColumn(
         state,
         target,
         30,
@@ -8044,7 +8045,7 @@ function waitForOpenAirColumn(
   stagnantObservations = 0,
 ): Effect.Effect<boolean, BeatGameDriverError> {
   return Effect.sleep(100).pipe(
-    Effect.zipRight(state.driver.observe),
+    Effect.andThen(state.driver.observe),
     Effect.flatMap((observation) => {
       if (observation.player.dead) {
         return Effect.succeed(false);
@@ -8174,7 +8175,7 @@ function swimUpOneLevel(
       type: "set-movement",
       jump: true,
     }).pipe(
-      Effect.zipRight(waitForVerticalProgress(
+      Effect.andThen(waitForVerticalProgress(
         state,
         startingY,
         AIR_ESCAPE_VERTICAL_PROGRESS_ATTEMPTS,
@@ -8192,7 +8193,7 @@ function waitForVerticalProgress(
   attemptsRemaining: number,
 ): Effect.Effect<boolean, BeatGameDriverError> {
   return Effect.sleep(100).pipe(
-    Effect.zipRight(state.driver.observe),
+    Effect.andThen(state.driver.observe),
     Effect.flatMap((observation) =>
       observation.player.dead
         || observation.player.position.y
@@ -8285,13 +8286,13 @@ function swimTowardDrySurface(
           yaw: rotation.yaw,
           pitch: -20,
         }).pipe(
-          Effect.zipRight(state.driver.act({
+          Effect.andThen(state.driver.act({
             type: "set-movement",
             forward: true,
             jump: true,
             sprint: observation.player.food > CRITICAL_HUNGER_FOOD_LEVEL,
           })),
-          Effect.zipRight(waitForDrySurfaceApproach(
+          Effect.andThen(waitForDrySurfaceApproach(
             state,
             target,
             maximumApproachAttempts,
@@ -8701,7 +8702,7 @@ function defendAgainstTarget(
             })
         ),
       );
-      return prepareShield.pipe(Effect.zipRight(guardedAttack));
+      return prepareShield.pipe(Effect.andThen(guardedAttack));
     }),
   );
 }
@@ -8720,7 +8721,7 @@ function monitorDefenseHealth(
   return Effect.sleep(
     Math.max(MINIMUM_RECOVERY_POLL_MS, state.strategy.observationPollMs),
   ).pipe(
-    Effect.zipRight(state.driver.observe),
+    Effect.andThen(state.driver.observe),
     Effect.flatMap((observation) => {
       if (observation.player.dead) {
         return Effect.succeed("disengage" as const);
@@ -8794,10 +8795,10 @@ function defendAndRecover(
   target: BeatGameEntityObservation,
 ): Effect.Effect<void, BeatGameDriverError> {
   return defendAgainstTarget(state, target).pipe(
-    Effect.zipRight(
+    Effect.andThen(
       retreatAndRecover(state, POST_DEFENSE_RECOVERY_DURATION_MS),
     ),
-    Effect.zipRight(
+    Effect.andThen(
       collectNearbyDrops(state.driver, {
         radius: 8,
         maximumDrops: 16,
@@ -9122,7 +9123,7 @@ function retreatAndRecover(
             state,
             observation.player.position,
           ).pipe(
-            Effect.zipRight(
+            Effect.andThen(
               recoverUntilSafe(attemptsRemaining - 1),
             ),
           );
@@ -9161,14 +9162,14 @@ function retreatAndRecover(
                   completeWhenNoFood: true,
                   path: state.strategy.path,
                 }).pipe(
-                  Effect.zipRight(Effect.sleep(recoveryPollMs)),
-                  Effect.zipRight(
+                  Effect.andThen(Effect.sleep(recoveryPollMs)),
+                  Effect.andThen(
                     recoverUntilSafe(attemptsRemaining - 1),
                   ),
                 );
               }
               return Effect.sleep(recoveryPollMs).pipe(
-                Effect.zipRight(
+                Effect.andThen(
                   recoverUntilSafe(attemptsRemaining - 1),
                 ),
               );
@@ -9177,8 +9178,8 @@ function retreatAndRecover(
               state,
               threat,
             ).pipe(
-              Effect.zipRight(Effect.sleep(recoveryPollMs)),
-              Effect.zipRight(
+              Effect.andThen(Effect.sleep(recoveryPollMs)),
+              Effect.andThen(
                 recoverUntilSafe(attemptsRemaining - 1),
               ),
             );
@@ -9188,12 +9189,12 @@ function retreatAndRecover(
     );
   const escapeEnvironmentalHazard = state.driver.observe.pipe(
     Effect.flatMap((observation) => extinguishFire(state, observation)),
-    Effect.zipRight(state.driver.observe),
+    Effect.andThen(state.driver.observe),
     Effect.flatMap((observation) => escapeLava(state, observation)),
   );
   return escapeEnvironmentalHazard.pipe(
-    Effect.zipRight(fleeFromNearbyNeutralThreat),
-    Effect.zipRight(
+    Effect.andThen(fleeFromNearbyNeutralThreat),
+    Effect.andThen(
       recoverUntilSafe(Math.ceil(recoveryDurationMs / recoveryPollMs)),
     ),
   );
@@ -9263,7 +9264,7 @@ function monitorCompetingRecoveryThreat(
 ): Effect.Effect<ImmediateThreat, BeatGameDriverError> {
   const poll = (): Effect.Effect<ImmediateThreat, BeatGameDriverError> =>
     Effect.sleep(Math.max(100, state.strategy.observationPollMs)).pipe(
-      Effect.zipRight(state.driver.observe),
+      Effect.andThen(state.driver.observe),
       Effect.flatMap((observation) => {
         if (observation.player.dead) {
           return Effect.never;
@@ -9472,7 +9473,7 @@ function recoverNearbyRequirementDrops(
             avoidFluids: !shouldCrossFluids,
           },
         }).pipe(
-          Effect.zipRight(state.driver.observe),
+          Effect.andThen(state.driver.observe),
           Effect.map((current) => count(current) > before),
         )
         : Effect.succeed(false)
@@ -9668,7 +9669,7 @@ function satisfyRequirementFromWorld(
       });
     case "ranged-weapon":
       return ensureString(state, observation, 3).pipe(
-        Effect.zipRight(craftWithTable(
+        Effect.andThen(craftWithTable(
           state,
           observation,
           "minecraft:bow",
@@ -9677,7 +9678,7 @@ function satisfyRequirementFromWorld(
       );
     case "arrows":
       return ensureArrowIngredients(state, observation, missing).pipe(
-        Effect.zipRight(craftWithTable(
+        Effect.andThen(craftWithTable(
           state,
           observation,
           "minecraft:arrow",
@@ -9875,15 +9876,15 @@ function tryForageNearbyFood(
           position: block.position,
         });
       return state.driver.pathfind(block.position, 3, path).pipe(
-        Effect.zipRight(harvest),
-        Effect.zipRight(collectNearbyDrops(state.driver, {
+        Effect.andThen(harvest),
+        Effect.andThen(collectNearbyDrops(state.driver, {
           itemIds: EDIBLE_FOOD_ITEM_IDS,
           radius: 8,
           maximumDrops: 16,
           settleDelayMs: 250,
           path,
         })),
-        Effect.zipRight(state.driver.observe),
+        Effect.andThen(state.driver.observe),
         Effect.map((current) => foodCount(current) > before),
       );
     }),
@@ -10005,7 +10006,7 @@ function satisfyFoodRequirement(
         maximumMeals: batch.count,
         completeWhenNoFood: true,
         path: state.strategy.path,
-      }).pipe(Effect.zipRight(retreatAndRecover(state)));
+      }).pipe(Effect.andThen(retreatAndRecover(state)));
     return findReusableWorkstations(
       state.driver,
       observation,
@@ -10120,12 +10121,12 @@ function tryFishForFood(
           station: workstation.position,
           path: state.strategy.path,
         });
-      }).pipe(Effect.either);
-      if (preparation._tag === "Left") {
-        if (preparation.left.code === "resource-exhausted") {
+      }).pipe(Effect.result);
+      if (preparation._tag === "Failure") {
+        if (preparation.failure.code === "resource-exhausted") {
           return false;
         }
-        return yield* Effect.fail(preparation.left);
+        return yield* Effect.fail(preparation.failure);
       }
       current = yield* state.driver.observe;
       if ((current.inventory.counts["minecraft:fishing_rod"] ?? 0) === 0) {
@@ -10277,7 +10278,7 @@ function tryFishForFood(
           maximumFailedCasts: FISHING_MAXIMUM_FAILED_CASTS,
           path: state.strategy.path,
         });
-        yield* Effect.yieldNow();
+        yield* Effect.yieldNow;
         yield* collectNearbyDrops(state.driver, {
           itemIds: ["minecraft:cod", "minecraft:salmon"],
           radius: 8,
@@ -10374,7 +10375,7 @@ function recoverNearbyFurnaceContents(
         state.checkedRecoveryContainers,
         (checked) => new Set([...checked, positionKey(furnace.position)]),
       ).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           transferContainerItems(state.driver, {
             direction: "withdraw",
             container: furnace.position,
@@ -10386,7 +10387,7 @@ function recoverNearbyFurnaceContents(
             path: state.strategy.path,
           }),
         ),
-        Effect.zipRight(state.driver.observe),
+        Effect.andThen(state.driver.observe),
         Effect.map((current) => ({
           observation: current,
           recovered: inventoryItemCount(current) > initialItemCount,
@@ -10420,7 +10421,7 @@ function drainFurnaceContents(
     }],
     path: state.strategy.path,
   }).pipe(
-    Effect.zipRight(state.driver.observe),
+    Effect.andThen(state.driver.observe),
   );
 }
 
@@ -10627,7 +10628,7 @@ function ensureFurnaceForCooking(
             MINING_PICKAXE_ITEM_IDS,
           ),
       }).pipe(
-        Effect.zipRight(state.driver.observe),
+        Effect.andThen(state.driver.observe),
         Effect.flatMap((current) =>
           ensureWorkstation(state, current, "minecraft:furnace")
         ),
@@ -10652,15 +10653,15 @@ function reclaimPlacedFurnace(
         MINING_PICKAXE_ITEM_IDS,
       )
     ),
-    Effect.zipRight(state.driver.act({
+    Effect.andThen(state.driver.act({
       type: "select-item",
       selector: { itemIds: MINING_PICKAXE_ITEM_IDS },
     })),
-    Effect.zipRight(state.driver.act({
+    Effect.andThen(state.driver.act({
       type: "dig-block",
       position: workstation.position,
     })),
-    Effect.zipRight(collectNearbyDrops(state.driver, {
+    Effect.andThen(collectNearbyDrops(state.driver, {
       itemIds: ["minecraft:furnace"],
       radius: 4,
       maximumDrops: 4,
@@ -10673,7 +10674,7 @@ function reclaimPlacedFurnace(
     // the cleanup against its deadline.
     Effect.interruptible,
     Effect.timeout(FURNACE_RECLAIM_TIMEOUT),
-    Effect.catchTag("TimeoutException", () => Effect.void),
+    Effect.catchTag("TimeoutError", () => Effect.void),
   );
 }
 
@@ -11379,14 +11380,14 @@ function fillLiquidBucket(
           path: state.strategy.path,
           requireTargetableSource: true,
         },
-      ).pipe(Effect.either);
-      if (approach._tag === "Left") {
+      ).pipe(Effect.result);
+      if (approach._tag === "Failure") {
         const visibleSourceIsBelow = sources.some(({ position }) =>
           position.dimension === current.player.position.dimension
           && position.y < current.player.position.y - 4
         );
         if (
-          approach.left.operation === "approach-liquid-source"
+          approach.failure.operation === "approach-liquid-source"
           && visibleSourceIsBelow
           && current.player.position.dimension === "minecraft:overworld"
           && current.player.position.y > DEEP_LAVA_SEARCH_MAX_Y
@@ -11402,9 +11403,9 @@ function fillLiquidBucket(
           );
           return;
         }
-        return yield* Effect.fail(approach.left);
+        return yield* Effect.fail(approach.failure);
       }
-      source = approach.right;
+      source = approach.success;
     } else {
       const reachableSource = yield* pathfindToReachableWaterSource(
         state,
@@ -11580,8 +11581,8 @@ function fillLiquidBucket(
           position: obstruction.position,
         });
       }
-    })).pipe(Effect.either);
-    if (collection._tag === "Left") {
+    })).pipe(Effect.result);
+    if (collection._tag === "Failure") {
       if (liquid === "water") {
         yield* rememberUnreachableLiquidSources(
           state,
@@ -11590,7 +11591,7 @@ function fillLiquidBucket(
         );
         return;
       }
-      return yield* Effect.fail(collection.left);
+      return yield* Effect.fail(collection.failure);
     }
     if (liquid === "lava") {
       yield* retreatAfterLavaCollection(
@@ -11704,7 +11705,7 @@ function pathfindToReachableWaterSource(
           yield* emergencyAirAscent(
             state,
             current.player.position,
-          ).pipe(Effect.either);
+          ).pipe(Effect.result);
         }
       }
       failedSources.push(candidate);
@@ -11801,7 +11802,7 @@ function satisfyIronRequirement(
               station: activeWorkstation.position,
               path: state.strategy.path,
             }).pipe(
-              Effect.zipRight(
+              Effect.andThen(
                 reclaimPlacedFurnace(state, activeWorkstation),
               ),
             )
@@ -11976,26 +11977,26 @@ function excavateResourceSearchStaircase(
     const origin = yield* findStableResourceSearchStaircaseOrigin(
       state,
       position,
-    ).pipe(Effect.either);
-    if (origin._tag === "Left") {
-      if (origin.left.operation !== "find-resource-staircase-origin") {
-        return yield* Effect.fail(origin.left);
+    ).pipe(Effect.result);
+    if (origin._tag === "Failure") {
+      if (origin.failure.operation !== "find-resource-staircase-origin") {
+        return yield* Effect.fail(origin.failure);
       }
       yield* relocateResourceSearchStaircase(state, position, "unstable");
       return false;
     }
-    const from = origin.right;
+    const from = origin.success;
     const destination = yield* selectResourceSearchStaircaseDestination(
       state.driver,
       from,
       targetY,
-    ).pipe(Effect.either);
-    if (destination._tag === "Left") {
+    ).pipe(Effect.result);
+    if (destination._tag === "Failure") {
       if (
-        destination.left.operation
+        destination.failure.operation
           !== "find-resource-staircase-destination"
       ) {
-        return yield* Effect.fail(destination.left);
+        return yield* Effect.fail(destination.failure);
       }
       yield* relocateResourceSearchStaircase(
         state,
@@ -12004,7 +12005,7 @@ function excavateResourceSearchStaircase(
       );
       return false;
     }
-    const to = destination.right;
+    const to = destination.success;
     const excavation = yield* excavateStaircase(state.driver, {
       from,
       to,
@@ -12012,15 +12013,15 @@ function excavateResourceSearchStaircase(
         ...state.strategy.path,
         avoidFluids: true,
       },
-    }).pipe(Effect.either);
-    if (excavation._tag === "Right") {
+    }).pipe(Effect.result);
+    if (excavation._tag === "Success") {
       return true;
     }
-    if (excavation.left.code === "unsupported_opening") {
+    if (excavation.failure.code === "unsupported_opening") {
       return false;
     }
-    if (excavation.left.code !== "fluid_exposed") {
-      return yield* Effect.fail(excavation.left);
+    if (excavation.failure.code !== "fluid_exposed") {
+      return yield* Effect.fail(excavation.failure);
     }
 
     yield* relocateResourceSearchStaircase(state, position, "flooded");
@@ -12134,8 +12135,8 @@ function findStableResourceSearchStaircaseOrigin(
             5_000,
           ),
         },
-      ).pipe(Effect.either);
-      if (reached._tag === "Left") {
+      ).pipe(Effect.result);
+      if (reached._tag === "Failure") {
         continue;
       }
       const staged = floorBlockPosition(
@@ -12357,7 +12358,7 @@ function waitForViewRotation(
         }));
       }
       return Effect.sleep(50).pipe(
-        Effect.zipRight(waitForViewRotation(
+        Effect.andThen(waitForViewRotation(
           driver,
           yaw,
           pitch,
@@ -12443,8 +12444,8 @@ function ensureFlint(
             allowPlacing: false,
             avoidFluids: true,
           },
-        ).pipe(Effect.either);
-        if (approached._tag === "Left") {
+        ).pipe(Effect.result);
+        if (approached._tag === "Failure") {
           continue;
         }
         const approachedObservation = yield* state.driver.observe;
@@ -12475,8 +12476,8 @@ function ensureFlint(
           against: { ...candidate, y: candidate.y - 1 },
           face: "up",
           hand: "main",
-        }).pipe(Effect.either);
-        if (placement._tag === "Left") {
+        }).pipe(Effect.result);
+        if (placement._tag === "Failure") {
           continue;
         }
         const placed = yield* waitForExactBlockId(
@@ -12559,7 +12560,7 @@ function waitForExactBlockId(
         : attempts <= 1
         ? Effect.succeed(false)
         : Effect.sleep(50).pipe(
-          Effect.zipRight(
+          Effect.andThen(
             waitForExactBlockId(driver, target, blockId, attempts - 1),
           ),
         )
@@ -12746,7 +12747,7 @@ function huntOrExplore(
         const recovery = yield* emergencyAirAscent(
           state,
           current.player.position,
-        ).pipe(Effect.either);
+        ).pipe(Effect.result);
         current = yield* state.driver.observe;
         if (current.player.dead) {
           return;
@@ -12766,8 +12767,8 @@ function huntOrExplore(
           fluidTraversalRequired = true;
           continue;
         }
-        if (recovery._tag === "Left") {
-          return yield* Effect.fail(recovery.left);
+        if (recovery._tag === "Failure") {
+          return yield* Effect.fail(recovery.failure);
         }
         continue;
       }
@@ -13017,7 +13018,7 @@ function huntOrExplore(
               },
             ).pipe(
               Effect.as(true),
-              Effect.catchAll((cause) =>
+              Effect.catch((cause) =>
                 cause.operation === "pathfind"
                   ? Effect.succeed(false)
                   : Effect.fail(cause)
@@ -13060,7 +13061,7 @@ function huntOrExplore(
                 allowPlacing: false,
               },
             ).pipe(
-              Effect.catchAll((cause) =>
+              Effect.catch((cause) =>
                 cause.operation === "pathfind"
                   ? Effect.void
                   : Effect.fail(cause)
@@ -13132,7 +13133,7 @@ function huntOrExplore(
           const explorationOutcome = yield* Effect.raceFirst(
             advance.pipe(
               Effect.as({ type: "advanced" } as const),
-              Effect.catchAll((cause) =>
+              Effect.catch((cause) =>
                 cause.operation === "pathfind"
                     || cause.operation === "pathfindXZ"
                   ? Effect.succeed({ type: "route-failed" } as const)
@@ -13170,7 +13171,7 @@ function huntOrExplore(
               true,
               true,
             ).pipe(
-              Effect.catchAll((cause) =>
+              Effect.catch((cause) =>
                 cause.operation === "pathfind"
                     || cause.operation === "pathfindXZ"
                   ? Effect.void
@@ -13257,7 +13258,7 @@ function huntOrExplore(
         );
         const approached = yield* approach.pipe(
           Effect.as(true),
-          Effect.catchAll((cause) =>
+          Effect.catch((cause) =>
             cause.operation === "pathfind"
                 || cause.operation === "pathfindXZ"
               ? Effect.succeed(false)
@@ -13332,11 +13333,11 @@ function huntOrExplore(
         path: targetHuntingPath,
       });
       const timedAttack = attack.pipe(
-        Effect.timeoutFail({
+        Effect.timeoutOrElse({
           duration: aquaticTarget
             ? AQUATIC_HUNT_CHASE_TIMEOUT_MS
             : LAND_HUNT_CHASE_TIMEOUT_MS,
-          onTimeout: () => new BeatGameDriverError({
+          orElse: () => Effect.fail(new BeatGameDriverError({
             operation: "task.attack-entity",
             code: aquaticTarget
               ? "aquatic_chase_timeout"
@@ -13345,7 +13346,7 @@ function huntOrExplore(
             message: aquaticTarget
               ? `Stopped chasing moving aquatic target ${target.networkId}`
               : `Stopped chasing moving land target ${target.networkId}`,
-          }),
+          })),
         }),
       );
       const boundedAttack = aquaticTarget
@@ -13392,7 +13393,7 @@ function huntOrExplore(
               });
               return (cause.code === "aquatic_air_low"
                   ? retry.pipe(
-                    Effect.zipRight(state.driver.observe),
+                    Effect.andThen(state.driver.observe),
                     Effect.flatMap((observation) =>
                       emergencyAirAscent(
                         state,
@@ -13409,7 +13410,7 @@ function huntOrExplore(
             ? Effect.sync(() => {
               locallyUnreachable.add(targetKey);
             }).pipe(
-              Effect.zipRight(
+              Effect.andThen(
                 current.player.position.dimension === "minecraft:overworld"
                     && target.position.y - current.player.position.y > 6
                   ? escapeToOverworldSurface(
@@ -13454,7 +13455,7 @@ function waitForUnsafeAquaticHunt(
 ): Effect.Effect<never, BeatGameDriverError> {
   const poll = (): Effect.Effect<never, BeatGameDriverError> =>
     Effect.sleep(Math.max(100, state.strategy.observationPollMs)).pipe(
-      Effect.zipRight(state.driver.observe),
+      Effect.andThen(state.driver.observe),
       Effect.flatMap((observation) => {
         if (observation.player.dead) {
           return Effect.fail(new BeatGameDriverError({
@@ -13535,7 +13536,7 @@ function waitForVisibleHuntingTarget(
     previouslyVisibleTargets: ReadonlySet<string>,
   ): Effect.Effect<BeatGameEntityObservation, BeatGameDriverError> =>
     Effect.sleep(Math.max(100, state.strategy.observationPollMs)).pipe(
-      Effect.zipRight(state.driver.observe),
+      Effect.andThen(state.driver.observe),
       Effect.flatMap((observation) =>
         state.driver.queryEntities({
           origin: observation.player.position,
@@ -13844,8 +13845,8 @@ function returnToOverworldSurface(
             SURFACE_RECOVERY_DIRECT_PATH_SEARCH_TIMEOUT_MS,
           ),
         },
-      ).pipe(Effect.either);
-      if (directRoute._tag === "Right") {
+      ).pipe(Effect.result);
+      if (directRoute._tag === "Success") {
         const reached = yield* state.driver.observe;
         if (
           !(yield* isPlayerInFluid(
@@ -14043,7 +14044,7 @@ function climbToHigherOverworldGround(
           ELEVATED_SURFACE_PATH_TIMEOUT_MS,
         ).pipe(
           Effect.as(true),
-          Effect.catchAll((cause) =>
+          Effect.catch((cause) =>
             cause.operation === "pathfind"
               ? Effect.succeed(false)
               : Effect.fail(cause)
@@ -14171,7 +14172,7 @@ function recoverLocalNavigationTrap(
       DRY_SURFACE_APPROACH_RADIUS,
     ).pipe(
       Effect.as(true),
-      Effect.catchAll((cause) =>
+      Effect.catch((cause) =>
         cause.operation === "pathfind"
           ? Effect.succeed(false)
           : Effect.fail(cause)
@@ -14384,16 +14385,16 @@ function excavateDryShaftRecoveryStaircase(
           ),
         },
       ).pipe(
-        Effect.timeoutFail({
+        Effect.timeoutOrElse({
           duration: DRY_SHAFT_RECOVERY_STEP_TIMEOUT_MS,
-          onTimeout: () => new BeatGameDriverError({
+          orElse: () => Effect.fail(new BeatGameDriverError({
             operation: "recover-dry-shaft",
             code: "unreachable",
             retryable: true,
             message: `Timed out climbing the recovery stair at ${
               positionKey(step.feet)
             }`,
-          }),
+          })),
         }),
       );
       const current = yield* state.driver.observe;
@@ -14570,13 +14571,13 @@ function placeDryShaftRecoveryBlock(
       type: "select-item",
       selector: { itemIds: [material] },
     }).pipe(
-      Effect.zipRight(driver.act({
+      Effect.andThen(driver.act({
         type: "place-block",
         against,
         face,
         hand: "main",
       })),
-      Effect.either,
+      Effect.result,
     );
     for (let confirmation = 0; confirmation < 10; confirmation += 1) {
       const placed = yield* queryExactBlock(driver, expected);
@@ -14595,8 +14596,8 @@ function placeDryShaftRecoveryBlock(
         attemptsRemaining - 1,
       );
     }
-    if (placement._tag === "Left") {
-      return yield* Effect.fail(placement.left);
+    if (placement._tag === "Failure") {
+      return yield* Effect.fail(placement.failure);
     }
     return yield* Effect.fail(new BeatGameDriverError({
       operation: "recover-dry-shaft",
@@ -14682,14 +14683,14 @@ function pathfindToFirstReachableSurface(
   const boundedPathfind = attemptTimeoutMs === undefined
     ? pathfind
     : pathfind.pipe(
-      Effect.timeoutFail({
+      Effect.timeoutOrElse({
         duration: attemptTimeoutMs,
-        onTimeout: () => new BeatGameDriverError({
+        orElse: () => Effect.fail(new BeatGameDriverError({
           operation: "pathfind",
           code: "unreachable",
           retryable: true,
           message: `Timed out climbing toward ${target.x}, ${target.y}, ${target.z}`,
-        }),
+        })),
       }),
     );
   const airSafePathfind = Effect.raceFirst(
@@ -14708,7 +14709,7 @@ function pathfindToFirstReachableSurface(
     ),
   );
   return airSafePathfind.pipe(
-    Effect.catchAll((cause) =>
+    Effect.catch((cause) =>
       cause.operation === "pathfind"
           && cause.code === "unreachable"
           && index + 1 < targets.length
@@ -15102,14 +15103,14 @@ function advanceExplorationFrontier(
       preferSurface,
       allowFluidFallback,
     ).pipe(
-      Effect.catchAll((cause) =>
+      Effect.catch((cause) =>
         preferSurface
           && (
             cause.operation === "pathfind"
             || cause.operation === "pathfindXZ"
           )
           ? recoverSurfaceAfterExplorationFailure(state, cause).pipe(
-            Effect.zipRight(Effect.fail(cause)),
+            Effect.andThen(Effect.fail(cause)),
           )
           : Effect.fail(cause)
       ),
@@ -15705,18 +15706,18 @@ function ensureWorkstation(
           ),
         },
       ).pipe(
-        Effect.timeoutFail({
+        Effect.timeoutOrElse({
           duration: WORKSTATION_REUSE_TIMEOUT_MS,
-          onTimeout: () => new BeatGameDriverError({
+          orElse: () => Effect.fail(new BeatGameDriverError({
             operation: "pathfind",
             code: "unreachable",
             retryable: true,
             message: `Timed out approaching ${blockId} at ${candidate.position.x}, ${candidate.position.y}, ${candidate.position.z}`,
-          }),
+          })),
         }),
-        Effect.either,
+        Effect.result,
       );
-      if (approached._tag === "Right") {
+      if (approached._tag === "Success") {
         const approachedObservation = yield* state.driver.observe;
         if (
           !(yield* isPlayerInFluid(
@@ -15768,8 +15769,8 @@ function ensureWorkstation(
           ...state.strategy.path,
           avoidFluids: true,
         },
-      }).pipe(Effect.either);
-      if (built._tag === "Left") {
+      }).pipe(Effect.result);
+      if (built._tag === "Failure") {
         continue;
       }
       let placed = yield* queryExactWorkstation(
@@ -15836,7 +15837,7 @@ function prepareDryWorkstationSite(
         yield* emergencyAirAscent(
           state,
           current.player.position,
-        ).pipe(Effect.either);
+        ).pipe(Effect.result);
         current = yield* state.driver.observe;
         if (
           current.player.onGround
@@ -15847,7 +15848,7 @@ function prepareDryWorkstationSite(
         ) {
           return current;
         }
-        yield* swimToNearbyDrySurface(state, true).pipe(Effect.either);
+        yield* swimToNearbyDrySurface(state, true).pipe(Effect.result);
         current = yield* state.driver.observe;
         if (
           current.player.onGround
@@ -15863,7 +15864,7 @@ function prepareDryWorkstationSite(
         yield* returnToOverworldSurface(
           state,
           current.player.position,
-        ).pipe(Effect.either);
+        ).pipe(Effect.result);
         current = yield* state.driver.observe;
         if (
           current.player.onGround
@@ -15944,8 +15945,8 @@ function ensureInventorySpace(
             y: origin.player.position.y,
             z: origin.player.position.z + Math.cos(yawRadians) * distance,
             dimension: origin.player.position.dimension,
-          }, 0.75, discardPath(allowMining)).pipe(Effect.either);
-          if (escaped._tag === "Right") {
+          }, 0.75, discardPath(allowMining)).pipe(Effect.result);
+          if (escaped._tag === "Success") {
             return true;
           }
         }
@@ -16497,15 +16498,15 @@ function moveToEyeBaseline(
         target,
         4,
         state.strategy.path,
-      ).pipe(Effect.either);
-      if (reached._tag === "Right") {
+      ).pipe(Effect.result);
+      if (reached._tag === "Success") {
         return;
       }
       if (
-        !isRouteUnavailable(reached.left)
+        !isRouteUnavailable(reached.failure)
         || index === candidates.length - 1
       ) {
-        return yield* Effect.fail(reached.left);
+        return yield* Effect.fail(reached.failure);
       }
     }
   });
@@ -16551,7 +16552,7 @@ function buildAndEnterDurablePortal(
         ? updatePortalSkill(state, plan.workspace, "prepare-liquid", {
           status: "BUILDING",
         }).pipe(
-          Effect.zipRight(preparePortalCastingLavaPool(
+          Effect.andThen(preparePortalCastingLavaPool(
             state,
             observation,
             remainingLavaSources,
@@ -16561,7 +16562,7 @@ function buildAndEnterDurablePortal(
               ? updatePortalSkill(state, plan.workspace, "prepare-liquid", {
                 candidateLavaSources: preparation.candidateLavaSources,
               }).pipe(
-                Effect.zipRight(state.driver.observe),
+                Effect.andThen(state.driver.observe),
                 Effect.flatMap((current) =>
                   ensurePortalMiningPickaxe(
                     state,
@@ -16581,7 +16582,7 @@ function buildAndEnterDurablePortal(
             ? updatePortalSkill(state, plan.workspace, "construct-frame", {
               status: "BUILDING",
             }).pipe(
-              Effect.zipRight(
+              Effect.andThen(
                 constructPortalWithDurableObservation(
                   state,
                   plan,
@@ -16614,11 +16615,11 @@ function buildAndEnterDurablePortal(
                   entering,
                   "enter-portal",
                 ).pipe(
-                  Effect.zipRight(enterPortal(state.driver, {
+                  Effect.andThen(enterPortal(state.driver, {
                     portal: frame.interior[0] ?? frame.origin,
                     path,
                   })),
-                  Effect.zipRight(updatePortalSkill(
+                  Effect.andThen(updatePortalSkill(
                     state,
                     {
                       ...entering,
@@ -16653,12 +16654,12 @@ function constructPortalWithDurableObservation(
     const workspace = yield* Ref.make(plan.workspace);
     yield* Effect.forever(
       Effect.sleep(1_000).pipe(
-        Effect.zipRight(Ref.get(workspace)),
+        Effect.andThen(Ref.get(workspace)),
         Effect.flatMap((current) =>
           observeCompletedPortalWorkspace(state, current, plan.frame)
         ),
         Effect.flatMap((current) => Ref.set(workspace, current)),
-        Effect.catchAll(() => Effect.void),
+        Effect.catch(() => Effect.void),
       ),
     ).pipe(Effect.forkScoped);
     const frame = yield* (plan.workspace.method === "CAST"
@@ -16996,8 +16997,8 @@ function enterKnownPortal(
       const approached = yield* approachRememberedPortal(
         state,
         resumableWorkspace.origin,
-      ).pipe(Effect.either);
-      if (approached._tag === "Right") {
+      ).pipe(Effect.result);
+      if (approached._tag === "Success") {
         const revalidated = yield* state.driver.queryBlocks({
           center: resumableWorkspace.origin,
           radius: 8,
@@ -17020,11 +17021,11 @@ function enterKnownPortal(
         }
       }
       if (workspaceHadPortalEvidence) {
-        if (approached._tag === "Left") {
+        if (approached._tag === "Failure") {
           yield* markPortalRouteUnavailable(
             state,
             resumableWorkspace.origin,
-            `remembered portal route failed: ${approached.left.message}`,
+            `remembered portal route failed: ${approached.failure.message}`,
           );
         } else {
           yield* invalidatePortalEvidence(
@@ -17055,12 +17056,12 @@ function enterKnownPortal(
       const approached = yield* approachRememberedPortal(
         state,
         memory.value.position,
-      ).pipe(Effect.either);
-      if (approached._tag === "Left") {
+      ).pipe(Effect.result);
+      if (approached._tag === "Failure") {
         yield* markPortalRouteUnavailable(
           state,
           memory.value.position,
-          `remembered portal route failed: ${approached.left.message}`,
+          `remembered portal route failed: ${approached.failure.message}`,
         );
         continue;
       }
@@ -17106,17 +17107,17 @@ function tryEnterKnownPortal(
     const entry = yield* enterPortal(state.driver, {
       portal,
       path,
-    }).pipe(Effect.either);
-    if (entry._tag === "Right") {
+    }).pipe(Effect.result);
+    if (entry._tag === "Success") {
       return true;
     }
-    if (!entry.left.retryable) {
-      return yield* Effect.fail(entry.left);
+    if (!entry.failure.retryable) {
+      return yield* Effect.fail(entry.failure);
     }
     yield* markPortalRouteUnavailable(
       state,
       portal,
-      `verified portal entry failed: ${entry.left.message}`,
+      `verified portal entry failed: ${entry.failure.message}`,
     );
     return false;
   });
@@ -17350,7 +17351,7 @@ function invalidatePortalEvidence(
       },
     };
   }).pipe(
-    Effect.zipRight(emit(state, {
+    Effect.andThen(emit(state, {
       type: "diagnostic",
       message: "Invalidated reusable portal evidence after revalidation",
       data: {
@@ -17393,7 +17394,7 @@ function markPortalRouteUnavailable(
       },
     };
   }).pipe(
-    Effect.zipRight(emit(state, {
+    Effect.andThen(emit(state, {
       type: "diagnostic",
       message: "Remembered portal route is temporarily unavailable",
       data: {
@@ -17957,7 +17958,7 @@ function waitForDeathRecoveryInventory(
             state.strategy.observationPollMs,
           ),
         ).pipe(
-          Effect.zipRight(
+          Effect.andThen(
             waitForDeathRecoveryInventory(
               state,
               expectedCounts,
@@ -18043,7 +18044,7 @@ function monitorDriverEvents(
             Effect.tap((observation) =>
               updateObservedState(state, observation)
             ),
-            Effect.catchAll(() => Ref.get(state.observation)),
+            Effect.catch(() => Ref.get(state.observation)),
             Effect.map((observation) => ({
               lastLivingObservation,
               observation,
@@ -18068,7 +18069,7 @@ function monitorDriverEvents(
         ),
       );
     }),
-    Effect.catchAll(() => Effect.void),
+    Effect.catch(() => Effect.void),
   );
 }
 
@@ -18314,7 +18315,7 @@ function prepareDeathRecoveryInventorySpace(
     state,
     observation,
     requiredSlots,
-  ).pipe(Effect.zipRight(state.driver.observe));
+  ).pipe(Effect.andThen(state.driver.observe));
 }
 
 function chainedDeathRespawnCooldown(pendingDeathCount: number): number {
@@ -18945,7 +18946,7 @@ function prepareForDistantDeathRecovery(
       return Effect.raceFirst(
         search,
         Effect.sleep(DEATH_RECOVERY_FOOD_SEARCH_TIMEOUT_MS),
-      ).pipe(Effect.zipRight(state.driver.observe));
+      ).pipe(Effect.andThen(state.driver.observe));
     };
     const recoveryDistanceSquared = distanceSquared(
       current.player.position,
@@ -19046,7 +19047,7 @@ function prepareForDistantDeathRecovery(
         avoidSubmergedTargets: true,
         path: protectedRecoveryPath,
         explorationTarget: preparationTarget(value),
-      }).pipe(Effect.zipRight(state.driver.observe));
+      }).pipe(Effect.andThen(state.driver.observe));
     };
 
     if (
@@ -19369,7 +19370,7 @@ function observeWithRecovery(
             });
           })
       ),
-      Effect.catchAll((error) => {
+      Effect.catch((error) => {
         if (!error.retryable) {
           return Effect.fail(error);
         }
@@ -19396,8 +19397,8 @@ function observeWithRecovery(
             });
           });
         return enterRecovery.pipe(
-          Effect.zipRight(Effect.sleep(backoffDuration(retryCount + 1))),
-          Effect.zipRight(attempt(true, retryCount + 1)),
+          Effect.andThen(Effect.sleep(backoffDuration(retryCount + 1))),
+          Effect.andThen(attempt(true, retryCount + 1)),
         );
       }),
     );
@@ -19672,7 +19673,7 @@ function releaseActionClaim(
       checkpoint.teamId,
       claim.key,
       checkpoint.botId,
-    ).pipe(Effect.catchAll(() => Effect.succeed(false)));
+    ).pipe(Effect.catch(() => Effect.succeed(false)));
     if (released) {
       yield* emit(state, {
         type: "team-claim-changed",
@@ -19695,7 +19696,7 @@ function markFailed(
       updatedAt: new Date().toISOString(),
     },
   })).pipe(
-    Effect.zipRight(emit(state, {
+    Effect.andThen(emit(state, {
       type: "diagnostic",
       message: error.message,
       data: { error: error._tag },

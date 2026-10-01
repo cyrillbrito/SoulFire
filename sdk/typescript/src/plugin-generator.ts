@@ -511,18 +511,16 @@ async function generateTypeScript(
       check: "tsc -p tsconfig.json --noEmit",
     },
     peerDependencies: {
-      "@effect/platform": "^0.97.1",
       "@soulfiremc/sdk": `^${SDK_VERSION}`,
-      effect: "^3.22.1",
+      effect: "^4.0.0",
     },
     dependencies: {
       "@bufbuild/protobuf": "2.14.0",
       "@connectrpc/connect": "2.1.2",
     },
     devDependencies: {
-      "@effect/platform": "0.97.1",
       "@soulfiremc/sdk": `^${SDK_VERSION}`,
-      effect: "3.22.1",
+      effect: "4.0.0",
       typescript: "^7.0.0",
     },
   };

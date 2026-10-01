@@ -76,7 +76,7 @@ export class SoulFireContainer {
   public refresh(
     options?: CallOptions,
   ): Effect.Effect<ContainerSnapshot, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       yield* Effect.try({
         try: () => this.requireOpen(),
         catch: (cause) => operationError("SoulFireContainer.refresh", cause),
@@ -143,7 +143,7 @@ export class SoulFireContainer {
   public close(
     options: ContainerMutationOptions = {},
   ): Effect.Effect<ContainerSnapshot, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       if (this.#closed) {
         return this.current;
       }
@@ -175,7 +175,7 @@ export class SoulFireContainer {
     to: InventoryArea,
     options: ContainerMutationOptions,
   ): Effect.Effect<ContainerSnapshot, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       yield* Effect.try({
         try: () => this.requireOpen(),
         catch: (cause) => operationError("SoulFireContainer.transfer", cause),
@@ -244,7 +244,7 @@ export class SoulFireInventory {
   public snapshot(
     options?: CallOptions,
   ): Effect.Effect<ContainerSnapshot, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const response = yield* rpc("SoulFireInventory.snapshot", (signal) =>
         this.client.getContainerSnapshot(
           { scope: this.scope() },
@@ -271,7 +271,7 @@ export class SoulFireInventory {
     request: InventoryRequest<typeof CountItemsRequestSchema>,
     options?: CallOptions,
   ): Effect.Effect<bigint, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const response = yield* rpc("SoulFireInventory.count", (signal) =>
         this.client.countItems(
           { ...request, scope: this.scope() },
@@ -484,7 +484,7 @@ export class SoulFireInventory {
     position: MessageInitShape<typeof BlockPositionSchema>,
     options: ContainerMutationOptions = {},
   ): Effect.Effect<SoulFireContainer, SoulFireOperationError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const scope = this.scope();
       const response = yield* rpc("SoulFireInventory.open", (signal) =>
         this.client.openBlockContainer(
@@ -521,7 +521,7 @@ export class SoulFireInventory {
     InventoryItemRecommendation | undefined,
     SoulFireOperationError
   > {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const response = yield* rpc("SoulFireInventory.best", (signal) =>
         this.client.rankInventoryItems(
           {

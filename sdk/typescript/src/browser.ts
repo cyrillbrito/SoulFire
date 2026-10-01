@@ -1,4 +1,4 @@
-import * as FetchHttpClient from "@effect/platform/FetchHttpClient";
+import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import { Effect, Layer, type Scope } from "effect";
 
 import type { SoulFireOptions } from "./client.js";

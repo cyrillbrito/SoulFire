@@ -1,4 +1,5 @@
-import { Effect, Either, Option, PubSub, Stream } from "effect";
+import { Effect, Fiber, Option, PubSub, Result, Stream } from "effect";
+import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -123,7 +124,7 @@ async function runUntilExplorationStarts(options: {
   driver.xzPathResolver = (x, z, dimension, radius, policy) =>
     Effect.sync(() => {
       driver.xzPaths.push({ x, z, dimension, radius, policy });
-    }).pipe(Effect.zipRight(Effect.never));
+    }).pipe(Effect.andThen(Effect.never));
   await Effect.runPromise(Effect.scoped(
     beatGameWithDriver(driver, {
       runId,
@@ -137,7 +138,7 @@ async function runUntilExplorationStarts(options: {
             yield* Effect.sleep(1);
           }
           yield* run.stop;
-          yield* run.awaitCompletion.pipe(Effect.either);
+          yield* run.awaitCompletion.pipe(Effect.result);
         })
       ),
     ),
@@ -413,7 +414,7 @@ describe("beat-game run lifecycle", () => {
     driver.xzPathResolver = (x, z, dimension, radius, policy) =>
       Effect.sync(() => {
         driver.xzPaths.push({ x, z, dimension, radius, policy });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(
       Effect.gen(function* () {
@@ -475,7 +476,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -544,7 +545,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.tasks.push(task);
       }).pipe(
-        Effect.zipRight(task.type === "craft" ? Effect.never : Effect.void),
+        Effect.andThen(task.type === "craft" ? Effect.never : Effect.void),
       );
     await Effect.runPromise(store.save(checkpoint(
       BeatGamePhase.COLLECT_NETHER_RESOURCES,
@@ -564,7 +565,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -610,7 +611,7 @@ describe("beat-game run lifecycle", () => {
           satisfyRequirement: () =>
             Effect.sync(() => {
               actionStarted = true;
-            }).pipe(Effect.zipRight(Effect.never)),
+            }).pipe(Effect.andThen(Effect.never)),
         },
       });
       yield* run.events.pipe(
@@ -631,7 +632,7 @@ describe("beat-game run lifecycle", () => {
       }
       yield* Effect.sleep(5);
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     expect(failures).toEqual([]);
@@ -675,7 +676,7 @@ describe("beat-game run lifecycle", () => {
           satisfyRequirement: () =>
             Effect.sync(() => {
               actionStarted = true;
-            }).pipe(Effect.zipRight(Effect.never)),
+            }).pipe(Effect.andThen(Effect.never)),
         },
       });
       yield* run.events.pipe(
@@ -696,7 +697,7 @@ describe("beat-game run lifecycle", () => {
       }
       yield* Effect.sleep(5);
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     expect(failures).toEqual([]);
@@ -734,7 +735,7 @@ describe("beat-game run lifecycle", () => {
           satisfyRequirement: () =>
             Effect.sync(() => {
               actionStarted = true;
-            }).pipe(Effect.zipRight(Effect.never)),
+            }).pipe(Effect.andThen(Effect.never)),
         },
       });
       yield* run.events.pipe(
@@ -752,7 +753,7 @@ describe("beat-game run lifecycle", () => {
       }
       yield* Effect.sleep(5);
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     expect(failures).toEqual([]);
@@ -807,7 +808,7 @@ describe("beat-game run lifecycle", () => {
           satisfyRequirement: () =>
             Effect.sync(() => {
               actionStarted = true;
-            }).pipe(Effect.zipRight(Effect.never)),
+            }).pipe(Effect.andThen(Effect.never)),
         },
       });
       yield* run.events.pipe(
@@ -825,10 +826,10 @@ describe("beat-game run lifecycle", () => {
       }
       yield* Effect.sleep(5);
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
-    }).pipe(Effect.timeoutFail({
+      yield* run.awaitCompletion.pipe(Effect.result);
+    }).pipe(Effect.timeoutOrElse({
       duration: "2 seconds",
-      onTimeout: () => new Error("Timed out waiting for covered travel"),
+      orElse: () => Effect.fail(new Error("Timed out waiting for covered travel")),
     }))));
 
     expect(failures).toEqual([]);
@@ -866,7 +867,7 @@ describe("beat-game run lifecycle", () => {
           satisfyRequirement: () =>
             Effect.sync(() => {
               actionStarted = true;
-            }).pipe(Effect.zipRight(Effect.never)),
+            }).pipe(Effect.andThen(Effect.never)),
         },
       });
       yield* run.events.pipe(
@@ -884,10 +885,10 @@ describe("beat-game run lifecycle", () => {
       }
       yield* Effect.sleep(5);
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
-    }).pipe(Effect.timeoutFail({
+      yield* run.awaitCompletion.pipe(Effect.result);
+    }).pipe(Effect.timeoutOrElse({
       duration: "2 seconds",
-      onTimeout: () => new Error("Timed out waiting for cave work to start"),
+      orElse: () => Effect.fail(new Error("Timed out waiting for cave work to start")),
     }))));
 
     expect(failures).toEqual([]);
@@ -936,7 +937,7 @@ describe("beat-game run lifecycle", () => {
           satisfyRequirement: () =>
             Effect.sync(() => {
               actionStarted = true;
-            }).pipe(Effect.zipRight(Effect.never)),
+            }).pipe(Effect.andThen(Effect.never)),
         },
       });
       yield* run.events.pipe(
@@ -956,10 +957,10 @@ describe("beat-game run lifecycle", () => {
         yield* Effect.sleep(1);
       }
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
-    }).pipe(Effect.timeoutFail({
+      yield* run.awaitCompletion.pipe(Effect.result);
+    }).pipe(Effect.timeoutOrElse({
       duration: "2 seconds",
-      onTimeout: () => new Error("Timed out waiting for night shelter"),
+      orElse: () => Effect.fail(new Error("Timed out waiting for night shelter")),
     }))));
 
     expect(actionStarted).toBe(true);
@@ -1007,10 +1008,10 @@ describe("beat-game run lifecycle", () => {
         yield* Effect.sleep(1);
       }
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
-    }).pipe(Effect.timeoutFail({
+      yield* run.awaitCompletion.pipe(Effect.result);
+    }).pipe(Effect.timeoutOrElse({
       duration: "3 seconds",
-      onTimeout: () => new Error("Timed out waiting for bed sleep"),
+      orElse: () => Effect.fail(new Error("Timed out waiting for bed sleep")),
     }))));
 
     expect(driver.actions).toEqual(expect.arrayContaining([
@@ -1171,10 +1172,10 @@ describe("beat-game run lifecycle", () => {
         yield* Effect.sleep(1);
       }
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
-    }).pipe(Effect.timeoutFail({
+      yield* run.awaitCompletion.pipe(Effect.result);
+    }).pipe(Effect.timeoutOrElse({
       duration: "3 seconds",
-      onTimeout: () => new Error("Timed out waiting for crafted bed sleep"),
+      orElse: () => Effect.fail(new Error("Timed out waiting for crafted bed sleep")),
     }))));
 
     expect(driver.tasks).toEqual(expect.arrayContaining([
@@ -1210,7 +1211,7 @@ describe("beat-game run lifecycle", () => {
           driver.currentEnvironment = { gameTime: 14_000n };
         }
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "collect-blocks" ? Effect.never : Effect.void,
         ),
       );
@@ -1314,7 +1315,7 @@ describe("beat-game run lifecycle", () => {
         yield* Effect.sleep(1);
       }
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     const placeIndex = driver.actions.findIndex((action) =>
@@ -1424,7 +1425,7 @@ describe("beat-game run lifecycle", () => {
         yield* Effect.sleep(1);
       }
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     expect(driver.paths[0]).toMatchObject({
@@ -1594,7 +1595,7 @@ describe("beat-game run lifecycle", () => {
         yield* Effect.sleep(1);
       }
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     expect(driver.paths[0]).toEqual(expect.objectContaining({
@@ -1748,10 +1749,10 @@ describe("beat-game run lifecycle", () => {
         yield* Effect.sleep(1);
       }
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
-    }).pipe(Effect.timeoutFail({
+      yield* run.awaitCompletion.pipe(Effect.result);
+    }).pipe(Effect.timeoutOrElse({
       duration: "5 seconds",
-      onTimeout: () => new Error("Timed out waiting for shelter relocation"),
+      orElse: () => Effect.fail(new Error("Timed out waiting for shelter relocation")),
     }))));
 
     expect(driver.paths[0]).toMatchObject({
@@ -1843,12 +1844,12 @@ describe("beat-game run lifecycle", () => {
     driver.pathResolver = (position, radius, policy) =>
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
     driver.taskResolver = (task) =>
       Effect.sync(() => {
         driver.tasks.push(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "attack-entity" || task.type === "flee"
             ? Effect.never
             : Effect.void,
@@ -1867,7 +1868,7 @@ describe("beat-game run lifecycle", () => {
         yield* Effect.sleep(1);
       }
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     expect(driver.paths[0]).toEqual(expect.objectContaining({
@@ -1925,7 +1926,7 @@ describe("beat-game run lifecycle", () => {
     driver.taskResolver = (task) =>
       Effect.sync(() => {
         driver.tasks.push(task);
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
       const run = yield* beatGameWithDriver(driver, {
@@ -1935,7 +1936,7 @@ describe("beat-game run lifecycle", () => {
         yield* Effect.sleep(1);
       }
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     expect(driver.tasks[0]).toMatchObject({
@@ -2026,10 +2027,10 @@ describe("beat-game run lifecycle", () => {
         yield* Effect.sleep(1);
       }
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
-    }).pipe(Effect.timeoutFail({
+      yield* run.awaitCompletion.pipe(Effect.result);
+    }).pipe(Effect.timeoutOrElse({
       duration: "5 seconds",
-      onTimeout: () => new Error("Timed out waiting for shelter digging"),
+      orElse: () => Effect.fail(new Error("Timed out waiting for shelter digging")),
     }))));
 
     expect(driver.tasks).not.toEqual(expect.arrayContaining([
@@ -2051,7 +2052,7 @@ describe("beat-game run lifecycle", () => {
     driver.taskResolver = (task) =>
       Effect.sync(() => {
         driver.tasks.push(task);
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
       const run = yield* beatGameWithDriver(driver, {
@@ -2061,7 +2062,7 @@ describe("beat-game run lifecycle", () => {
         yield* Effect.sleep(1);
       }
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     expect(driver.tasks).toContainEqual(expect.objectContaining({
@@ -2088,7 +2089,7 @@ describe("beat-game run lifecycle", () => {
     driver.taskResolver = (task) =>
       Effect.sync(() => {
         driver.tasks.push(task);
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
       const run = yield* beatGameWithDriver(driver, {
@@ -2098,7 +2099,7 @@ describe("beat-game run lifecycle", () => {
         yield* Effect.sleep(1);
       }
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     expect(driver.tasks).toContainEqual(expect.objectContaining({
@@ -2145,7 +2146,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.tasks.push(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "auto-eat"
               && driver.tasks.filter(({ type }) => type === "auto-eat")
                   .length >= 2
@@ -2164,7 +2165,7 @@ describe("beat-game run lifecycle", () => {
         yield* Effect.sleep(1);
       }
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     expect(driver.tasks.filter(({ type }) => type === "auto-eat"))
@@ -2254,7 +2255,7 @@ describe("beat-game run lifecycle", () => {
         yield* Effect.sleep(1);
       }
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     const shorePaths = driver.paths.filter(({ policy }) =>
@@ -2329,7 +2330,7 @@ describe("beat-game run lifecycle", () => {
     driver.pathResolver = (position, radius, policy) =>
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
       const run = yield* beatGameWithDriver(driver, {
@@ -2339,7 +2340,7 @@ describe("beat-game run lifecycle", () => {
         yield* Effect.sleep(1);
       }
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     expect(driver.paths[0]).toEqual(expect.objectContaining({
@@ -2400,7 +2401,7 @@ describe("beat-game run lifecycle", () => {
     driver.pathResolver = (position, radius, policy) =>
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
       const run = yield* beatGameWithDriver(driver, {
@@ -2410,7 +2411,7 @@ describe("beat-game run lifecycle", () => {
         yield* Effect.sleep(1);
       }
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     expect(driver.paths[0]).toEqual(expect.objectContaining({
@@ -2514,7 +2515,7 @@ describe("beat-game run lifecycle", () => {
           recoverDeath: () =>
             Effect.sync(() => {
               recoveryAttempts += 1;
-            }).pipe(Effect.zipRight(Effect.never)),
+            }).pipe(Effect.andThen(Effect.never)),
         },
       }).pipe(
         Effect.flatMap((run) =>
@@ -2528,7 +2529,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -2596,7 +2597,7 @@ describe("beat-game run lifecycle", () => {
           recoverDeath: () =>
             Effect.sync(() => {
               recoveryAttempts += 1;
-            }).pipe(Effect.zipRight(Effect.never)),
+            }).pipe(Effect.andThen(Effect.never)),
         },
       }).pipe(
         Effect.flatMap((run) =>
@@ -2605,7 +2606,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -2655,7 +2656,7 @@ describe("beat-game run lifecycle", () => {
           recoverDeath: () =>
             Effect.sync(() => {
               recoveryAttempts += 1;
-            }).pipe(Effect.zipRight(Effect.never)),
+            }).pipe(Effect.andThen(Effect.never)),
         },
       }).pipe(
         Effect.flatMap((run) =>
@@ -2664,7 +2665,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -2768,7 +2769,7 @@ describe("beat-game run lifecycle", () => {
               Stream.runHead,
             );
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -2853,7 +2854,7 @@ describe("beat-game run lifecycle", () => {
               Stream.runHead,
             );
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -2953,7 +2954,7 @@ describe("beat-game run lifecycle", () => {
           Effect.sleep(25).pipe(Effect.as(false)),
         );
         yield* run.stop;
-        yield* run.awaitCompletion.pipe(Effect.either);
+        yield* run.awaitCompletion.pipe(Effect.result);
         return [event, interrupted] as const;
       }),
     ));
@@ -3040,7 +3041,7 @@ describe("beat-game run lifecycle", () => {
               Effect.sleep(250).pipe(Effect.as(false)),
             );
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
             return started;
           })
         ),
@@ -3071,7 +3072,7 @@ describe("beat-game run lifecycle", () => {
     driver.taskResolver = (task) =>
       Effect.sync(() => {
         driver.tasks.push(task);
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(
       Effect.gen(function* () {
@@ -3113,7 +3114,7 @@ describe("beat-game run lifecycle", () => {
           }
         }).pipe(Effect.timeout("5 seconds"));
         yield* run.stop;
-        yield* run.awaitCompletion.pipe(Effect.either);
+        yield* run.awaitCompletion.pipe(Effect.result);
       }),
     ));
 
@@ -3217,7 +3218,7 @@ describe("beat-game run lifecycle", () => {
           }
         }).pipe(Effect.timeout("5 seconds"));
         yield* run.stop;
-        yield* run.awaitCompletion.pipe(Effect.either);
+        yield* run.awaitCompletion.pipe(Effect.result);
       }),
     ));
 
@@ -3294,7 +3295,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
         timeline.push("corpse-path");
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(
       beatGameWithDriver(driver, {
@@ -3314,7 +3315,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -3387,7 +3388,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
       }).pipe(
-        Effect.zipRight(Effect.never),
+        Effect.andThen(Effect.never),
         Effect.onInterrupt(() =>
           Effect.sync(() => {
             corpsePathInterrupted = true;
@@ -3418,7 +3419,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -3477,7 +3478,7 @@ describe("beat-game run lifecycle", () => {
           satisfyRequirement: () =>
             Effect.sync(() => {
               actionStarted = true;
-            }).pipe(Effect.zipRight(Effect.never)),
+            }).pipe(Effect.andThen(Effect.never)),
         },
       }).pipe(
         Effect.flatMap((run) =>
@@ -3488,11 +3489,11 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
-          }).pipe(Effect.timeoutFail({
+            yield* run.awaitCompletion.pipe(Effect.result);
+          }).pipe(Effect.timeoutOrElse({
             duration: "2 seconds",
-            onTimeout: () =>
-              new Error("Timed out waiting for the environmental escape"),
+            orElse: () =>
+              Effect.fail(new Error("Timed out waiting for the environmental escape")),
           }))
         ),
       ),
@@ -3561,7 +3562,7 @@ describe("beat-game run lifecycle", () => {
       }
       yield* Effect.sleep(250);
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     expect(driver.tasks.filter((task) => task.type === "auto-eat"))
@@ -3649,7 +3650,7 @@ describe("beat-game run lifecycle", () => {
     driver.xzPathResolver = (x, z, dimension, radius, policy) =>
       Effect.sync(() => {
         driver.xzPaths.push({ x, z, dimension, radius, policy });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
       const run = yield* beatGameWithDriver(driver, {
@@ -3665,7 +3666,7 @@ describe("beat-game run lifecycle", () => {
       }).pipe(Effect.timeout("5 seconds"));
       yield* Effect.sleep(20);
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     expect(driver.currentObservation.inventory.counts["minecraft:salmon"])
@@ -3729,7 +3730,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -3800,7 +3801,7 @@ describe("beat-game run lifecycle", () => {
     driver.pathResolver = (position, radius, policy) =>
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(
       beatGameWithDriver(driver, {
@@ -3817,7 +3818,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -3894,12 +3895,12 @@ describe("beat-game run lifecycle", () => {
           driver.entityResults = [];
         }
       }).pipe(
-        Effect.zipRight(Effect.void),
+        Effect.andThen(Effect.void),
       );
     driver.pathResolver = (position, radius, policy) =>
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(
       beatGameWithDriver(driver, {
@@ -3918,7 +3919,7 @@ describe("beat-game run lifecycle", () => {
               }
             }).pipe(Effect.timeout("5 seconds"));
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -3981,7 +3982,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
         timeline.push("path");
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
     driver.taskObserver = (task) => {
       timeline.push(task.type);
       if (task.type === "auto-eat") {
@@ -4016,7 +4017,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -4090,12 +4091,12 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
         driver.currentObservation = observation({ food: 6 });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
     driver.taskResolver = (task) =>
       Effect.sync(() => {
         driver.tasks.push(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "attack-entity" ? Effect.never : Effect.void,
         ),
       );
@@ -4117,7 +4118,7 @@ describe("beat-game run lifecycle", () => {
               }
             }).pipe(Effect.timeout("2 seconds"));
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -4163,7 +4164,7 @@ describe("beat-game run lifecycle", () => {
               Stream.runHead,
             );
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -4313,7 +4314,7 @@ describe("beat-game run lifecycle", () => {
               Stream.runHead,
             );
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -4404,7 +4405,7 @@ describe("beat-game run lifecycle", () => {
               Stream.runHead,
             );
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -4472,7 +4473,7 @@ describe("beat-game run lifecycle", () => {
               Effect.timeout("2 seconds"),
             );
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
             return changed;
           })
         ),
@@ -4676,7 +4677,7 @@ describe("beat-game run lifecycle", () => {
               Stream.runHead,
             );
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -4751,7 +4752,7 @@ describe("beat-game run lifecycle", () => {
               Stream.runHead,
             );
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -4818,7 +4819,7 @@ describe("beat-game run lifecycle", () => {
               Stream.runHead,
             );
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -4878,7 +4879,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.xzPaths.push({ x, z, dimension, radius, policy });
       }).pipe(
-        Effect.zipRight(Effect.fail(new BeatGameDriverError({
+        Effect.andThen(Effect.fail(new BeatGameDriverError({
           operation: "pathfind-xz",
           code: "unreachable",
           retryable: false,
@@ -4904,7 +4905,7 @@ describe("beat-game run lifecycle", () => {
               Stream.runHead,
             );
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -4998,7 +4999,7 @@ describe("beat-game run lifecycle", () => {
               Stream.runHead,
             );
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -5096,7 +5097,7 @@ describe("beat-game run lifecycle", () => {
               Stream.runHead,
             );
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -5180,7 +5181,7 @@ describe("beat-game run lifecycle", () => {
               Stream.runHead,
             );
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -5248,7 +5249,7 @@ describe("beat-game run lifecycle", () => {
               Stream.runHead,
             );
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -5340,7 +5341,7 @@ describe("beat-game run lifecycle", () => {
               Stream.runHead,
             );
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -5424,7 +5425,7 @@ describe("beat-game run lifecycle", () => {
     driver.pathResolver = (position, radius, policy) =>
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(
       beatGameWithDriver(driver, {
@@ -5439,12 +5440,12 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
-        Effect.timeoutFail({
+        Effect.timeoutOrElse({
           duration: "5 seconds",
-          onTimeout: () => new Error("Timed out waiting for pocket recovery"),
+          orElse: () => Effect.fail(new Error("Timed out waiting for pocket recovery")),
         }),
       ),
     ));
@@ -5551,7 +5552,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.tasks.push(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "attack-entity" ? Effect.never : Effect.void,
         ),
       );
@@ -5571,15 +5572,15 @@ describe("beat-game run lifecycle", () => {
               )) {
                 yield* Effect.sleep(1);
               }
-            }).pipe(Effect.timeoutFail({
+            }).pipe(Effect.timeoutOrElse({
               duration: "2 seconds",
-              onTimeout: () =>
-                new Error(
+              orElse: () =>
+                Effect.fail(new Error(
                   "Timed out waiting for aquatic corpse provisioning",
-                ),
+                )),
             }));
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -5648,7 +5649,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           position.x === deathPosition.x
               && position.y === deathPosition.y
               && position.z === deathPosition.z
@@ -5674,7 +5675,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -5892,7 +5893,7 @@ describe("beat-game run lifecycle", () => {
         yield* Effect.sleep(1);
       }
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     }).pipe(Effect.timeout("5 seconds"))));
 
     expect(driver.paths).toContainEqual(expect.objectContaining({
@@ -5956,7 +5957,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           position.x === deathPosition.x
               && position.y === deathPosition.y
               && position.z === deathPosition.z
@@ -5982,7 +5983,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -6060,7 +6061,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           position.x === deathPosition.x ? Effect.never : Effect.void,
         ),
       );
@@ -6084,7 +6085,7 @@ describe("beat-game run lifecycle", () => {
               }
             }).pipe(Effect.timeout("5 seconds"));
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -6150,7 +6151,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           position.x === deathPosition.x
               && position.y === deathPosition.y
               && position.z === deathPosition.z
@@ -6176,7 +6177,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -6290,7 +6291,7 @@ describe("beat-game run lifecycle", () => {
           rotation: current.player.rotation,
         });
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           position.x === deathPosition.x
               && position.y === deathPosition.y
               && position.z === deathPosition.z
@@ -6341,7 +6342,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -6399,7 +6400,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -6460,7 +6461,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           position.x === deathPosition.x ? Effect.never : Effect.void,
         ),
       );
@@ -6482,7 +6483,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -6562,7 +6563,7 @@ describe("beat-game run lifecycle", () => {
         yield* Effect.sleep(1);
       }
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     }).pipe(Effect.timeout("5 seconds"))));
 
     expect(driver.paths).not.toContainEqual(expect.objectContaining({
@@ -6628,7 +6629,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           position.x === deathPosition.x
               && position.y === deathPosition.y
               && position.z === deathPosition.z
@@ -6654,7 +6655,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -6725,7 +6726,7 @@ describe("beat-game run lifecycle", () => {
     driver.xzPathResolver = (x, z, dimension, radius, policy) =>
       Effect.sync(() => {
         driver.xzPaths.push({ x, z, dimension, radius, policy });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(
       beatGameWithDriver(driver, {
@@ -6740,7 +6741,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -6826,7 +6827,7 @@ describe("beat-game run lifecycle", () => {
               Stream.runHead,
             );
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -6918,7 +6919,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -6979,7 +6980,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -7041,7 +7042,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.tasks.push(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "collect-blocks" || task.type === "attack-entity"
             ? Effect.never
             : Effect.void,
@@ -7069,7 +7070,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -7136,7 +7137,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -7224,7 +7225,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -7288,7 +7289,7 @@ describe("beat-game run lifecycle", () => {
           Effect.timeout("5 seconds"),
         );
         yield* run.stop;
-        yield* run.awaitCompletion.pipe(Effect.either);
+        yield* run.awaitCompletion.pipe(Effect.result);
         return action;
       }),
     ));
@@ -7371,7 +7372,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.tasks.push(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "attack-entity" ? Effect.never : Effect.void,
         ),
       );
@@ -7391,7 +7392,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -7466,7 +7467,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.tasks.push(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "attack-entity" ? Effect.never : Effect.void,
         ),
       );
@@ -7486,7 +7487,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -7569,7 +7570,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.tasks.push(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "attack-entity" ? Effect.never : Effect.void,
         ),
       );
@@ -7589,7 +7590,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -7749,11 +7750,11 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
-          }).pipe(Effect.timeoutFail({
+            yield* run.awaitCompletion.pipe(Effect.result);
+          }).pipe(Effect.timeoutOrElse({
             duration: "5 seconds",
-            onTimeout: () =>
-              new Error("Timed out waiting for the urgent cod drop pickup"),
+            orElse: () =>
+              Effect.fail(new Error("Timed out waiting for the urgent cod drop pickup")),
           }))
         ),
       ),
@@ -7823,7 +7824,7 @@ describe("beat-game run lifecycle", () => {
     driver.xzPathResolver = (x, z, dimension, radius, policy) =>
       Effect.sync(() => {
         driver.xzPaths.push({ x, z, dimension, radius, policy });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(
       beatGameWithDriver(driver, {
@@ -7838,7 +7839,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -7898,7 +7899,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.xzPaths.push({ x, z, dimension, radius, policy });
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           policy.avoidFluids === false ? Effect.never : Effect.void,
         ),
       );
@@ -7920,7 +7921,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -8011,7 +8012,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           position.x === deathPosition.x ? Effect.never : Effect.void,
         ),
       );
@@ -8033,7 +8034,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -8121,7 +8122,7 @@ describe("beat-game run lifecycle", () => {
         yield* Effect.sleep(1);
       }
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     expect(driver.tasks).toContainEqual(expect.objectContaining({
@@ -8195,7 +8196,7 @@ describe("beat-game run lifecycle", () => {
         Effect.timeout("10 seconds"),
       );
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     expect(driver.paths).not.toContainEqual(expect.objectContaining({
@@ -8269,7 +8270,7 @@ describe("beat-game run lifecycle", () => {
         Stream.runHead,
       );
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     }).pipe(Effect.timeout("10 seconds"))));
 
     expect(driver.paths).not.toContainEqual(expect.objectContaining({
@@ -8339,7 +8340,7 @@ describe("beat-game run lifecycle", () => {
     driver.xzPathResolver = (x, z, dimension, radius, policy) =>
       Effect.sync(() => {
         driver.xzPaths.push({ x, z, dimension, radius, policy });
-      }).pipe(Effect.zipRight(Effect.sleep(1)));
+      }).pipe(Effect.andThen(Effect.sleep(1)));
 
     await Effect.runPromise(Effect.scoped(
       beatGameWithDriver(driver, {
@@ -8360,13 +8361,13 @@ describe("beat-game run lifecycle", () => {
               ) {
                 yield* Effect.sleep(1);
               }
-            }).pipe(Effect.timeoutFail({
+            }).pipe(Effect.timeoutOrElse({
               duration: "5 seconds",
-              onTimeout: () =>
-                new Error("The bounded corpse food search did not finish"),
+              orElse: () =>
+                Effect.fail(new Error("The bounded corpse food search did not finish")),
             }));
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -8445,7 +8446,7 @@ describe("beat-game run lifecycle", () => {
               Stream.runHead,
             );
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -8494,7 +8495,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
       }).pipe(
-        Effect.zipRight(Effect.fail(new BeatGameDriverError({
+        Effect.andThen(Effect.fail(new BeatGameDriverError({
           operation: "pathfind",
           retryable: true,
           message: "The exploration waypoint was unreachable",
@@ -8531,7 +8532,7 @@ describe("beat-game run lifecycle", () => {
           && position.dimension === deathPosition.dimension
         ).length;
         yield* run.stop;
-        yield* run.awaitCompletion.pipe(Effect.either);
+        yield* run.awaitCompletion.pipe(Effect.result);
         return {
           boundedSearches,
           directRecoveryAttempts,
@@ -8579,7 +8580,7 @@ describe("beat-game run lifecycle", () => {
     driver.xzPathResolver = (x, z, dimension, radius, policy) =>
       Effect.sync(() => {
         driver.xzPaths.push({ x, z, dimension, radius, policy });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
       const run = yield* beatGameWithDriver(driver, {
@@ -8592,7 +8593,7 @@ describe("beat-game run lifecycle", () => {
         yield* Effect.sleep(1);
       }
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     }).pipe(Effect.timeout("5 seconds"))));
 
     const firstLeg = driver.xzPaths[0];
@@ -8644,7 +8645,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.xzPaths.push({ x, z, dimension, radius, policy });
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           driver.xzPaths.length === 0
             ? Effect.fail(new BeatGameDriverError({
               operation: "pathfindXZ",
@@ -8666,7 +8667,7 @@ describe("beat-game run lifecycle", () => {
         yield* Effect.sleep(1);
       }
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     }).pipe(Effect.timeout("5 seconds"))));
 
     const [directedLeg, detourLeg] = driver.xzPaths;
@@ -8743,7 +8744,7 @@ describe("beat-game run lifecycle", () => {
         yield* Effect.sleep(1);
       }
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     const saved = await Effect.runPromise(store.load(runId));
@@ -8803,7 +8804,7 @@ describe("beat-game run lifecycle", () => {
             "minecraft:wooden_sword": 1,
           },
         });
-      }).pipe(Effect.zipRight(Effect.sleep(1)));
+      }).pipe(Effect.andThen(Effect.sleep(1)));
 
     await Effect.runPromise(Effect.scoped(
       beatGameWithDriver(driver, {
@@ -8821,13 +8822,13 @@ describe("beat-game run lifecycle", () => {
               while (driver.xzPaths.length < 1) {
                 yield* Effect.sleep(1);
               }
-            }).pipe(Effect.timeoutFail({
+            }).pipe(Effect.timeoutOrElse({
               duration: "5 seconds",
-              onTimeout: () =>
-                new Error("Food preparation stopped inside the threshold"),
+              orElse: () =>
+                Effect.fail(new Error("Food preparation stopped inside the threshold")),
             }));
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -8912,7 +8913,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.tasks.push(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "craft" ? Effect.never : Effect.void,
         ),
       );
@@ -8934,7 +8935,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -9027,7 +9028,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.tasks.push(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "craft" ? Effect.never : Effect.void,
         ),
       );
@@ -9049,7 +9050,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
         Effect.timeout("5 seconds"),
@@ -9117,7 +9118,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -9200,7 +9201,7 @@ describe("beat-game run lifecycle", () => {
               Stream.runHead,
             );
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
             return event;
           })
         ),
@@ -9268,7 +9269,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -9345,7 +9346,7 @@ describe("beat-game run lifecycle", () => {
         yield* Effect.sleep(1);
       }
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     expect(recoveryPositions).toEqual([
@@ -9404,7 +9405,7 @@ describe("beat-game run lifecycle", () => {
                 driver.entityResults = [zombie];
               }
             }).pipe(
-              Effect.zipRight(
+              Effect.andThen(
                 recoveries === 0 ? Effect.never : Effect.void,
               ),
             ),
@@ -9416,7 +9417,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -9484,7 +9485,7 @@ describe("beat-game run lifecycle", () => {
                 driver.entityResults = [spider];
               }
             }).pipe(
-              Effect.zipRight(
+              Effect.andThen(
                 waitForInterruption ? Effect.never : Effect.void,
               ),
             );
@@ -9497,7 +9498,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -9549,7 +9550,7 @@ describe("beat-game run lifecycle", () => {
           driver.currentObservation = observation({ health: 3 });
         }
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "flee" ? Effect.never : Effect.void,
         ),
         Effect.onInterrupt(() =>
@@ -9569,7 +9570,7 @@ describe("beat-game run lifecycle", () => {
             Effect.sync(() => {
               driver.currentObservation = observation({ health: 6 });
               driver.entityResults = [zombie];
-            }).pipe(Effect.zipRight(Effect.never)),
+            }).pipe(Effect.andThen(Effect.never)),
         },
       }).pipe(
         Effect.flatMap((run) =>
@@ -9584,7 +9585,7 @@ describe("beat-game run lifecycle", () => {
                 .length,
             };
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
             return result;
           })
         ),
@@ -9652,7 +9653,7 @@ describe("beat-game run lifecycle", () => {
           driver.entityResults = [];
         }
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "flee"
             ? Effect.fail(new BeatGameDriverError({
               operation: "task.flee",
@@ -9676,7 +9677,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -9737,7 +9738,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.tasks.push(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "flee"
             ? Effect.fail(new BeatGameDriverError({
               operation: "task.flee",
@@ -9751,7 +9752,7 @@ describe("beat-game run lifecycle", () => {
     driver.pathResolver = (position, radius, policy) =>
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
       const run = yield* beatGameWithDriver(driver, {
@@ -9763,7 +9764,7 @@ describe("beat-game run lifecycle", () => {
         yield* Effect.sleep(1);
       }
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     expect(driver.tasks.filter((task) => task.type === "flee").length)
@@ -9829,7 +9830,7 @@ describe("beat-game run lifecycle", () => {
                 : [attacker];
               recoveries += 1;
             }).pipe(
-              Effect.zipRight(
+              Effect.andThen(
                 waitForInterruption ? Effect.never : Effect.void,
               ),
             );
@@ -9842,7 +9843,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -9892,7 +9893,7 @@ describe("beat-game run lifecycle", () => {
     driver.taskResolver = (task) =>
       Effect.sync(() => {
         driver.tasks.push(task);
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(
       beatGameWithDriver(driver, {
@@ -9906,7 +9907,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -9976,7 +9977,7 @@ describe("beat-game run lifecycle", () => {
     driver.taskResolver = (task) =>
       Effect.sync(() => {
         driver.tasks.push(task);
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(
       beatGameWithDriver(driver, {
@@ -9990,7 +9991,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -10063,7 +10064,7 @@ describe("beat-game run lifecycle", () => {
           driver.entityResults = [];
         }
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "collect-blocks"
             ? Effect.never
             : Effect.void,
@@ -10080,7 +10081,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -10155,7 +10156,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.tasks.push(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "collect-blocks" || task.type === "flee"
             ? Effect.never
             : Effect.void,
@@ -10179,7 +10180,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -10230,7 +10231,7 @@ describe("beat-game run lifecycle", () => {
     driver.taskResolver = (task) =>
       Effect.sync(() => {
         driver.tasks.push(task);
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(
       beatGameWithDriver(driver, {
@@ -10246,7 +10247,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -10301,7 +10302,7 @@ describe("beat-game run lifecycle", () => {
           driver.entityResults = [closingCreeper];
         }
       }).pipe(
-        Effect.zipRight(task.type === "flee" ? Effect.never : Effect.void),
+        Effect.andThen(task.type === "flee" ? Effect.never : Effect.void),
       );
 
     await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
@@ -10367,7 +10368,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.tasks.push(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "flee"
             ? Effect.sleep(250).pipe(
               Effect.tap(() =>
@@ -10448,7 +10449,7 @@ describe("beat-game run lifecycle", () => {
           driver.entityResults = [];
         }
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "collect-blocks"
             ? Effect.never
             : Effect.void,
@@ -10465,7 +10466,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -10525,7 +10526,7 @@ describe("beat-game run lifecycle", () => {
           driver.entityResults = [];
         }
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "collect-blocks"
             ? Effect.never
             : Effect.void,
@@ -10542,7 +10543,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -10599,7 +10600,7 @@ describe("beat-game run lifecycle", () => {
           driver.entityResults = [];
         }
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "collect-blocks" || task.type === "flee"
             ? Effect.never
             : Effect.void,
@@ -10682,7 +10683,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.tasks.push(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "flee"
             ? Effect.fail(new BeatGameDriverError({
               operation: "task.flee",
@@ -10696,7 +10697,7 @@ describe("beat-game run lifecycle", () => {
     driver.pathResolver = (position, radius, policy) =>
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
       const run = yield* beatGameWithDriver(driver, {
@@ -10852,7 +10853,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.tasks.push(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "flee"
             ? Effect.fail(new BeatGameDriverError({
               operation: "task.flee",
@@ -10869,7 +10870,7 @@ describe("beat-game run lifecycle", () => {
       });
       if (radius !== 0.35) {
         return record.pipe(
-          Effect.zipRight(Effect.fail(new BeatGameDriverError({
+          Effect.andThen(Effect.fail(new BeatGameDriverError({
             operation: "pathfind",
             code: "unreachable",
             retryable: true,
@@ -10947,7 +10948,7 @@ describe("beat-game run lifecycle", () => {
           driver.entityQueryResolver = () => [];
         }
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "collect-blocks"
             ? Effect.never
             : Effect.void,
@@ -10964,7 +10965,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -11021,7 +11022,7 @@ describe("beat-game run lifecycle", () => {
         driver.entityResults = [creeper, skeleton];
         driver.currentObservation = observation({ health: 17 });
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "flee" ? Effect.never : Effect.void,
         ),
         Effect.onInterrupt(() =>
@@ -11045,7 +11046,7 @@ describe("beat-game run lifecycle", () => {
             yield* Effect.sleep(250);
             const result = interruptedEscapes;
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
             return result;
           })
         ),
@@ -11095,7 +11096,7 @@ describe("beat-game run lifecycle", () => {
           driver.currentObservation = observation({ health: 17 });
         }
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "collect-blocks" || task.type === "flee"
             ? Effect.never
             : Effect.void,
@@ -11166,7 +11167,7 @@ describe("beat-game run lifecycle", () => {
           driver.currentObservation = observation({ health: 5 });
         }
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "collect-blocks" || task.type === "flee"
             ? Effect.never
             : Effect.void,
@@ -11196,7 +11197,7 @@ describe("beat-game run lifecycle", () => {
                 .length,
             };
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
             return result;
           })
         ),
@@ -11249,7 +11250,7 @@ describe("beat-game run lifecycle", () => {
           driver.currentObservation = observation({ health: 17 });
         }
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "collect-blocks" || task.type === "flee"
             ? Effect.never
             : Effect.void,
@@ -11356,7 +11357,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -11395,7 +11396,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.tasks.push(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "collect-blocks"
             ? Effect.never
             : Effect.void,
@@ -11437,7 +11438,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.tasks.push(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "collect-blocks"
             ? Effect.never
             : Effect.void,
@@ -11504,7 +11505,7 @@ describe("beat-game run lifecycle", () => {
           });
         }
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "collect-blocks" ? Effect.never : Effect.void,
         ),
       );
@@ -11522,7 +11523,7 @@ describe("beat-game run lifecycle", () => {
             }
             yield* Effect.sleep(250);
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -11596,7 +11597,7 @@ describe("beat-game run lifecycle", () => {
               Stream.runHead,
             );
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
             return event;
           })
         ),
@@ -11704,7 +11705,7 @@ describe("beat-game run lifecycle", () => {
               Stream.runHead,
             );
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
             return event;
           })
         ),
@@ -11771,7 +11772,7 @@ describe("beat-game run lifecycle", () => {
               Stream.runHead,
             );
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
             return event;
           })
         ),
@@ -11825,7 +11826,7 @@ describe("beat-game run lifecycle", () => {
           retreat: () =>
             Effect.sync(() => {
               retreatStarted = true;
-            }).pipe(Effect.zipRight(Effect.sleep(20))),
+            }).pipe(Effect.andThen(Effect.sleep(20))),
         },
       });
       yield* run.events.pipe(
@@ -11849,7 +11850,7 @@ describe("beat-game run lifecycle", () => {
       );
       expect(Option.isSome(retreatCompleted)).toBe(true);
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     expect(environmentalFailures).toEqual([]);
@@ -11878,7 +11879,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.tasks.push(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "flee"
             ? Effect.fail(new BeatGameDriverError({
               operation: "task.flee",
@@ -11900,7 +11901,7 @@ describe("beat-game run lifecycle", () => {
             }
             yield* Effect.sleep(20);
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -11951,7 +11952,7 @@ describe("beat-game run lifecycle", () => {
     driver.taskResolver = (task) =>
       Effect.sync(() => {
         driver.tasks.push(task);
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(
       beatGameWithDriver(driver, {
@@ -11968,7 +11969,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -12038,7 +12039,7 @@ describe("beat-game run lifecycle", () => {
           driver.currentObservation = observation({ health: 20 });
         }
       }).pipe(
-        Effect.zipRight(Effect.void),
+        Effect.andThen(Effect.void),
       );
 
     await Effect.runPromise(Effect.scoped(
@@ -12051,7 +12052,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -12123,7 +12124,7 @@ describe("beat-game run lifecycle", () => {
           });
         }
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "attack-entity" ? Effect.never : Effect.void,
         ),
       );
@@ -12141,7 +12142,7 @@ describe("beat-game run lifecycle", () => {
             }
             yield* Effect.sleep(20);
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -12203,7 +12204,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.tasks.push(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "attack-entity" ? Effect.never : Effect.void,
         ),
       );
@@ -12217,7 +12218,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -12290,7 +12291,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -12362,7 +12363,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -12412,7 +12413,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -12480,7 +12481,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -12546,7 +12547,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -12604,7 +12605,7 @@ describe("beat-game run lifecycle", () => {
           driver.currentObservation = observation({ health: 6 });
         }
       }).pipe(
-        Effect.zipRight(task.type === "flee" ? Effect.never : Effect.void),
+        Effect.andThen(task.type === "flee" ? Effect.never : Effect.void),
       );
 
     await Effect.runPromise(Effect.scoped(
@@ -12618,7 +12619,7 @@ describe("beat-game run lifecycle", () => {
             }
             yield* Effect.sleep(250);
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -12677,7 +12678,7 @@ describe("beat-game run lifecycle", () => {
           });
         }
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "flee" || task.type === "attack-entity"
             ? Effect.never
             : Effect.void,
@@ -12696,7 +12697,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -12772,7 +12773,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -12845,7 +12846,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -12932,7 +12933,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -12996,7 +12997,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.tasks.push(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "collect-blocks" || task.type === "flee"
             ? Effect.never
             : Effect.void,
@@ -13028,7 +13029,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -13106,7 +13107,7 @@ describe("beat-game run lifecycle", () => {
     driver.pathResolver = (position, radius, policy) =>
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(
       beatGameWithDriver(driver, {
@@ -13118,7 +13119,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -13204,7 +13205,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -13266,7 +13267,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -13319,7 +13320,7 @@ describe("beat-game run lifecycle", () => {
           });
         }
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "attack-entity" ? Effect.never : Effect.void,
         ),
       );
@@ -13376,7 +13377,7 @@ describe("beat-game run lifecycle", () => {
           });
         }
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "attack-entity" ? Effect.never : Effect.void,
         ),
       );
@@ -13394,7 +13395,7 @@ describe("beat-game run lifecycle", () => {
             }
             yield* Effect.sleep(400);
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -13451,7 +13452,7 @@ describe("beat-game run lifecycle", () => {
         yield* Effect.sleep(1);
       }
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     expect(driver.tasks).toContainEqual(expect.objectContaining({
@@ -13510,7 +13511,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -13578,7 +13579,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -13640,7 +13641,7 @@ describe("beat-game run lifecycle", () => {
           });
         }
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "attack-entity" ? Effect.never : Effect.void,
       ),
     );
@@ -13657,7 +13658,7 @@ describe("beat-game run lifecycle", () => {
             }
             yield* Effect.sleep(5);
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -13711,7 +13712,7 @@ describe("beat-game run lifecycle", () => {
           driver.entityResults = [];
         }
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "attack-entity" ? Effect.never : Effect.void,
         ),
       );
@@ -13789,7 +13790,7 @@ describe("beat-game run lifecycle", () => {
           driver.entityResults = [];
         }
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "attack-entity" ? Effect.never : Effect.void,
         ),
       );
@@ -13804,7 +13805,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -13867,7 +13868,7 @@ describe("beat-game run lifecycle", () => {
           });
         }
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "attack-entity" ? Effect.never : Effect.void,
         ),
       );
@@ -13929,7 +13930,7 @@ describe("beat-game run lifecycle", () => {
           driver.entityResults = [];
         }
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "attack-entity"
             ? Effect.fail(new BeatGameDriverError({
               operation: "task.attack-entity",
@@ -13951,7 +13952,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -14013,7 +14014,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.tasks.push(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "attack-entity"
             ? Effect.fail(new BeatGameDriverError({
               operation: "task.attack-entity",
@@ -14047,7 +14048,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -14131,7 +14132,7 @@ describe("beat-game run lifecycle", () => {
     driver.pathResolver = (position, radius, policy) =>
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(
       beatGameWithDriver(driver, {
@@ -14143,7 +14144,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -14209,7 +14210,7 @@ describe("beat-game run lifecycle", () => {
           driver.entityResults = [];
         }
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "attack-entity" ? Effect.never : Effect.void,
         ),
       );
@@ -14224,7 +14225,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -14280,7 +14281,7 @@ describe("beat-game run lifecycle", () => {
           });
         }
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "attack-entity" || task.type === "auto-eat"
             ? Effect.void
             : Effect.never,
@@ -14302,7 +14303,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -14383,7 +14384,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -14459,7 +14460,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -14518,7 +14519,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -14606,7 +14607,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -14682,7 +14683,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -14738,7 +14739,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.tasks.push(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "collect-blocks" || task.type === "flee"
             ? Effect.never
             : Effect.void,
@@ -14767,7 +14768,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -14895,7 +14896,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.tasks.push(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "collect-blocks" || task.type === "flee"
             ? Effect.never
             : Effect.void,
@@ -14930,7 +14931,7 @@ describe("beat-game run lifecycle", () => {
             }];
             yield* Effect.sleep(100);
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -14981,7 +14982,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.tasks.push(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "collect-blocks"
               || task.type === "flee"
               || task.type === "attack-entity"
@@ -15024,7 +15025,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -15071,7 +15072,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.tasks.push(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "collect-blocks" || task.type === "flee"
             ? Effect.never
             : Effect.void,
@@ -15104,7 +15105,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -15145,7 +15146,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.tasks.push(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "collect-blocks" || task.type === "flee"
             ? Effect.never
             : Effect.void,
@@ -15179,7 +15180,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -15221,7 +15222,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.tasks.push(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "collect-blocks"
               || task.type === "flee"
               || task.type === "attack-entity"
@@ -15265,7 +15266,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -15315,7 +15316,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.tasks.push(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "collect-blocks"
               || task.type === "flee"
               || task.type === "attack-entity"
@@ -15349,7 +15350,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -15425,7 +15426,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -15478,7 +15479,7 @@ describe("beat-game run lifecycle", () => {
           });
         }
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "collect-blocks" || task.type === "attack-entity"
             ? Effect.never
             : Effect.void,
@@ -15504,7 +15505,7 @@ describe("beat-game run lifecycle", () => {
             }
             yield* Effect.sleep(20);
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -15578,7 +15579,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -15685,7 +15686,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -15789,7 +15790,7 @@ describe("beat-game run lifecycle", () => {
           driver.entityResults = [];
         }
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "collect-blocks"
             ? Effect.never
             : task.type === "attack-entity"
@@ -15835,7 +15836,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -15888,7 +15889,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -15952,7 +15953,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -16005,7 +16006,7 @@ describe("beat-game run lifecycle", () => {
           driver.entityResults = [];
         }
       }).pipe(
-        Effect.zipRight(task.type === "flee" ? Effect.never : Effect.void),
+        Effect.andThen(task.type === "flee" ? Effect.never : Effect.void),
         Effect.onInterrupt(() =>
           Effect.sync(() => {
             if (task.type === "flee") {
@@ -16025,7 +16026,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -16072,7 +16073,7 @@ describe("beat-game run lifecycle", () => {
         driver.tasks.push(task);
         driver.taskObserver(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "collect-blocks"
             ? Effect.never
             : Effect.succeed({}),
@@ -16098,7 +16099,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -16163,7 +16164,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.tasks.push(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "collect-blocks" || task.type === "flee"
             ? Effect.never
             : Effect.void,
@@ -16187,10 +16188,10 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
-          }).pipe(Effect.timeoutFail({
+            yield* run.awaitCompletion.pipe(Effect.result);
+          }).pipe(Effect.timeoutOrElse({
             duration: "8 seconds",
-            onTimeout: () => new Error("Timed out waiting for drowned evasion"),
+            orElse: () => Effect.fail(new Error("Timed out waiting for drowned evasion")),
           }))
         ),
       ),
@@ -16236,7 +16237,7 @@ describe("beat-game run lifecycle", () => {
         driver.tasks.push(task);
         driver.taskObserver(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "collect-blocks"
             ? Effect.never
             : task.type === "attack-entity"
@@ -16278,7 +16279,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -16337,7 +16338,7 @@ describe("beat-game run lifecycle", () => {
         driver.tasks.push(task);
         driver.taskObserver(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "collect-blocks"
             ? Effect.never
             : Effect.succeed({}),
@@ -16368,7 +16369,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -16427,7 +16428,7 @@ describe("beat-game run lifecycle", () => {
         driver.tasks.push(task);
         driver.taskObserver(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "collect-blocks"
             ? Effect.never
             : Effect.succeed({}),
@@ -16450,7 +16451,7 @@ describe("beat-game run lifecycle", () => {
             }
             yield* Effect.sleep(20);
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -16518,7 +16519,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -16577,7 +16578,7 @@ describe("beat-game run lifecycle", () => {
           }));
         }
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "flee" ? Effect.never : Effect.succeed({}),
         ),
       );
@@ -16602,7 +16603,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -16648,7 +16649,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.tasks.push(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "collect-blocks"
             ? Effect.never
             : task.type === "flee"
@@ -16675,7 +16676,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -16736,7 +16737,7 @@ describe("beat-game run lifecycle", () => {
         driver.tasks.push(task);
         driver.taskObserver(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "collect-blocks"
             ? Effect.never
             : Effect.succeed({}),
@@ -16769,7 +16770,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -16834,7 +16835,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -16894,7 +16895,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -16959,7 +16960,7 @@ describe("beat-game run lifecycle", () => {
           driver.entityResults = [zombie];
         }
       }).pipe(
-        Effect.zipRight(task.type === "flee" ? Effect.never : Effect.void),
+        Effect.andThen(task.type === "flee" ? Effect.never : Effect.void),
       );
 
     await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
@@ -17022,7 +17023,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -17080,7 +17081,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -17124,7 +17125,7 @@ describe("beat-game run lifecycle", () => {
           driver.currentObservation = observation({ health: 17.5 });
         }
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "attack-entity" ? Effect.never : Effect.void,
         ),
       );
@@ -17162,7 +17163,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -17211,7 +17212,7 @@ describe("beat-game run lifecycle", () => {
           });
         }
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "attack-entity" ? Effect.never : Effect.void,
         ),
       );
@@ -17249,7 +17250,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -17320,7 +17321,7 @@ describe("beat-game run lifecycle", () => {
           });
         }
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "attack-entity" ? Effect.never : Effect.void,
         ),
       );
@@ -17355,7 +17356,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -17488,7 +17489,7 @@ describe("beat-game run lifecycle", () => {
             }
             yield* Effect.sleep(5);
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -17524,7 +17525,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.tasks.push(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "collect-blocks"
             ? Effect.never
             : task.type === "flee"
@@ -17566,7 +17567,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -17605,14 +17606,14 @@ describe("beat-game run lifecycle", () => {
         driver.tasks.push(task);
         driver.taskObserver(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "collect-blocks"
             ? Effect.never
             : task.type === "attack-entity"
             ? Effect.sync(() => {
               driver.entityResults = [];
             }).pipe(
-              Effect.zipRight(Effect.fail(new BeatGameDriverError({
+              Effect.andThen(Effect.fail(new BeatGameDriverError({
                 operation: "task.attack-entity",
                 code: "unreachable",
                 retryable: true,
@@ -17645,7 +17646,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -17722,7 +17723,7 @@ describe("beat-game run lifecycle", () => {
           });
         }
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "collect-blocks" ? Effect.never : Effect.void,
         ),
       );
@@ -17807,7 +17808,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.tasks.push(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "collect-blocks" ? Effect.never : Effect.succeed({}),
         ),
       );
@@ -17837,7 +17838,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -17861,7 +17862,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.tasks.push(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "collect-blocks" ? Effect.never : Effect.void,
         ),
       );
@@ -17913,7 +17914,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -17965,7 +17966,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.tasks.push(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "collect-blocks" ? Effect.never : Effect.void,
         ),
       );
@@ -18057,7 +18058,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.tasks.push(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "collect-blocks" ? Effect.never : Effect.void,
         ),
       );
@@ -18360,7 +18361,7 @@ describe("beat-game run lifecycle", () => {
     driver.pathResolver = (position, radius, policy) =>
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
-      }).pipe(Effect.zipRight(Effect.fail(new BeatGameDriverError({
+      }).pipe(Effect.andThen(Effect.fail(new BeatGameDriverError({
         operation: "pathfind",
         code: "unreachable",
         retryable: true,
@@ -18370,7 +18371,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.tasks.push(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "attack-entity" ? Effect.never : Effect.void,
         ),
       );
@@ -18486,7 +18487,7 @@ describe("beat-game run lifecycle", () => {
           responseAir ??= driver.currentObservation.player.air;
         }
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "collect-blocks" ? Effect.never : Effect.void,
         ),
       );
@@ -18511,7 +18512,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -18603,7 +18604,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.tasks.push(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "collect-blocks" ? Effect.never : Effect.void,
         ),
       );
@@ -18788,7 +18789,7 @@ describe("beat-game run lifecycle", () => {
           });
         }
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "collect-blocks" ? Effect.never : Effect.void,
         ),
       );
@@ -18921,7 +18922,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.tasks.push(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "collect-blocks" ? Effect.never : Effect.void,
         ),
       );
@@ -19025,7 +19026,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.tasks.push(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "collect-blocks" ? Effect.never : Effect.void,
         ),
       );
@@ -19138,7 +19139,7 @@ describe("beat-game run lifecycle", () => {
     driver.taskResolver = (task) =>
       Effect.sync(() => {
         driver.tasks.push(task);
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
     driver.blockQueryResolver = (query) => {
       const position = {
         x: Math.floor(query.center.x),
@@ -19251,7 +19252,7 @@ describe("beat-game run lifecycle", () => {
     driver.taskResolver = (task) =>
       Effect.sync(() => {
         driver.tasks.push(task);
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
     driver.blockQueryResolver = (query) => {
       const position = {
         x: Math.floor(query.center.x),
@@ -19357,7 +19358,7 @@ describe("beat-game run lifecycle", () => {
     driver.taskResolver = (task) =>
       Effect.sync(() => {
         driver.tasks.push(task);
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
     driver.blockQueryResolver = (query) => {
       const position = {
         x: Math.floor(query.center.x),
@@ -19418,7 +19419,7 @@ describe("beat-game run lifecycle", () => {
         Effect.timeout("5 seconds"),
       );
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     expect(ascentAttempts).toBeGreaterThanOrEqual(2);
@@ -19450,7 +19451,7 @@ describe("beat-game run lifecycle", () => {
     driver.taskResolver = (task) =>
       Effect.sync(() => {
         driver.tasks.push(task);
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
     let overheadCleared = false;
     let swimmingTowardShore = false;
     let escapedFromFluid = false;
@@ -19664,7 +19665,7 @@ describe("beat-game run lifecycle", () => {
     driver.taskResolver = (task) =>
       Effect.sync(() => {
         driver.tasks.push(task);
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
     driver.blockQueryResolver = (query) => {
       const position = {
         x: Math.floor(query.center.x),
@@ -19694,7 +19695,7 @@ describe("beat-game run lifecycle", () => {
     driver.pathResolver = (position, radius, policy) =>
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
-      }).pipe(Effect.zipRight(Effect.fail(new BeatGameDriverError({
+      }).pipe(Effect.andThen(Effect.fail(new BeatGameDriverError({
         operation: "pathfind",
         code: "unreachable",
         retryable: true,
@@ -19810,7 +19811,7 @@ describe("beat-game run lifecycle", () => {
         ) {
           deepSurfaceCollectionCount += 1;
         }
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
     driver.blockQueryResolver = (query) => {
       const position = {
         x: Math.floor(query.center.x),
@@ -19961,7 +19962,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -20035,7 +20036,7 @@ describe("beat-game run lifecycle", () => {
     driver.pathResolver = (position, radius, policy) =>
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
     await Effect.runPromise(store.save(checkpoint(
       BeatGamePhase.ENTER_NETHER,
       { runId, teamId },
@@ -20057,7 +20058,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
         Effect.timeout("5 seconds"),
@@ -20168,7 +20169,7 @@ describe("beat-game run lifecycle", () => {
         Effect.timeout("5 seconds"),
       );
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     expect(driver.paths).toHaveLength(0);
@@ -20241,7 +20242,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           position.x === blockedSurfaceSource.position.x
             ? Effect.fail(new BeatGameDriverError({
               operation: "pathfind",
@@ -20262,7 +20263,7 @@ describe("beat-game run lifecycle", () => {
         yield* Effect.sleep(1);
       }
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     expect(driver.paths.slice(0, 2).map(({ position }) => position)).toEqual([
@@ -20317,7 +20318,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
       }).pipe(
-        Effect.zipRight(Effect.fail(new BeatGameDriverError({
+        Effect.andThen(Effect.fail(new BeatGameDriverError({
           operation: "pathfind",
           code: "task_failed",
           retryable: false,
@@ -20334,7 +20335,7 @@ describe("beat-game run lifecycle", () => {
         yield* Effect.sleep(1);
       }
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     expect(driver.paths.map(({ position }) => position)).toEqual(
@@ -20387,7 +20388,7 @@ describe("beat-game run lifecycle", () => {
     const resolvePath = driver.pathResolver;
     driver.pathResolver = (position, radius, policy) =>
       resolvePath(position, radius, policy).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           position.x === sources[1]?.position.x
             ? Effect.never
             : Effect.void,
@@ -20422,7 +20423,7 @@ describe("beat-game run lifecycle", () => {
         yield* Effect.sleep(1);
       }
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     expect(driver.paths.slice(0, 2).map(({ position }) => position)).toEqual(
@@ -20606,7 +20607,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -20803,7 +20804,7 @@ describe("beat-game run lifecycle", () => {
       }
       return action.type === "use-item"
         ? Effect.sync(resolveUseItemStarted).pipe(
-          Effect.zipRight(Effect.never),
+          Effect.andThen(Effect.never),
           Effect.onInterrupt(() =>
             Effect.sync(resolveUseItemInterrupted)
           ),
@@ -20843,7 +20844,7 @@ describe("beat-game run lifecycle", () => {
               Effect.timeout("5 seconds"),
             );
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -21046,7 +21047,7 @@ describe("beat-game run lifecycle", () => {
         yield* Effect.sleep(1);
       }
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     }).pipe(Effect.timeout("5 seconds"))));
 
     expect(driver.paths.find(({ radius }) => radius === 0.75)).toEqual(
@@ -21246,7 +21247,7 @@ describe("beat-game run lifecycle", () => {
         yield* Effect.sleep(1);
       }
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     }).pipe(Effect.timeout("5 seconds"))));
 
     expect(driver.paths.find(({ radius }) => radius === 0.75)).toEqual(
@@ -21418,7 +21419,7 @@ describe("beat-game run lifecycle", () => {
         yield* Effect.sleep(1);
       }
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     expect(driver.actions).toContainEqual({
@@ -21569,7 +21570,7 @@ describe("beat-game run lifecycle", () => {
         yield* Effect.sleep(1);
       }
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     }).pipe(Effect.timeout("5 seconds"))));
 
     expect(driver.paths).toContainEqual(expect.objectContaining({
@@ -21680,7 +21681,7 @@ describe("beat-game run lifecycle", () => {
           resolveExcavationAttempted();
         }
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           policy.allowMining === true
             ? Effect.never
             : Effect.fail(new BeatGameDriverError({
@@ -21713,7 +21714,7 @@ describe("beat-game run lifecycle", () => {
         Effect.timeout("5 seconds"),
       );
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     expect(driver.paths.filter(({ policy }) =>
@@ -21845,7 +21846,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -21940,7 +21941,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
       }).pipe(
-        Effect.zipRight(position.y < 64 ? Effect.never : Effect.void),
+        Effect.andThen(position.y < 64 ? Effect.never : Effect.void),
       );
     await Effect.runPromise(store.save(checkpoint(
       BeatGamePhase.ENTER_NETHER,
@@ -21964,7 +21965,7 @@ describe("beat-game run lifecycle", () => {
         yield* Effect.sleep(1);
       }
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     expect(driver.paths).toContainEqual(expect.objectContaining({
@@ -22222,7 +22223,7 @@ describe("beat-game run lifecycle", () => {
         Effect.timeout("5 seconds"),
       );
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     expect(driver.tasks).toContainEqual(expect.objectContaining({
@@ -22368,7 +22369,7 @@ describe("beat-game run lifecycle", () => {
         Effect.timeout("5 seconds"),
       );
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     expect(driver.paths).not.toContainEqual(expect.objectContaining({
@@ -22443,7 +22444,7 @@ describe("beat-game run lifecycle", () => {
     });
     driver.pathResolver = (position, radius, policy) =>
       Effect.sleep(50).pipe(
-        Effect.zipRight(Effect.sync(() => {
+        Effect.andThen(Effect.sync(() => {
           driver.paths.push({ position, radius, policy });
           if (position.y >= 64) {
             driver.currentObservation = observation({
@@ -22481,7 +22482,7 @@ describe("beat-game run lifecycle", () => {
         Effect.timeout("5 seconds"),
       );
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     expect(driver.paths).toContainEqual(expect.objectContaining({
@@ -22617,20 +22618,20 @@ describe("beat-game run lifecycle", () => {
         Effect.forkScoped,
       );
       yield* Effect.promise(() => relocated).pipe(
-        Effect.timeoutFail({
+        Effect.timeoutOrElse({
           duration: "5 seconds",
-          onTimeout: () => new Error("Timed out waiting for relocation"),
+          orElse: () => Effect.fail(new Error("Timed out waiting for relocation")),
         }),
       );
       yield* Effect.promise(() => searchContinued).pipe(
-        Effect.timeoutFail({
+        Effect.timeoutOrElse({
           duration: "5 seconds",
-          onTimeout: () =>
-            new Error("Timed out waiting for lava search continuation"),
+          orElse: () =>
+            Effect.fail(new Error("Timed out waiting for lava search continuation")),
         }),
       );
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     expect(driver.xzPaths).toContainEqual(expect.objectContaining({
@@ -22757,7 +22758,7 @@ describe("beat-game run lifecycle", () => {
               Effect.timeout("5 seconds"),
             );
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -22929,30 +22930,34 @@ describe("beat-game run lifecycle", () => {
       },
     ), undefined));
 
-    await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
-      const run = yield* beatGameWithDriver(driver, {
-        runId: "portal-beside-lava-run",
-        team: { teamId: "portal-beside-lava-team" },
-        checkpointStore: store,
-        strategy: {
-          observationPollMs: 1,
-          portalStrategy: "CAST",
-        },
-      });
-      yield* Effect.promise(() => portalFloorQueried).pipe(
-        Effect.timeout("5 seconds"),
-      );
-      yield* Effect.gen(function* () {
-        while (
-          (yield* store.load("portal-beside-lava-run"))
-            ?.activeSkill?.portalWorkspace === undefined
-        ) {
-          yield* Effect.sleep(1);
-        }
-      }).pipe(Effect.timeout("5 seconds"));
-      yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
-    })));
+    await Effect.runPromise(Effect.gen(function* () {
+      const fiber = yield* Effect.forkChild(Effect.scoped(Effect.gen(function* () {
+        const run = yield* beatGameWithDriver(driver, {
+          runId: "portal-beside-lava-run",
+          team: { teamId: "portal-beside-lava-team" },
+          checkpointStore: store,
+          strategy: {
+            observationPollMs: 1,
+            portalStrategy: "CAST",
+          },
+        });
+        yield* Effect.promise(() => portalFloorQueried).pipe(
+          Effect.timeout("5 seconds"),
+        );
+        yield* Effect.gen(function* () {
+          while (
+            (yield* store.load("portal-beside-lava-run"))
+              ?.activeSkill?.portalWorkspace === undefined
+          ) {
+            yield* Effect.sleep(1);
+          }
+        }).pipe(Effect.timeout("5 seconds"));
+        yield* run.stop;
+        yield* run.awaitCompletion.pipe(Effect.result);
+      })));
+      yield* TestClock.adjust("10 seconds");
+      yield* Fiber.join(fiber);
+    }).pipe(Effect.provide(TestClock.layer())));
 
     expect(driver.paths).toContainEqual({
       position: safeStand,
@@ -23107,7 +23112,7 @@ describe("beat-game run lifecycle", () => {
         Effect.timeout("5 seconds"),
       );
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     expect(maximumResults).toBe(1);
@@ -23202,7 +23207,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
         resolveSegmentedApproach();
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
       const run = yield* beatGameWithDriver(driver, {
@@ -23215,7 +23220,7 @@ describe("beat-game run lifecycle", () => {
         Effect.timeout("5 seconds"),
       );
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     expect(driver.xzPaths.map(({ x }) => Math.round(x))).toEqual([
@@ -23349,7 +23354,7 @@ describe("beat-game run lifecycle", () => {
         driver.xzPaths.push({ x, z, dimension, radius, policy });
         horizontalApproachY = driver.currentObservation.player.position.y;
         resolveHorizontalApproach();
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
       const run = yield* beatGameWithDriver(driver, {
@@ -23362,7 +23367,7 @@ describe("beat-game run lifecycle", () => {
         Effect.timeout("5 seconds"),
       );
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     expect(driver.paths[0]).toMatchObject({
@@ -23462,7 +23467,7 @@ describe("beat-game run lifecycle", () => {
         }
       }).pipe(Effect.timeout("5 seconds"));
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     const saved = await Effect.runPromise(store.load(runId));
@@ -23551,7 +23556,7 @@ describe("beat-game run lifecycle", () => {
         }
       }).pipe(Effect.timeout("5 seconds"));
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     const saved = await Effect.runPromise(store.load(runId));
@@ -23624,7 +23629,7 @@ describe("beat-game run lifecycle", () => {
     driver.pathResolver = (position, radius, policy) =>
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
-      }).pipe(Effect.zipRight(Effect.fail(new BeatGameDriverError({
+      }).pipe(Effect.andThen(Effect.fail(new BeatGameDriverError({
         operation: "pathfind",
         code: "path_no_route",
         retryable: true,
@@ -23653,7 +23658,7 @@ describe("beat-game run lifecycle", () => {
       }).pipe(Effect.timeout("5 seconds"));
       yield* Effect.sleep(25);
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     const saved = await Effect.runPromise(store.load(runId));
@@ -23735,7 +23740,7 @@ describe("beat-game run lifecycle", () => {
         }
       }).pipe(Effect.timeout("5 seconds"));
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     const retained = await Effect.runPromise(store.load(runId));
@@ -23919,7 +23924,7 @@ describe("beat-game run lifecycle", () => {
         Effect.timeout("5 seconds"),
       );
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     expect(driver.tasks).toContainEqual(expect.objectContaining({
@@ -24036,7 +24041,7 @@ describe("beat-game run lifecycle", () => {
         Effect.timeout("5 seconds"),
       );
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     expect(driver.tasks).toContainEqual(expect.objectContaining({
@@ -24172,7 +24177,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -24282,7 +24287,7 @@ describe("beat-game run lifecycle", () => {
     driver.xzPathResolver = (x, z, dimension, radius, policy) =>
       Effect.sync(() => {
         driver.xzPaths.push({ x, z, dimension, radius, policy });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
       const run = yield* beatGameWithDriver(driver, {
@@ -24341,7 +24346,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -24373,7 +24378,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -24415,7 +24420,7 @@ describe("beat-game run lifecycle", () => {
     driver.pathResolver = (position, radius, policy) =>
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(
       beatGameWithDriver(driver, {
@@ -24427,7 +24432,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -24477,7 +24482,7 @@ describe("beat-game run lifecycle", () => {
     driver.xzPathResolver = (x, z, dimension, radius, policy) =>
       Effect.sync(() => {
         driver.xzPaths.push({ x, z, dimension, radius, policy });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(
       beatGameWithDriver(driver, {
@@ -24489,7 +24494,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -24544,7 +24549,7 @@ describe("beat-game run lifecycle", () => {
         driver.xzPaths.push({ x, z, dimension, radius, policy });
         driver.entityResults = [deepSalmon, distantSalmon, salmon];
       }).pipe(
-        Effect.zipRight(Effect.fail(new BeatGameDriverError({
+        Effect.andThen(Effect.fail(new BeatGameDriverError({
           operation: "pathfindXZ",
           code: "unreachable",
           retryable: true,
@@ -24580,7 +24585,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -24771,7 +24776,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.xzPaths.push({ x, z, dimension, radius, policy });
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           policy.avoidFluids === true
             ? Effect.fail(new BeatGameDriverError({
               operation: "pathfindXZ",
@@ -24793,7 +24798,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -24854,7 +24859,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -24924,7 +24929,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -25008,7 +25013,7 @@ describe("beat-game run lifecycle", () => {
           }
         }
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "attack-entity"
             ? Effect.fail(new BeatGameDriverError({
               operation: "task.attack-entity",
@@ -25236,7 +25241,7 @@ describe("beat-game run lifecycle", () => {
     driver.xzPathResolver = (x, z, dimension, radius, policy) =>
       Effect.sync(() => {
         driver.xzPaths.push({ x, z, dimension, radius, policy });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
       const run = yield* beatGameWithDriver(driver, {
@@ -25584,7 +25589,7 @@ describe("beat-game run lifecycle", () => {
     driver.xzPathResolver = (x, z, dimension, radius, policy) =>
       Effect.sync(() => {
         driver.xzPaths.push({ x, z, dimension, radius, policy });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
       const run = yield* beatGameWithDriver(driver, {
@@ -25708,7 +25713,7 @@ describe("beat-game run lifecycle", () => {
     driver.xzPathResolver = (x, z, dimension, radius, policy) =>
       Effect.sync(() => {
         driver.xzPaths.push({ x, z, dimension, radius, policy });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
       const run = yield* beatGameWithDriver(driver, {
@@ -25766,7 +25771,7 @@ describe("beat-game run lifecycle", () => {
     driver.xzPathResolver = (x, z, dimension, radius, policy) =>
       Effect.sync(() => {
         driver.xzPaths.push({ x, z, dimension, radius, policy });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
       const run = yield* beatGameWithDriver(driver, {
@@ -25820,7 +25825,7 @@ describe("beat-game run lifecycle", () => {
     driver.xzPathResolver = (x, z, dimension, radius, policy) =>
       Effect.sync(() => {
         driver.xzPaths.push({ x, z, dimension, radius, policy });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
       const run = yield* beatGameWithDriver(driver, {
@@ -25922,7 +25927,7 @@ describe("beat-game run lifecycle", () => {
     driver.xzPathResolver = (x, z, dimension, radius, policy) =>
       Effect.sync(() => {
         driver.xzPaths.push({ x, z, dimension, radius, policy });
-      }).pipe(Effect.zipRight(Effect.fail(new BeatGameDriverError({
+      }).pipe(Effect.andThen(Effect.fail(new BeatGameDriverError({
         operation: "pathfindXZ",
         code: "unreachable",
         retryable: true,
@@ -26018,7 +26023,7 @@ describe("beat-game run lifecycle", () => {
     driver.xzPathResolver = (x, z, dimension, radius, policy) =>
       Effect.sync(() => {
         driver.xzPaths.push({ x, z, dimension, radius, policy });
-      }).pipe(Effect.zipRight(Effect.fail(new BeatGameDriverError({
+      }).pipe(Effect.andThen(Effect.fail(new BeatGameDriverError({
         operation: "pathfindXZ",
         code: "unreachable",
         retryable: true,
@@ -26153,7 +26158,7 @@ describe("beat-game run lifecycle", () => {
     driver.xzPathResolver = (x, z, dimension, radius, policy) =>
       Effect.sync(() => {
         driver.xzPaths.push({ x, z, dimension, radius, policy });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
       const run = yield* beatGameWithDriver(driver, {
@@ -26228,7 +26233,7 @@ describe("beat-game run lifecycle", () => {
     driver.xzPathResolver = (x, z, dimension, radius, policy) =>
       Effect.sync(() => {
         driver.xzPaths.push({ x, z, dimension, radius, policy });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
       const run = yield* beatGameWithDriver(driver, {
@@ -26271,7 +26276,7 @@ describe("beat-game run lifecycle", () => {
     driver.xzPathResolver = (x, z, dimension, radius, policy) =>
       Effect.sync(() => {
         driver.xzPaths.push({ x, z, dimension, radius, policy });
-      }).pipe(Effect.zipRight(Effect.fail(new BeatGameDriverError({
+      }).pipe(Effect.andThen(Effect.fail(new BeatGameDriverError({
         operation: "pathfindXZ",
         code: "unreachable",
         retryable: true,
@@ -26348,7 +26353,7 @@ describe("beat-game run lifecycle", () => {
     driver.xzPathResolver = (x, z, dimension, radius, policy) =>
       Effect.sync(() => {
         driver.xzPaths.push({ x, z, dimension, radius, policy });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
       const run = yield* beatGameWithDriver(driver, {
@@ -26362,7 +26367,7 @@ describe("beat-game run lifecycle", () => {
         }
       }).pipe(Effect.timeout("2 seconds"));
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     const foodQueries = driver.entityQueries.filter((query) =>
@@ -26412,7 +26417,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.tasks.push(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "attack-entity" ? Effect.never : Effect.void,
         ),
       );
@@ -26425,7 +26430,7 @@ describe("beat-game run lifecycle", () => {
         yield* Effect.sleep(1);
       }
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     expect(driver.tasks).toContainEqual(expect.objectContaining({
@@ -26481,7 +26486,7 @@ describe("beat-game run lifecycle", () => {
             },
           },
         };
-      }).pipe(Effect.zipRight(Effect.fail(new BeatGameDriverError({
+      }).pipe(Effect.andThen(Effect.fail(new BeatGameDriverError({
         operation: "pathfindXZ",
         code: "unreachable",
         retryable: true,
@@ -26490,7 +26495,7 @@ describe("beat-game run lifecycle", () => {
     driver.pathResolver = (position, radius, policy) =>
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
       const run = yield* beatGameWithDriver(driver, {
@@ -26561,7 +26566,7 @@ describe("beat-game run lifecycle", () => {
     driver.xzPathResolver = (x, z, dimension, radius, policy) =>
       Effect.sync(() => {
         driver.xzPaths.push({ x, z, dimension, radius, policy });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(
       beatGameWithDriver(driver, {
@@ -26573,7 +26578,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -26621,7 +26626,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.xzPaths.push({ x, z, dimension, radius, policy });
       }).pipe(
-        Effect.zipRight(Effect.never),
+        Effect.andThen(Effect.never),
         Effect.onInterrupt(() =>
           Effect.sync(() => {
             interruptedPaths += 1;
@@ -26639,7 +26644,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -26675,7 +26680,7 @@ describe("beat-game run lifecycle", () => {
         if (driver.xzPaths.length === 1) {
           driver.entityResults = [creeper];
         }
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
     driver.pathResolver = (position, radius, policy) =>
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
@@ -26697,7 +26702,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -26836,7 +26841,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -26977,7 +26982,7 @@ describe("beat-game run lifecycle", () => {
         if (driver.xzPaths.length === 1) {
           driver.entityResults = [creeper];
         }
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
     driver.taskResolver = (task) =>
       Effect.sync(() => {
         driver.tasks.push(task);
@@ -26999,7 +27004,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -27029,7 +27034,7 @@ describe("beat-game run lifecycle", () => {
       return Effect.sync(() => {
         driver.xzPaths.push({ x, z, dimension, radius, policy });
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           shouldFail
             ? Effect.fail(new BeatGameDriverError({
               operation: "pathfindXZ",
@@ -27056,7 +27061,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -27128,13 +27133,13 @@ describe("beat-game run lifecycle", () => {
               while (driver.xzPaths.length < 4) {
                 yield* Effect.sleep(1);
               }
-            }).pipe(Effect.timeoutFail({
+            }).pipe(Effect.timeoutOrElse({
               duration: "5 seconds",
-              onTimeout: () =>
-                new Error("Distant exploration stopped making progress"),
+              orElse: () =>
+                Effect.fail(new Error("Distant exploration stopped making progress")),
             }));
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -27182,7 +27187,7 @@ describe("beat-game run lifecycle", () => {
     driver.pathResolver = (position, radius, policy) =>
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(
       beatGameWithDriver(driver, {
@@ -27194,7 +27199,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -27262,7 +27267,7 @@ describe("beat-game run lifecycle", () => {
     driver.pathResolver = (position, radius, policy) =>
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(
       beatGameWithDriver(driver, {
@@ -27274,7 +27279,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -27385,7 +27390,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
       }).pipe(
-        Effect.zipRight(position.y === 87 ? Effect.never : Effect.void),
+        Effect.andThen(position.y === 87 ? Effect.never : Effect.void),
       );
 
     await Effect.runPromise(Effect.scoped(
@@ -27401,14 +27406,14 @@ describe("beat-game run lifecycle", () => {
               while (!driver.paths.some(({ position }) => position.y === 87)) {
                 yield* Effect.sleep(1);
               }
-            }).pipe(Effect.timeoutFail({
+            }).pipe(Effect.timeoutOrElse({
               duration: "2 seconds",
-              onTimeout: () => new Error(
+              orElse: () => Effect.fail(new Error(
                 `Surface path did not start; tasks: ${JSON.stringify(driver.tasks)}`,
-              ),
+              )),
             }));
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -27485,7 +27490,7 @@ describe("beat-game run lifecycle", () => {
     driver.xzPathResolver = (x, z, dimension, radius, policy) =>
       Effect.sync(() => {
         driver.xzPaths.push({ x, z, dimension, radius, policy });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(
       beatGameWithDriver(driver, {
@@ -27500,7 +27505,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -27557,7 +27562,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -27605,7 +27610,7 @@ describe("beat-game run lifecycle", () => {
     driver.pathResolver = (position, radius, policy) =>
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(
       beatGameWithDriver(driver, {
@@ -27617,7 +27622,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -27663,7 +27668,7 @@ describe("beat-game run lifecycle", () => {
     driver.pathResolver = (position, radius, policy) =>
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(
       beatGameWithDriver(driver, {
@@ -27675,7 +27680,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -27752,7 +27757,7 @@ describe("beat-game run lifecycle", () => {
     driver.pathResolver = (position, radius, policy) =>
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(
       beatGameWithDriver(driver, {
@@ -27764,7 +27769,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -27841,7 +27846,7 @@ describe("beat-game run lifecycle", () => {
     driver.xzPathResolver = (x, z, dimension, radius, policy) =>
       Effect.sync(() => {
         driver.xzPaths.push({ x, z, dimension, radius, policy });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(
       beatGameWithDriver(driver, {
@@ -27853,7 +27858,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -27898,7 +27903,7 @@ describe("beat-game run lifecycle", () => {
     driver.xzPathResolver = (x, z, dimension, radius, policy) =>
       Effect.sync(() => {
         driver.xzPaths.push({ x, z, dimension, radius, policy });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(
       beatGameWithDriver(driver, {
@@ -27910,7 +27915,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -27956,7 +27961,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           position.x === 0.5
             ? Effect.fail(new BeatGameDriverError({
               operation: "pathfind",
@@ -27978,7 +27983,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -28017,7 +28022,7 @@ describe("beat-game run lifecycle", () => {
     driver.xzPathResolver = (x, z, dimension, radius, policy) =>
       Effect.sync(() => {
         driver.xzPaths.push({ x, z, dimension, radius, policy });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(
       beatGameWithDriver(driver, {
@@ -28029,7 +28034,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -28072,7 +28077,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.tasks.push(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "attack-entity"
             ? Effect.fail(new BeatGameDriverError({
               operation: "task.attack-entity",
@@ -28086,7 +28091,7 @@ describe("beat-game run lifecycle", () => {
     driver.xzPathResolver = (x, z, dimension, radius, policy) =>
       Effect.sync(() => {
         driver.xzPaths.push({ x, z, dimension, radius, policy });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
     let rememberedTargets: readonly string[] = [];
 
     await Effect.runPromise(Effect.scoped(
@@ -28106,7 +28111,7 @@ describe("beat-game run lifecycle", () => {
             rememberedTargets = (yield* run.snapshot).checkpoint.memory
               .unreachable.map(({ key }) => key);
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -28197,7 +28202,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -28280,7 +28285,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -28360,7 +28365,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -28451,7 +28456,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -28506,7 +28511,7 @@ describe("beat-game run lifecycle", () => {
           && position.z === droppedLog.position.z
         ) {
           collectingDrop = true;
-          yield* Effect.forkDaemon(
+          yield* Effect.forkDetach(
             Effect.sleep(75).pipe(
               Effect.tap(() =>
                 Effect.sync(() => {
@@ -28534,7 +28539,7 @@ describe("beat-game run lifecycle", () => {
             }
             yield* Effect.sleep(200);
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -29182,7 +29187,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -29250,7 +29255,7 @@ describe("beat-game run lifecycle", () => {
         driver.tasks.push(task);
         driver.taskObserver(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "attack-entity" ? Effect.never : Effect.void,
         ),
       );
@@ -29267,7 +29272,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -29347,7 +29352,7 @@ describe("beat-game run lifecycle", () => {
     driver.pathResolver = (position, radius, policy) =>
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(
       beatGameWithDriver(driver, {
@@ -29362,7 +29367,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -29430,7 +29435,7 @@ describe("beat-game run lifecycle", () => {
     driver.pathResolver = (position, radius, policy) =>
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(
       beatGameWithDriver(driver, {
@@ -29445,7 +29450,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -29502,7 +29507,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.tasks.push(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "attack-entity" ? Effect.never : Effect.void,
         ),
       );
@@ -29522,7 +29527,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -29606,7 +29611,7 @@ describe("beat-game run lifecycle", () => {
     driver.xzPathResolver = (x, z, dimension, radius, policy) =>
       Effect.sync(() => {
         driver.xzPaths.push({ x, z, dimension, radius, policy });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(
       beatGameWithDriver(driver, {
@@ -29621,7 +29626,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -29689,7 +29694,7 @@ describe("beat-game run lifecycle", () => {
     driver.xzPathResolver = (x, z, dimension, radius, policy) =>
       Effect.sync(() => {
         driver.xzPaths.push({ x, z, dimension, radius, policy });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(
       beatGameWithDriver(driver, {
@@ -29707,7 +29712,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -29781,7 +29786,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -29849,7 +29854,7 @@ describe("beat-game run lifecycle", () => {
           },
         });
       }).pipe(
-        Effect.zipRight(Effect.fail(new BeatGameDriverError({
+        Effect.andThen(Effect.fail(new BeatGameDriverError({
           operation: "pathfindXZ",
           code: "unreachable",
           retryable: true,
@@ -29859,7 +29864,7 @@ describe("beat-game run lifecycle", () => {
     driver.pathResolver = (position, radius, policy) =>
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(
       beatGameWithDriver(driver, {
@@ -29874,7 +29879,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -29932,7 +29937,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.xzPaths.push({ x, z, dimension, radius, policy });
       }).pipe(
-        Effect.zipRight(Effect.fail(new BeatGameDriverError({
+        Effect.andThen(Effect.fail(new BeatGameDriverError({
           operation: "pathfindXZ",
           code: "unreachable",
           retryable: true,
@@ -29953,7 +29958,7 @@ describe("beat-game run lifecycle", () => {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
+            yield* run.awaitCompletion.pipe(Effect.result);
           })
         ),
       ),
@@ -29995,7 +30000,7 @@ describe("beat-game run lifecycle", () => {
     driver.pathResolver = (position, radius, policy) =>
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
       const run = yield* beatGameWithDriver(driver, {
@@ -30075,7 +30080,7 @@ describe("beat-game run lifecycle", () => {
         }
       }).pipe(Effect.timeout("5 seconds"));
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     expect(driver.paths[0]).toMatchObject({
@@ -30175,7 +30180,7 @@ describe("beat-game run lifecycle", () => {
         }
       }).pipe(Effect.timeout("5 seconds"));
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
     expect(driver.currentObservation.player.position).toEqual({
       x: 2.5,
@@ -30247,7 +30252,7 @@ describe("beat-game run lifecycle", () => {
     driver.pathResolver = (position, radius, policy) =>
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
       const run = yield* beatGameWithDriver(driver, {
@@ -30257,7 +30262,7 @@ describe("beat-game run lifecycle", () => {
         yield* Effect.sleep(1);
       }
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     expect(driver.actions).toContainEqual(expect.objectContaining({
@@ -30380,7 +30385,7 @@ describe("beat-game run lifecycle", () => {
         driver.paths.push({ position, radius, policy });
       });
       if (radius !== 0.35) {
-        return record.pipe(Effect.zipRight(Effect.fail(
+        return record.pipe(Effect.andThen(Effect.fail(
           new BeatGameDriverError({
             operation: "pathfind",
             code: "unreachable",
@@ -30564,7 +30569,7 @@ describe("beat-game run lifecycle", () => {
       });
       return radius === 0.35
         ? record
-        : record.pipe(Effect.zipRight(Effect.fail(
+        : record.pipe(Effect.andThen(Effect.fail(
           new BeatGameDriverError({
             operation: "pathfind",
             code: "unreachable",
@@ -30584,7 +30589,7 @@ describe("beat-game run lifecycle", () => {
         }
       }).pipe(Effect.timeout("5 seconds"));
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     const recoverySteps = driver.paths.filter(({ radius }) => radius === 0.35);
@@ -30731,7 +30736,7 @@ describe("beat-game run lifecycle", () => {
       });
       return radius === 0.35
         ? record
-        : record.pipe(Effect.zipRight(Effect.fail(
+        : record.pipe(Effect.andThen(Effect.fail(
           new BeatGameDriverError({
             operation: "pathfind",
             code: "unreachable",
@@ -30751,7 +30756,7 @@ describe("beat-game run lifecycle", () => {
         }
       }).pipe(Effect.timeout("5 seconds"));
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     expect(driver.paths.filter(({ radius }) => radius === 0.35)).toHaveLength(4);
@@ -30865,7 +30870,7 @@ describe("beat-game run lifecycle", () => {
       });
       return radius === 0.35
         ? record
-        : record.pipe(Effect.zipRight(Effect.fail(
+        : record.pipe(Effect.andThen(Effect.fail(
           new BeatGameDriverError({
             operation: "pathfind",
             code: "unreachable",
@@ -30885,7 +30890,7 @@ describe("beat-game run lifecycle", () => {
         }
       }).pipe(Effect.timeout("5 seconds"));
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     expect(driver.paths.filter(({ radius }) => radius === 0.35).map(
@@ -30958,7 +30963,7 @@ describe("beat-game run lifecycle", () => {
     driver.pathResolver = (position, radius, policy) =>
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
       const run = yield* beatGameWithDriver(driver, {
@@ -30988,7 +30993,7 @@ describe("beat-game run lifecycle", () => {
     driver.xzPathResolver = (x, z, dimension, radius, policy) =>
       Effect.sync(() => {
         driver.xzPaths.push({ x, z, dimension, radius, policy });
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
       const run = yield* beatGameWithDriver(driver, {
@@ -31044,7 +31049,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.tasks.push(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "collect-blocks" ? Effect.never : Effect.void,
         ),
       );
@@ -31515,7 +31520,7 @@ describe("beat-game run lifecycle", () => {
         yield* Effect.sleep(1);
       }
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     expect(collectionInterrupted).toBe(true);
@@ -31716,7 +31721,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.tasks.push(task);
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "collect-blocks"
               && task.blockIds.includes("minecraft:iron_ore")
             ? Effect.never
@@ -31816,7 +31821,7 @@ describe("beat-game run lifecycle", () => {
         if (position.x === 2.5 && radius === 0.75) {
           resolveStableApproach();
         }
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
       const run = yield* beatGameWithDriver(driver, {
@@ -31826,7 +31831,7 @@ describe("beat-game run lifecycle", () => {
         Effect.timeout("5 seconds"),
       );
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     expect(driver.paths).toContainEqual(expect.objectContaining({
@@ -31927,7 +31932,7 @@ describe("beat-game run lifecycle", () => {
         yield* Effect.sleep(1);
       }
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     expect(driver.paths.find(({ radius, policy }) =>
@@ -32009,7 +32014,7 @@ describe("beat-game run lifecycle", () => {
         yield* Effect.sleep(1);
       }
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     expect(collectionInterrupted).toBe(true);
@@ -32184,7 +32189,7 @@ describe("beat-game run lifecycle", () => {
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           position.x === unreachableTable.position.x + 0.5
             ? Effect.fail(new BeatGameDriverError({
               operation: "pathfind",
@@ -32398,7 +32403,7 @@ describe("beat-game run lifecycle", () => {
         Effect.timeout("5 seconds"),
       );
       yield* run.stop;
-      yield* run.awaitCompletion.pipe(Effect.either);
+      yield* run.awaitCompletion.pipe(Effect.result);
     })));
 
     expect(surfaceQueries).toBeGreaterThanOrEqual(3);
@@ -33737,7 +33742,7 @@ describe("beat-game run lifecycle", () => {
           resolveHunt();
         }
       }).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           task.type === "transfer-container"
             ? Effect.fail(new BeatGameDriverError({
               operation: "task.transfer-container",
@@ -33916,7 +33921,7 @@ describe("beat-game run lifecycle", () => {
     driver.taskResolver = (task) =>
       Effect.sync(() => {
         driver.tasks.push(task);
-      }).pipe(Effect.zipRight(Effect.never));
+      }).pipe(Effect.andThen(Effect.never));
 
     await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
       const run = yield* beatGameWithDriver(driver, {
@@ -35380,7 +35385,7 @@ describe("beat-game run lifecycle", () => {
                 },
               });
               returnStaleObservation = true;
-            }).pipe(Effect.zipRight(Effect.sleep(250))),
+            }).pipe(Effect.andThen(Effect.sleep(250))),
         },
       }).pipe(Effect.flatMap(({ awaitCompletion }) => awaitCompletion)),
     ));
@@ -35441,10 +35446,10 @@ describe("beat-game run lifecycle", () => {
       }).pipe(
         Effect.flatMap((run) =>
           Effect.sleep(10).pipe(
-            Effect.zipRight(run.pause),
-            Effect.zipRight(Effect.sleep(20)),
-            Effect.zipRight(run.stop),
-            Effect.zipRight(run.awaitCompletion.pipe(Effect.either)),
+            Effect.andThen(run.pause),
+            Effect.andThen(Effect.sleep(20)),
+            Effect.andThen(run.stop),
+            Effect.andThen(run.awaitCompletion.pipe(Effect.result)),
           )
         ),
       ),
@@ -35500,8 +35505,8 @@ describe("beat-game run lifecycle", () => {
       }).pipe(
         Effect.flatMap((run) =>
           Effect.sleep(10).pipe(
-            Effect.zipRight(run.stop),
-            Effect.zipRight(run.awaitCompletion.pipe(Effect.either)),
+            Effect.andThen(run.stop),
+            Effect.andThen(run.awaitCompletion.pipe(Effect.result)),
           )
         ),
       ),
@@ -35530,19 +35535,19 @@ describe("beat-game run lifecycle", () => {
       }).pipe(
         Effect.flatMap((run) =>
           run.stop.pipe(
-            Effect.zipRight(run.awaitCompletion),
-            Effect.either,
+            Effect.andThen(run.awaitCompletion),
+            Effect.result,
           )
         ),
       ),
     ));
 
-    expect(Either.isLeft(exit)).toBe(true);
-    if (Either.isLeft(exit)) {
-      expect(exit.left).toBeInstanceOf(BeatGameCancelled);
-      expect(exit.left._tag).toBe("BeatGameCancelled");
-      if (exit.left._tag === "BeatGameCancelled") {
-        expect(exit.left.reason).toBe("stopped");
+    expect(Result.isFailure(exit)).toBe(true);
+    if (Result.isFailure(exit)) {
+      expect(exit.failure).toBeInstanceOf(BeatGameCancelled);
+      expect(exit.failure._tag).toBe("BeatGameCancelled");
+      if (exit.failure._tag === "BeatGameCancelled") {
+        expect(exit.failure.reason).toBe("stopped");
       }
     }
   });
