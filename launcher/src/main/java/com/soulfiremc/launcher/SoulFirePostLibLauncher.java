@@ -86,6 +86,7 @@ public final class SoulFirePostLibLauncher {
 
       var assetIndex = SFMinecraftDownloader.prepareFontAssets(basePath);
       KnotClient.main(new String[]{
+        "--graphicsBackend", "VULKAN",
         "--username", "SoulFire",
         "--assetsDir", basePath.resolve("assets").toAbsolutePath().toString(),
         "--assetIndex", assetIndex
