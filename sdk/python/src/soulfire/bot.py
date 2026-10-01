@@ -65,6 +65,7 @@ from .bot_pb2 import (
     LEFT_CLICK,
     SHIFT_LEFT_CLICK,
     BotCloseContainerRequest,
+    BotContainerButtonClickRequest,
     BotInfoRequest,
     BotInfoResponse,
     BotInventoryClickRequest,
@@ -1061,6 +1062,26 @@ class SoulFireBot:
         )
         yield from validate(
             lambda: _require_success(response.success, "", "Closing container failed")
+        )
+
+    @fn("SoulFireBot.click_container_button")
+    def click_container_button(
+        self, button_id: int, *, timeout_ms: int | None = None
+    ) -> EffectGen[None, SoulFireOperationError]:
+        response = yield from rpc(
+            "SoulFireBot.click_container_button",
+            lambda: self._bot_client.click_container_button(
+                BotContainerButtonClickRequest(
+                    instance_id=self.instance_id, bot_id=self.id, button_id=button_id
+                ),
+                headers=_action_headers(None, self._control_token),
+                timeout_ms=timeout_ms,
+            ),
+        )
+        yield from validate(
+            lambda: _require_success(
+                response.success, response.error, "Clicking a container button failed"
+            )
         )
 
     def acquire_control(

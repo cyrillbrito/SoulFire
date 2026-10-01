@@ -31,6 +31,7 @@ import {
   BotLiveStateSchema,
   BotRuntimeState,
   BotService,
+  type BotContainerButtonClickRequest,
   type RestartBotsRequest,
   type SetBotsDesiredStateRequest,
 } from "../src/generated/soulfire/bot_pb.js";
@@ -346,6 +347,57 @@ describe("SoulFireBot", () => {
           yield* lease.release();
           yield* bot.sendChat("unleased");
           expect(actionTokens).toEqual(["lease-token", null]);
+        }),
+      ),
+    ));
+
+  it("clicks container buttons with and without the control lease", () =>
+    Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const clicks: BotContainerButtonClickRequest[] = [];
+          const tokens: Array<string | null> = [];
+          const transport = createRouterTransport(({ service }) => {
+            service(BotLiveService, {
+              acquireBotControl() {
+                return { lease: { token: "lease-token" } };
+              },
+            });
+            service(BotService, {
+              clickContainerButton(request, context) {
+                clicks.push(request);
+                tokens.push(
+                  context.requestHeader.get("X-SoulFire-Control-Token"),
+                );
+                return request.buttonId < 3
+                  ? { success: true }
+                  : {
+                      success: false,
+                      error: "Invalid button ID for this container type",
+                    };
+              },
+            });
+          });
+          const bot = new SoulFireBot(
+            "instance-id",
+            "bot-id",
+            createClient(BotService, transport),
+            createClient(BotLiveService, transport),
+          );
+          yield* bot.clickContainerButton(1);
+          yield* bot.acquireControl();
+          yield* bot.clickContainerButton(2);
+          const error = yield* Effect.flip(bot.clickContainerButton(3));
+          expect(clicks).toMatchObject([
+            { instanceId: "instance-id", botId: "bot-id", buttonId: 1 },
+            { instanceId: "instance-id", botId: "bot-id", buttonId: 2 },
+            { instanceId: "instance-id", botId: "bot-id", buttonId: 3 },
+          ]);
+          expect(tokens).toEqual([null, "lease-token", "lease-token"]);
+          expect(error).toMatchObject({
+            operation: "SoulFireBot.clickContainerButton",
+            message: "Invalid button ID for this container type",
+          });
         }),
       ),
     ));

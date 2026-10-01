@@ -2207,6 +2207,36 @@ export class SoulFireBot {
   }
 
   /**
+   * Clicks a button of the open container: a stonecutter recipe or a loom
+   * pattern (its position in the menu's list), an enchanting option (0-2), or
+   * a lectern's previous page (1), next page (2) or take book (3). Villagers,
+   * beacons, crafters and other containers don't react to it on a vanilla
+   * server. Doesn't wait for the server, which may refuse the click (too few
+   * levels, no such recipe) without an error.
+   */
+  public clickContainerButton(
+    buttonId: number,
+    options?: CallOptions,
+  ): Effect.Effect<void, SoulFireOperationError> {
+    return Effect.gen({ self: this }, function* () {
+      const response = yield* rpc(
+        "SoulFireBot.clickContainerButton",
+        (signal) =>
+          this.botClient.clickContainerButton(
+            { instanceId: this.instanceId, botId: this.id, buttonId },
+            withSignal(this.#actionOptions(options), signal),
+          ),
+      );
+      yield* Effect.try({
+        try: () =>
+          requireSuccess(response, "Clicking a container button failed"),
+        catch: (cause) =>
+          operationError("SoulFireBot.clickContainerButton", cause),
+      });
+    });
+  }
+
+  /**
    * The server dialog on screen (Minecraft 1.21.6+), if any.
    */
   public dialog(
