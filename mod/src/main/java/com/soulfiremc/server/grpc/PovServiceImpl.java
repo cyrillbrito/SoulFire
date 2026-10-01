@@ -66,6 +66,7 @@ import java.util.concurrent.atomic.AtomicReference;
 public final class PovServiceImpl extends PovServiceGrpc.PovServiceImplBase {
   private final SoulFireServer server;
   private final ConcurrentHashMap<UUID, Session> sessions = new ConcurrentHashMap<>();
+  private final ConcurrentHashMap<BotConnection, Session> watchedBots = new ConcurrentHashMap<>();
 
   @Override
   public void watch(PovWatchRequest request, StreamObserver<PovFrame> response) {
@@ -80,14 +81,15 @@ public final class PovServiceImpl extends PovServiceGrpc.PovServiceImplBase {
       var bot = instance.botConnections().get(botId);
       if (bot == null) throw Status.FAILED_PRECONDITION.withDescription("Bot is offline").asRuntimeException();
       dimensions(request.getWidth(), request.getHeight());
-      var leases = instance.botControlLeaseManager();
-      var lease = leases.acquire(botId, user.getUniqueId(), Duration.ofSeconds(10));
+      // Watching takes no control lease (input that controls the bot does), but stays one session per bot.
+      var control = new PovControlLease(instance.botControlLeaseManager(), botId, user.getUniqueId());
       var observer = (ServerCallStreamObserver<PovFrame>) response;
-      var session = new Session(sessionId, bot, user, leases, lease.token(), observer,
+      var session = new Session(sessionId, bot, user, control, observer,
         request.getWidth(), request.getHeight(), request.getMaxFps(), request.getCodecsList());
-      if (sessions.putIfAbsent(sessionId, session) != null) {
-        leases.release(botId, user.getUniqueId(), lease.token());
-        throw Status.ALREADY_EXISTS.asRuntimeException();
+      if (sessions.putIfAbsent(sessionId, session) != null) throw Status.ALREADY_EXISTS.asRuntimeException();
+      if (watchedBots.putIfAbsent(bot, session) != null) {
+        sessions.remove(sessionId, session);
+        throw Status.RESOURCE_EXHAUSTED.withDescription("Bot is already watched").asRuntimeException();
       }
       // The input heartbeat owns this long-lived stream's timeout.
       ServiceRequestContext.current().clearRequestTimeout();
@@ -123,7 +125,8 @@ public final class PovServiceImpl extends PovServiceGrpc.PovServiceImplBase {
     if (request.hasClipboard() && request.getClipboard().length() > 16_384) throw new IllegalArgumentException("Clipboard too large");
     synchronized (session) {
       if (request.getSequence() <= session.inputSequence) throw Status.ABORTED.withDescription("Stale input batch").asRuntimeException();
-      session.leases.renew(session.bot.accountProfileId(), session.owner, session.token, Duration.ofSeconds(10));
+      // Captured input holds the lease until released; other input holds it for its batch.
+      if (controls(request)) session.control.hold();
       session.bot.minecraft().submit(() -> {
         if (session.closed.get()) return;
 
@@ -149,6 +152,7 @@ public final class PovServiceImpl extends PovServiceGrpc.PovServiceImplBase {
           session.clipboard.set(new ClipboardUpdate(request.getSequence(), session.bot.minecraft().keyboardHandler.getClipboard()));
         }
       }).get(5, TimeUnit.SECONDS);
+      if (!request.getCaptured()) session.control.release();
       session.inputSequence = request.getSequence();
       session.width = even(request.getWidth());
       session.height = even(request.getHeight());
@@ -221,6 +225,12 @@ public final class PovServiceImpl extends PovServiceGrpc.PovServiceImplBase {
       .streamTimeout(Duration.ofSeconds(5)).build();
   }
 
+  /// Captured input, Escape and clipboard writes act on the bot. Heartbeats and stream feedback don't,
+  /// and input events need capture.
+  static boolean controls(PovInputRequest request) {
+    return request.getCaptured() || request.getEscape() || request.hasClipboard();
+  }
+
   private static int even(int size) { return (size + 1) & ~1; }
 
   private static void dimensions(int width, int height) {
@@ -262,8 +272,7 @@ public final class PovServiceImpl extends PovServiceGrpc.PovServiceImplBase {
     private final SoulFireUser user;
     private final String inputToken = UUID.randomUUID().toString() + UUID.randomUUID();
     private volatile WebSocketWriter inputChannel;
-    private final BotControlLeaseManager leases;
-    private final String token;
+    private final PovControlLease control;
     private final ServerCallStreamObserver<PovFrame> observer;
     private final AtomicBoolean rendering = new AtomicBoolean();
     private final AtomicBoolean closed = new AtomicBoolean();
@@ -290,9 +299,9 @@ public final class PovServiceImpl extends PovServiceGrpc.PovServiceImplBase {
     private int targetWidth;
     private int targetHeight;
 
-    private Session(UUID id, BotConnection bot, SoulFireUser user, BotControlLeaseManager leases, String token,
+    private Session(UUID id, BotConnection bot, SoulFireUser user, PovControlLease control,
                     ServerCallStreamObserver<PovFrame> observer, int width, int height, int maxFps, List<String> codecs) {
-      this.id = id; this.bot = bot; this.user = user; this.owner = user.getUniqueId(); this.leases = leases; this.token = token;
+      this.id = id; this.bot = bot; this.user = user; this.owner = user.getUniqueId(); this.control = control;
       this.observer = observer; this.width = even(width); this.height = even(height);
       this.format = codecs.contains("av1") ? PovVideoEncoder.Format.AV1 : codecs.contains("h264-high") ? PovVideoEncoder.Format.HIGH : PovVideoEncoder.Format.BASELINE;
       this.maxFps = Math.clamp(maxFps == 0 ? 60 : maxFps, 15, 120);
@@ -381,6 +390,7 @@ public final class PovServiceImpl extends PovServiceGrpc.PovServiceImplBase {
     private void close() {
       if (!closed.compareAndSet(false, true)) return;
       sessions.remove(id, this);
+      watchedBots.remove(bot, this);
       if (inputChannel != null) inputChannel.close();
       synchronized (encoderLock) {
         if (encoder != null) { encoder.close(); encoder = null; }
@@ -390,8 +400,7 @@ public final class PovServiceImpl extends PovServiceGrpc.PovServiceImplBase {
         bot.minecraft().keyboardHandler.setClipboard("");
         if (!rendering.get()) readback.close();
       });
-      try { leases.release(bot.accountProfileId(), owner, token); }
-      catch (BotControlLeaseManager.InvalidLeaseException ignored) { /* Expired leases already release ownership. */ }
+      control.close();
     }
   }
 
