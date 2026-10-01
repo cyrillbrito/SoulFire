@@ -259,7 +259,8 @@ public final class SFBlockHelpers {
       return isPassageBlockOpen(state);
     }
 
-    return false;
+    // A ladder only collides along the wall it hangs on
+    return block == Blocks.LADDER;
   }
 
   private static boolean computeOpenablePassageBlock(BlockState state) {

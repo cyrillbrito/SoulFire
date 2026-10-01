@@ -28,6 +28,8 @@ import com.soulfiremc.server.pathfinding.graph.MinecraftGraph;
 import com.soulfiremc.server.pathfinding.graph.actions.movement.*;
 import com.soulfiremc.server.util.SFBlockHelpers;
 import lombok.extern.slf4j.Slf4j;
+import net.minecraft.tags.BlockTags;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import org.checkerframework.checker.nullness.qual.Nullable;
 
@@ -436,6 +438,15 @@ public final class SimpleMovement extends GraphAction implements Cloneable {
       ) {
         if (simpleMovement.allowBlockActions) {
           simpleMovement.noNeedToBreak[blockArrayIndex] = true;
+        }
+
+        if (
+          key.equals(simpleMovement.targetFeetBlock)
+            && simpleMovement.modifier != MovementModifier.JUMP_UP_BLOCK
+            && (blockState.is(BlockTags.CLIMBABLE) || blockState.is(Blocks.LADDER))
+        ) {
+          // The player holds on to a ladder or vine instead of falling through it
+          simpleMovement.supportInTargetBlock = true;
         }
 
         return MinecraftGraph.SubscriptionSingleResult.CONTINUE;

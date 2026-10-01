@@ -207,15 +207,18 @@ public final class MovementAction implements WorldAction {
 
     var botPosition = clientEntity.position();
     var movingInFluid = clientEntity.isInWater() || clientEntity.isInLava();
+    // A climbing player slides down unless it climbs (jumps) back up to the target
+    var climbing = clientEntity.onClimbable();
     var needsJump = needsUpwardInput(
       botPosition.y,
       targetMiddleBlock.y,
       movingInFluid
-    );
+    ) || (climbing && botPosition.y < targetMiddleBlock.y);
     if (needsJump) {
       // Fluid movement never reaches the normal grounded-gravity state. Waiting
       // for it here leaves the bot submerged and unable to swim up one block.
-      if (!movingInFluid && !wasStill) {
+      // Neither does a climbing player.
+      if (!movingInFluid && !climbing && !wasStill) {
         var deltaMovementXZ = VectorHelper.toVector2dXZ(clientEntity.getDeltaMovement());
         var isBaseGravity = DoubleMath.fuzzyEquals(clientEntity.getDeltaMovement().y, -clientEntity.getGravity(), 0.1);
         var isStill = deltaMovementXZ.equals(0, 0);
@@ -228,7 +231,7 @@ public final class MovementAction implements WorldAction {
         }
       }
 
-      if (movingInFluid || shouldJump()) {
+      if (movingInFluid || climbing || shouldJump()) {
         connection.controlState().jump(true);
       }
     }

@@ -169,6 +169,15 @@ final class MovementActionTest {
   }
 
   @Test
+  void aLadderIsClimbedInsideNotStoodOn() {
+    var cell = new SFVec3i(0, 10, 0);
+    var ladder = Blocks.LADDER.defaultBlockState();
+
+    assertEquals(new Vec3(0.5, 10, 0.5), VectorHelper.standingMiddleOfBlock(cell, ladder));
+    assertTrue(MovementAction.hasValidTargetStates(ladder, ladder, ladder));
+  }
+
+  @Test
   void acceptsWaterWithoutASolidFloorAsASwimmingTarget() {
     assertTrue(MovementAction.hasValidTargetStates(
       Blocks.WATER.defaultBlockState(),
