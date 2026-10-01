@@ -97,7 +97,7 @@ public final class SimpleMovement extends GraphAction implements Cloneable {
         case JUMP_UP_BLOCK, NORMAL, FALL_1 -> true;
         case FALL_2, FALL_3 -> false;
       };
-    this.allowInteractablePassage = !diagonal && modifier == MovementModifier.NORMAL;
+    this.allowInteractablePassage = allowBlockActions;
 
     var arraySize = registerRequiredFreeBlocks(blockSubscribers);
     if (allowBlockActions) {
@@ -185,9 +185,10 @@ public final class SimpleMovement extends GraphAction implements Cloneable {
       case FALL_1 -> {
         var fallOneBlockIndex = blockIndexCounter++;
         var fallFree = MovementModifier.FALL_1.offset(targetEdge);
+        var interactionSideHint = diagonal ? null : direction.toSkyDirection().opposite().blockFace();
 
         blockSubscribers.subscribe(fallFree,
-          new MovementFreeSubscription(fallOneBlockIndex, BlockFace.TOP, BodyPart.FEET, false, null));
+          new MovementFreeSubscription(fallOneBlockIndex, BlockFace.TOP, BodyPart.FEET, false, interactionSideHint));
 
         // Require free blocks to fall into the target position
         if (allowBlockActions) {
