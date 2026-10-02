@@ -30,6 +30,7 @@ import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.CarpetBlock;
 import net.minecraft.world.level.block.DoorBlock;
 import net.minecraft.world.level.block.FallingBlock;
+import net.minecraft.world.level.block.FarmlandBlock;
 import net.minecraft.world.level.block.FenceGateBlock;
 import net.minecraft.world.level.block.SlabBlock;
 import net.minecraft.world.level.block.SnowLayerBlock;
@@ -40,6 +41,8 @@ import net.minecraft.world.level.block.state.properties.Half;
 import net.minecraft.world.level.block.state.properties.SlabType;
 import net.minecraft.world.level.material.Fluid;
 import net.minecraft.world.level.material.Fluids;
+import net.minecraft.world.phys.shapes.BooleanOp;
+import net.minecraft.world.phys.shapes.Shapes;
 import net.minecraft.world.phys.shapes.VoxelShape;
 
 @SuppressWarnings("BooleanMethodIsAlwaysInverted")
@@ -48,6 +51,8 @@ public final class SFBlockHelpers {
     Block.BLOCK_STATE_REGISTRY, blockState -> blockState.getCollisionShape(EmptyBlockGetter.INSTANCE, BlockPos.ZERO));
   public static final IDBooleanMap<BlockState> COLLISION_SHAPE_TOP_FACE_FULL = new IDBooleanMap<>(
     Block.BLOCK_STATE_REGISTRY, blockState -> Block.isFaceFull(RAW_COLLISION_SHAPES.get(blockState), Direction.UP));
+  public static final IDBooleanMap<BlockState> RAISED_FULL_FLOOR_BLOCK = new IDBooleanMap<>(
+    Block.BLOCK_STATE_REGISTRY, SFBlockHelpers::computeRaisedFullFloorBlock);
   public static final IDBooleanMap<BlockState> WALKABLE_FLOOR_BLOCK = new IDBooleanMap<>(
     Block.BLOCK_STATE_REGISTRY, SFBlockHelpers::computeWalkableFloorBlock);
   public static final IDBooleanMap<BlockState> FEET_SUPPORT_IN_BLOCK = new IDBooleanMap<>(
@@ -56,6 +61,9 @@ public final class SFBlockHelpers {
     Block.BLOCK_STATE_REGISTRY, SFBlockHelpers::computeBodyPassableBlock);
   public static final IDBooleanMap<BlockState> OPENABLE_PASSAGE_BLOCK = new IDBooleanMap<>(
     Block.BLOCK_STATE_REGISTRY, SFBlockHelpers::computeOpenablePassageBlock);
+
+  /// Farmland and dirt paths are 15/16 of a block high.
+  private static final double RAISED_FLOOR_MINIMUM_HEIGHT = 15.0 / 16.0;
 
   private SFBlockHelpers() {}
 
@@ -187,6 +195,21 @@ public final class SFBlockHelpers {
     return COLLISION_SHAPE_TOP_FACE_FULL.get(blockState);
   }
 
+  /// A full block with a slightly lower top, like farmland and dirt paths.
+  public static boolean isRaisedFullFloorBlock(BlockState blockState) {
+    return RAISED_FULL_FLOOR_BLOCK.get(blockState);
+  }
+
+  /// Whether a player standing on this block has its feet in the block above.
+  public static boolean isFloorBelowFeet(BlockState blockState) {
+    return isTopFullBlock(blockState) || isRaisedFullFloorBlock(blockState);
+  }
+
+  /// Farmland, which a fall onto can trample to dirt.
+  public static boolean breaksWhenFallenOn(BlockState blockState) {
+    return blockState.getBlock() instanceof FarmlandBlock;
+  }
+
   public static boolean isDiggable(Block type) {
     return type.defaultDestroyTime() != -1;
   }
@@ -213,6 +236,10 @@ public final class SFBlockHelpers {
       return false;
     }
 
+    if (computeRaisedFullFloorBlock(state)) {
+      return true;
+    }
+
     if (state.is(BlockTags.STAIRS)) {
       return true;
     }
@@ -222,6 +249,23 @@ public final class SFBlockHelpers {
     }
 
     return false;
+  }
+
+  private static boolean computeRaisedFullFloorBlock(BlockState state) {
+    if (affectsTouchMovementSpeed(state.getBlock())) {
+      return false;
+    }
+
+    var shape = RAW_COLLISION_SHAPES.get(state);
+    if (shape.isEmpty()) {
+      return false;
+    }
+
+    // The whole cell, not only the top: big dripleaf has a 15/16 top too
+    var top = shape.max(Direction.Axis.Y);
+    return top >= RAISED_FLOOR_MINIMUM_HEIGHT
+      && top < 1
+      && !Shapes.joinIsNotEmpty(shape, Shapes.box(0, 0, 0, 1, top, 1), BooleanOp.NOT_SAME);
   }
 
   private static boolean computeFeetSupportInBlock(BlockState state) {

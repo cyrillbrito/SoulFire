@@ -32,6 +32,12 @@ import com.soulfiremc.server.pathfinding.graph.constraint.PathConstraint;
 import com.soulfiremc.server.util.SFBlockHelpers;
 import com.soulfiremc.server.util.SFHelpers;
 import lombok.extern.slf4j.Slf4j;
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.entity.Avatar;
+import net.minecraft.world.level.BlockGetter;
+import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.phys.shapes.BooleanOp;
+import net.minecraft.world.phys.shapes.Shapes;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -588,6 +594,73 @@ public final class PathExecutor implements ControlTask {
     ));
   }
 
+  /// The node of a player whose feet are in `feetBlock`, or the one above if
+  /// the feet are sunk into a floor (farmland, dirt paths).
+  static SFVec3i playerNode(BlockGetter level, BlockPos feetBlock) {
+    var node = SFVec3i.fromInt(feetBlock);
+    return SFBlockHelpers.isFloorBelowFeet(level.getBlockState(feetBlock))
+      ? node.add(0, 1, 0)
+      : node;
+  }
+
+  /// The node the bot stands in. On farmland `blockPosition()` is one below it.
+  public static SFVec3i playerNode(BotConnection connection) {
+    return playerNode(
+      Objects.requireNonNull(connection.minecraft().level),
+      connection.minecraft().player.position()
+    );
+  }
+
+  /// The node of a player at `position`. A player pressed against a fence post
+  /// can have its feet over the post's cell; then it's the nearest free cell.
+  static SFVec3i playerNode(BlockGetter level, Vec3 position) {
+    var feet = BlockPos.containing(position);
+    var node = playerNode(level, feet);
+    if (fitsCentered(level, node, position.y)) {
+      return node;
+    }
+    SFVec3i best = null;
+    var bestDistance = Double.MAX_VALUE;
+    var halfWidth = Avatar.STANDING_DIMENSIONS.width() / 2;
+    for (var dx = -1; dx <= 1; dx++) {
+      for (var dz = -1; dz <= 1; dz++) {
+        if (dx == 0 && dz == 0) {
+          continue;
+        }
+        var offX = position.x - (feet.getX() + dx + 0.5);
+        var offZ = position.z - (feet.getZ() + dz + 0.5);
+        if (Math.abs(offX) >= 0.5 + halfWidth || Math.abs(offZ) >= 0.5 + halfWidth) {
+          continue; // the body doesn't reach into this cell
+        }
+        var candidate = playerNode(level, feet.offset(dx, 0, dz));
+        var distance = offX * offX + offZ * offZ;
+        if (distance < bestDistance && fitsCentered(level, candidate, Math.max(position.y, candidate.y))) {
+          best = candidate;
+          bestDistance = distance;
+        }
+      }
+    }
+    return best == null ? node : best;
+  }
+
+  /// Whether a player centered in `node`'s cell, feet at `y`, collides with nothing.
+  private static boolean fitsCentered(BlockGetter level, SFVec3i node, double y) {
+    var box = Avatar.STANDING_DIMENSIONS
+      .makeBoundingBox(new Vec3(node.x + 0.5, y, node.z + 0.5))
+      .deflate(1.0E-7);
+    var body = Shapes.create(box);
+    for (var pos : BlockPos.betweenClosed(
+      BlockPos.containing(box.minX, box.minY - 1, box.minZ),
+      BlockPos.containing(box.maxX, box.maxY, box.maxZ)
+    )) {
+      var shape = level.getBlockState(pos).getCollisionShape(level, pos);
+      if (!shape.isEmpty() && Shapes.joinIsNotEmpty(shape.move(pos), body, BooleanOp.AND)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   private void finishPrefetchedRoute(
     CompletableFuture<PlannedRoute> future
   ) {
@@ -601,9 +674,7 @@ public final class PathExecutor implements ControlTask {
     partialRouteMetadata = null;
     awaitingPath = false;
 
-    var playerStart = SFVec3i.fromInt(
-      connection.minecraft().player.blockPosition()
-    );
+    var playerStart = playerNode(connection);
     if (!Objects.equals(expectedStart, playerStart)) {
       log.debug(
         "Discarding a prefetched route because the player moved from {} to {}",
@@ -765,13 +836,8 @@ public final class PathExecutor implements ControlTask {
       var inventory =
         new ProjectedInventory(clientEntity.getInventory(), clientEntity, pathConstraint);
       var start = requestedStart == null
-        ? SFVec3i.fromInt(clientEntity.blockPosition())
+        ? playerNode(level, clientEntity.position())
         : requestedStart;
-      var startBlockState = level.getBlockState(start.toBlockPos());
-      if (requestedStart == null && SFBlockHelpers.isTopFullBlock(startBlockState)) {
-        // If the player is inside a block, move them up
-        start = start.add(0, 1, 0);
-      }
 
       var routeFinder =
         new RouteFinder(

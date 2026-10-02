@@ -24,6 +24,8 @@ import net.minecraft.world.level.block.Blocks;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -90,5 +92,41 @@ final class SFBlockHelpersTest {
       FLOOR,
       Blocks.SAND.defaultBlockState()
     ));
+  }
+
+  @Test
+  void farmlandAndDirtPathsAreWalkableRaisedFloors() {
+    for (var block : List.of(Blocks.FARMLAND, Blocks.DIRT_PATH)) {
+      var state = block.defaultBlockState();
+      assertTrue(SFBlockHelpers.isRaisedFullFloorBlock(state), block.toString());
+      assertTrue(SFBlockHelpers.isWalkableFloorBlock(state), block.toString());
+      assertTrue(SFBlockHelpers.isFloorBelowFeet(state), block.toString());
+    }
+  }
+
+  @Test
+  void onlyNearlyFullSquareTopsAreRaisedFloors() {
+    // Big dripleaf has a 15/16 top too, but tips over
+    for (var block : List.of(
+      Blocks.STONE,
+      Blocks.SOUL_SAND,
+      Blocks.MUD,
+      Blocks.CHEST,
+      Blocks.OAK_SLAB,
+      Blocks.HONEY_BLOCK,
+      Blocks.BIG_DRIPLEAF
+    )) {
+      assertFalse(
+        SFBlockHelpers.isRaisedFullFloorBlock(block.defaultBlockState()),
+        block.toString()
+      );
+    }
+  }
+
+  @Test
+  void onlyFarmlandBreaksWhenFallenOn() {
+    assertTrue(SFBlockHelpers.breaksWhenFallenOn(Blocks.FARMLAND.defaultBlockState()));
+    assertFalse(SFBlockHelpers.breaksWhenFallenOn(Blocks.DIRT_PATH.defaultBlockState()));
+    assertFalse(SFBlockHelpers.breaksWhenFallenOn(Blocks.STONE.defaultBlockState()));
   }
 }

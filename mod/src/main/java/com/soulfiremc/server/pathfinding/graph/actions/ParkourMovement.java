@@ -38,6 +38,8 @@ public final class ParkourMovement extends GraphAction implements Cloneable {
   private final ParkourDirection direction;
   private final int gapLength;
   private final SFVec3i targetFeetBlock;
+  // Mutable
+  private boolean landsOnFarmland;
 
   private ParkourMovement(ParkourDirection direction, int gapLength, SubscriptionConsumer blockSubscribers) {
     super(direction.actionDirection);
@@ -114,7 +116,7 @@ public final class ParkourMovement extends GraphAction implements Cloneable {
       0,
       false,
       actionDirection,
-      Costs.gapJumpCost(gapLength),
+      Costs.gapJumpCost(gapLength) + (landsOnFarmland ? Costs.TRAMPLE_FARMLAND : 0),
       List.of(new GapJumpAction(node, absoluteTargetFeetBlock))
     ));
   }
@@ -244,6 +246,8 @@ public final class ParkourMovement extends GraphAction implements Cloneable {
         absoluteKey.toBlockPos(),
         blockState
       )) {
+        // Landing a jump on farmland can trample it
+        parkourMovement.landsOnFarmland = SFBlockHelpers.breaksWhenFallenOn(blockState);
         return MinecraftGraph.SubscriptionSingleResult.CONTINUE;
       }
 

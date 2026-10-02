@@ -581,6 +581,13 @@ public final class SimpleMovement extends GraphAction implements Cloneable {
         absoluteKey.toBlockPos(),
         blockState
       )) {
+        // Dropping onto farmland can trample it
+        if (
+          SFBlockHelpers.breaksWhenFallenOn(blockState)
+            && simpleMovement.modifier.fallDistance() > 0
+        ) {
+          simpleMovement.cost += Costs.TRAMPLE_FARMLAND;
+        }
         simpleMovement.floorHasSupport = true;
         return MinecraftGraph.SubscriptionSingleResult.CONTINUE;
       }

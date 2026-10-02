@@ -645,11 +645,12 @@ public final class CollectBlocksTaskProvider
     private boolean rejectStalledAdjacentPositions(
       Set<SFVec3i> attemptedTargets
     ) {
-      var player = context.bot().minecraft().player;
-      if (player == null) {
+      if (context.bot().minecraft().player == null
+        || context.bot().minecraft().level == null) {
         return false;
       }
-      var playerPosition = SFVec3i.fromInt(player.blockPosition());
+      // Not blockPosition(), which is one below the node on farmland
+      var playerPosition = PathExecutor.playerNode(context.bot());
       var rejectedAny = false;
       for (var target : stalledTargets(
         attemptedTargets,
