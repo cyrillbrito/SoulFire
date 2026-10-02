@@ -48,6 +48,7 @@ import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -57,9 +58,11 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.PriorityQueue;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.Callable;
+import java.util.function.Predicate;
 import java.util.stream.StreamSupport;
 
 /// Structured, bounded queries over the world currently observed by a bot.
@@ -220,25 +223,14 @@ public final class WorldServiceImpl extends WorldServiceGrpc.WorldServiceImplBas
     var player = Objects.requireNonNull(bot.minecraft().player);
     var bounds = bounds(request.getRegion(), level, player.position());
     var selector = request.getSelector();
-    var matches = new ArrayList<BlockMatch>();
-    for (var x = bounds.minX; x <= bounds.maxX; x++) {
-      for (var y = bounds.minY; y <= bounds.maxY; y++) {
-        for (var z = bounds.minZ; z <= bounds.maxZ; z++) {
-          var position = new BlockPos(x, y, z);
-          if (!level.hasChunkAt(position)
-            || !bounds.contains(position)
-            || !matchesBlock(level, position, level.getBlockState(position), selector, player)) {
-            continue;
-          }
-          matches.add(new BlockMatch(
-            position,
-            position.distToCenterSqr(bounds.origin.x, bounds.origin.y, bounds.origin.z)
-          ));
-        }
-      }
-    }
-    matches.sort(blockComparator(request.getSort()));
-    var page = page(matches, request.getPageSize(), request.getPageToken());
+    var page = blockPage(
+      bounds,
+      request.getSort(),
+      request.getPageSize(),
+      request.getPageToken(),
+      position -> level.hasChunkAt(position)
+        && matchesBlock(level, position, level.getBlockState(position), selector, player)
+    );
     return QueryBlocksResponse.newBuilder()
       .addAllBlocks(page.values.stream()
         .map(match -> MinecraftDomainMapper.block(
@@ -878,20 +870,50 @@ public final class WorldServiceImpl extends WorldServiceGrpc.WorldServiceImplBas
       && (!range.hasMaximum() || value <= range.getMaximum());
   }
 
-  private static Comparator<BlockMatch> blockComparator(QuerySort sort) {
+  /// A total order, so a page token can resume right after the last block it returned.
+  static Comparator<BlockMatch> blockComparator(QuerySort sort) {
+    var xyz = Comparator
+      .comparingInt((BlockMatch match) -> match.position.getX())
+      .thenComparingInt(match -> match.position.getY())
+      .thenComparingInt(match -> match.position.getZ());
     return switch (sort) {
       case QUERY_SORT_FARTHEST ->
-        Comparator.comparingDouble(BlockMatch::distanceSquared).reversed();
-      case QUERY_SORT_XYZ -> Comparator
-        .comparingInt((BlockMatch match) -> match.position.getX())
-        .thenComparingInt(match -> match.position.getY())
-        .thenComparingInt(match -> match.position.getZ());
+        Comparator.comparingDouble(BlockMatch::distanceSquared).reversed().thenComparing(xyz);
+      case QUERY_SORT_XYZ -> xyz;
       case QUERY_SORT_NEAREST, QUERY_SORT_UNSPECIFIED, UNRECOGNIZED ->
-        Comparator.comparingDouble(BlockMatch::distanceSquared)
-          .thenComparingInt(match -> match.position.getX())
-          .thenComparingInt(match -> match.position.getY())
-          .thenComparingInt(match -> match.position.getZ());
+        Comparator.comparingDouble(BlockMatch::distanceSquared).thenComparing(xyz);
     };
+  }
+
+  /// One page of the blocks in `bounds` that `matches` accepts, after the block `pageToken` names.
+  static Page<BlockMatch> blockPage(
+    QueryBounds bounds,
+    QuerySort sort,
+    int requestedSize,
+    String pageToken,
+    Predicate<BlockPos> matches
+  ) {
+    var page = new BlockPage(
+      blockComparator(sort),
+      pageSize(requestedSize),
+      decodeBlockCursor(pageToken, bounds.origin)
+    );
+    for (var x = bounds.minX; x <= bounds.maxX; x++) {
+      for (var y = bounds.minY; y <= bounds.maxY; y++) {
+        for (var z = bounds.minZ; z <= bounds.maxZ; z++) {
+          var position = new BlockPos(x, y, z);
+          var distanceSquared = position.distToCenterSqr(bounds.origin.x, bounds.origin.y, bounds.origin.z);
+          if (page.wants(position, distanceSquared) && bounds.contains(position) && matches.test(position)) {
+            page.add(new BlockMatch(position, distanceSquared));
+          }
+        }
+      }
+    }
+    return page.result();
+  }
+
+  static BlockMatch blockMatch(BlockPos position, Vec3 origin) {
+    return new BlockMatch(position, position.distToCenterSqr(origin.x, origin.y, origin.z));
   }
 
   private static Comparator<EntityMatch> entityComparator(QuerySort sort) {
@@ -920,11 +942,44 @@ public final class WorldServiceImpl extends WorldServiceGrpc.WorldServiceImplBas
         .withDescription("page_token is outside the result set")
         .asRuntimeException();
     }
-    var size = requestedSize <= 0 ? 100 : Math.min(requestedSize, MAX_PAGE_SIZE);
+    var size = pageSize(requestedSize);
     var end = Math.min(values.size(), offset + size);
     return new Page<>(
       List.copyOf(values.subList(offset, end)),
       end < values.size() ? encodeOffset(end) : ""
+    );
+  }
+
+  static int pageSize(int requestedSize) {
+    return requestedSize <= 0 ? 100 : Math.min(requestedSize, MAX_PAGE_SIZE);
+  }
+
+  /// A block page token holds the position of the last block returned.
+  static @Nullable BlockMatch decodeBlockCursor(String token, Vec3 origin) {
+    if (token.isBlank()) {
+      return null;
+    }
+    try {
+      var parts = new String(Base64.getUrlDecoder().decode(token), StandardCharsets.UTF_8).split(",", -1);
+      if (parts.length != 3) {
+        throw new IllegalArgumentException("Expected x,y,z");
+      }
+      return blockMatch(
+        new BlockPos(Integer.parseInt(parts[0]), Integer.parseInt(parts[1]), Integer.parseInt(parts[2])),
+        origin
+      );
+    } catch (RuntimeException exception) {
+      throw Status.INVALID_ARGUMENT
+        .withDescription("Invalid page_token")
+        .withCause(exception)
+        .asRuntimeException();
+    }
+  }
+
+  static String encodeBlockCursor(BlockMatch last) {
+    var position = last.position;
+    return Base64.getUrlEncoder().withoutPadding().encodeToString(
+      (position.getX() + "," + position.getY() + "," + position.getZ()).getBytes(StandardCharsets.UTF_8)
     );
   }
 
@@ -1002,13 +1057,57 @@ public final class WorldServiceImpl extends WorldServiceGrpc.WorldServiceImplBas
       .asRuntimeException();
   }
 
-  private record BlockMatch(BlockPos position, double distanceSquared) {}
+  record BlockMatch(BlockPos position, double distanceSquared) {}
+
+  /// The first `size` blocks after `after` in `order`, kept while scanning a region, so a page
+  /// costs one scan and no sort of every match.
+  static final class BlockPage {
+    private final Comparator<BlockMatch> order;
+    private final int size;
+    private final @Nullable BlockMatch after;
+    /// Up to `size + 1` blocks, the last in `order` at the head; the extra one means more follow.
+    private final PriorityQueue<BlockMatch> kept;
+
+    BlockPage(Comparator<BlockMatch> order, int size, @Nullable BlockMatch after) {
+      this.order = order;
+      this.size = size;
+      this.after = after;
+      this.kept = new PriorityQueue<>(order.reversed());
+    }
+
+    /// Whether `match` would be on this page if it matches, checked before the costlier matching.
+    boolean wants(BlockPos position, double distanceSquared) {
+      if (after == null && kept.size() <= size) {
+        return true;
+      }
+      var match = new BlockMatch(position, distanceSquared);
+      return (after == null || order.compare(match, after) > 0)
+        && (kept.size() <= size || order.compare(match, Objects.requireNonNull(kept.peek())) < 0);
+    }
+
+    void add(BlockMatch match) {
+      kept.add(match);
+      if (kept.size() > size + 1) {
+        kept.poll();
+      }
+    }
+
+    Page<BlockMatch> result() {
+      var values = new ArrayList<>(kept);
+      values.sort(order);
+      if (values.size() <= size) {
+        return new Page<>(List.copyOf(values), "");
+      }
+      var page = List.copyOf(values.subList(0, size));
+      return new Page<>(page, encodeBlockCursor(page.getLast()));
+    }
+  }
 
   private record EntityMatch(Entity entity, double distanceSquared) {}
 
-  private record Page<T>(List<T> values, String nextToken) {}
+  record Page<T>(List<T> values, String nextToken) {}
 
-  private record QueryBounds(
+  record QueryBounds(
     int minX,
     int minY,
     int minZ,
