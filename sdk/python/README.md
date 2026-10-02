@@ -16,15 +16,14 @@ python -m pip install soulfire
 The distribution `effect-python==0.1.0a2` provides the `effect_py` module.
 The SDK pins this alpha release so runtime changes can be tested together.
 
-## Connect and run a workflow
+## Quickstart
 
-SDK methods return `Effect[A, E, R]`. `A` is the result, `E` is the expected
-failure type, and `R` records required services. Constructing an effect does
-not send a request. Execute the complete workflow at the application boundary.
+Use managed installation for scripts. `SoulFire.create_bot` downloads SoulFire
+and Java when needed, creates an instance and offline account, starts the bot,
+and waits for its initial player snapshot.
 
 ```python
 import asyncio
-import os
 
 from effect_py import EffectGen, Scope, gen, run_async, scoped, sync
 from soulfire import SoulFire, SoulFireOperationError
@@ -32,27 +31,90 @@ from soulfire import SoulFire, SoulFireOperationError
 
 @gen
 def program() -> EffectGen[None, SoulFireOperationError, Scope]:
-    client = yield from SoulFire.connect(
-        "https://soulfire.example.com",
-        token=os.environ["SOULFIRE_TOKEN"],
+    bot = yield from SoulFire.create_bot(
+        server="localhost:25565",
+        username="Builder",
     )
-    bot = client.instance("instance-uuid").bot("bot-uuid")
-    yield from bot.start()
     yield from bot.chat.send("Hello from SoulFire")
-    yield from bot.events().run_for_each(lambda event: sync(lambda: print(event)))
+    yield from sync(lambda: print(bot.state.player))
 
 
 asyncio.run(run_async(scoped(program).or_die()))
 ```
 
-The handshake validates API compatibility, capabilities, and required plugins.
-The scope closes transports, subscriptions, and acquired resources. In an
-existing async application, use `await run_async(scoped(program).or_die())`.
+Point `server` at a Minecraft server that accepts offline accounts. The default
+`auth` is `"offline"`. No SoulFire URL, token, instance ID, or bot ID is needed.
+Downloads and server data stay in `.soulfire` under the working directory.
+Set `installation={"directory": "...", "version": "..."}` to choose a directory
+and pin a release.
+
+SDK methods return lazy `Effect[A, E, R]` operations. Execute the complete
+workflow at the application boundary. Keep bot work inside the scope: it owns
+subscriptions, transports, and the managed process. For an existing SoulFire
+server, cleanup stops bots started by this scope and leaves previously running
+bots running. Readiness has a 30-second deadline; set `ready_timeout` in seconds
+to change it.
 
 Use `run_async_exit` to inspect a workflow's result without converting expected
 errors into exceptions. `or_die()` belongs at a boundary where no recovery
-remains. Use `run_sync` for effects that contain only synchronous operations.
-RPCs, fibers, streams, and deadlines require the async runtime.
+remains. RPCs, fibers, streams, and deadlines require the async runtime.
+
+## Reuse named instances and bots
+
+For several bots, install once and get resources by name:
+
+```python
+client = yield from SoulFire.install()
+instance = yield from client.get_or_create_instance("farm", server="localhost:25565")
+builder = yield from instance.get_or_create_bot("Builder")
+miner = yield from instance.get_or_create_bot("Miner")
+```
+
+Instance names belong to the authenticated SoulFire user. Bot names belong to
+one instance. Repeated calls reuse accounts and preserve their configuration.
+Conflicting addresses, usernames, or authentication methods fail explicitly.
+
+`create_bot` uses the Minecraft server address as the instance name and the
+username as the bot name. Set `instance_name` or `name` to choose other names.
+Use `get_or_create_bot("Builder", start=False)` to configure an account before
+starting it, then use `yield from bot.connect()` when ready.
+
+Microsoft accounts need a device-code sign-in on their first creation:
+
+```python
+bot = yield from instance.get_or_create_bot("main-account", auth="microsoft")
+```
+
+The default handler prints the sign-in URL and code. Later calls reuse the saved
+account. Supply `on_device_code` to handle the code with an Effect callback.
+
+## Collect blocks and select items
+
+`collect` waits for completion and cancels unfinished server work if interrupted.
+Use an item or block ID, or prefix a tag with `#`. IDs default to `minecraft`.
+
+```python
+yield from bot.collect("#logs", count=8)
+logs = yield from bot.inventory.count("#logs")
+```
+
+Use `bot.tasks.collect_blocks` when you need a durable task handle. Structured
+selectors remain available for advanced inventory queries.
+
+## Connect to an existing SoulFire server
+
+```python
+client = yield from SoulFire.connect(
+    "https://soulfire.example.com",
+    token="your-api-token",
+)
+instance = yield from client.get_or_create_instance("farm", server="localhost:25565")
+bot = yield from instance.get_or_create_bot("Builder")
+```
+
+The handshake validates API compatibility, capabilities, and required plugins.
+Named provisioning requires the `instance.provisioning.v1` server capability.
+Compose these operations inside the same scope as the bot's consumers.
 
 ## Migrate from the previous API
 

@@ -4,8 +4,8 @@
 operations, streams, scopes, task handles, capability negotiation, and plugin
 RPC discovery over gRPC-Web.
 
-The high-level API returns Effect operations and streams. Run a complete
-workflow through `Effect.runPromise` when your application uses async functions.
+The high-level API uses Effect 4 operations, streams, and scopes. Compose your
+workflow as an effect and run it once at the application boundary.
 
 ## Install
 
@@ -20,37 +20,98 @@ universal entry point also accepts any
 `effect/http/HttpClient`, which keeps tests, workers, Deno, and custom
 transport policies portable.
 
-## Install a managed local server on Node.js
+## Quickstart
 
-JVM download and process management are available only from the explicit Node
-entry point. It requires Node.js 22 or newer.
+Use managed installation for scripts. `SoulFire.createBot` downloads SoulFire
+and Java when needed, creates the instance and offline account, starts the bot,
+and waits for its initial player snapshot.
 
 ```ts
+import { NodeRuntime } from "@effect/platform-node";
 import { Effect } from "effect";
 import { SoulFire } from "@soulfiremc/sdk/node";
 
-await Effect.runPromise(
-  Effect.scoped(
-    Effect.gen(function* () {
-      const soulfire = yield* SoulFire.install();
-      yield* soulfire
-        .instance(instanceId)
-        .bot(botId)
-        .chat
-        .send("Local server ready");
-    }),
-  ),
+const program = Effect.scoped(
+  Effect.gen(function* () {
+    const bot = yield* SoulFire.createBot({
+      server: "localhost:25565",
+      username: "Builder",
+    });
+
+    yield* bot.chat.send("Hello from SoulFire");
+    yield* Effect.logInfo(`Health: ${bot.state.player?.health}`);
+  }),
 );
+
+NodeRuntime.runMain(program);
 ```
 
-The universal exports keep process and filesystem code out of browser and
-worker bundles. Use `@soulfiremc/sdk/bun` for managed installation on Bun.
+Point `server` at a Minecraft server that accepts offline accounts. The default
+`auth` is `"offline"`. No SoulFire URL, token, instance ID, or bot ID is needed.
+Node.js requires version 22 or newer. Use `@soulfiremc/sdk/bun` on Bun.
 
-## Quickstart
+Downloads and server data stay in `.soulfire` under the working directory.
+Set `installation.directory` to choose another location. Set
+`installation.version` to pin a SoulFire release.
 
-Connections are scoped resources. Closing the scope closes the client,
-subscriptions, and any managed local server. Keep connection setup and bot work inside the
-same scope.
+Keep bot work inside the scope. Scope exit closes subscriptions and the managed
+process. When using an existing SoulFire server, cleanup stops bots started by
+this scope and leaves previously running bots running. Readiness has a 30-second
+deadline; change it with `readyTimeoutMs`.
+
+## Reuse named instances and bots
+
+For several bots, install once and get resources by name:
+
+```ts
+const soulfire = yield* SoulFire.install();
+const instance = yield* soulfire.getOrCreateInstance("farm", {
+  server: "localhost:25565",
+});
+const builder = yield* instance.getOrCreateBot("Builder");
+const miner = yield* instance.getOrCreateBot("Miner");
+```
+
+Instance names belong to the authenticated SoulFire user. Bot names belong to
+one instance. Repeated calls reuse accounts and preserve their configuration.
+Conflicting addresses, usernames, or authentication methods fail explicitly.
+
+`createBot` uses the Minecraft server address as the instance name and the
+username as the bot name. Set `instanceName` or `name` to choose other names.
+`getOrCreateBot(name, { start: false })` creates or finds an account without
+starting it. Configure the instance, then use `yield* bot.connect()` when ready.
+
+Microsoft accounts need a device-code sign-in on their first creation:
+
+```ts
+const bot = yield* instance.getOrCreateBot("main-account", {
+  auth: "microsoft",
+  onDeviceCode: (code) => Effect.logInfo(
+    `Sign in at ${code.verificationUri} with code ${code.userCode}`,
+  ),
+});
+```
+
+The default handler logs the sign-in URL and code. Later calls reuse the saved
+account. `onDeviceCode` returns an Effect, like other SDK callbacks.
+
+## Collect blocks and select items
+
+`collect` waits for completion and cancels unfinished server work if interrupted.
+Use an item or block ID, or prefix a tag with `#`. IDs default to `minecraft`.
+
+```ts
+yield* bot.collect("#logs", { count: 8 });
+const logs = yield* bot.inventory.count("#logs");
+```
+
+Use `bot.tasks.collectBlocks` when you need a durable task handle. Structured
+selectors remain available for advanced inventory queries.
+
+## Connect to an existing SoulFire server
+
+Use the universal entry point for browser or worker code. It keeps process and
+filesystem code out of those bundles.
 
 ```ts
 import { Effect } from "effect";
@@ -62,19 +123,19 @@ const program = Effect.scoped(
       baseUrl: "https://soulfire.example.com",
       token: "your-api-token",
     });
-
-    const bot = soulfire.instance("instance-uuid").bot("bot-uuid");
-    yield* bot.start();
-    yield* bot.waitForOnline();
+    const bot = yield* soulfire.createBot({
+      server: "localhost:25565",
+      username: "Builder",
+    });
     yield* bot.chat.send("Hello from SoulFire");
   }),
 );
-
-await Effect.runPromise(program);
 ```
 
-The connection handshake verifies the core API version, required capabilities,
-and required plugins before returning a ready client.
+The handshake verifies API compatibility, capabilities, and required plugins.
+Named provisioning requires the `instance.provisioning.v1` server capability.
+The universal entry point accepts any `effect/http/HttpClient` for custom
+transport policies.
 
 ## Provide SoulFire as a layer
 

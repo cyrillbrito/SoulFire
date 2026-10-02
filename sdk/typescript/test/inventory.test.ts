@@ -11,6 +11,7 @@ import {
   InventoryRecommendationKind,
   InventoryService,
   RankInventoryItemsResponseSchema,
+  type CountItemsRequest,
   type RankInventoryItemsRequest,
   type TransferItemsRequest,
 } from "../src/generated/soulfire/inventory_pb.js";
@@ -129,3 +130,28 @@ function response(containerId: number, revision: bigint) {
     }),
   });
 }
+
+
+it("normalizes item IDs and tags and rejects malformed selectors before sending", async () => {
+  const requests: CountItemsRequest[] = [];
+  const transport = createRouterTransport(({ service }) => {
+    service(InventoryService, {
+      countItems(request) {
+        requests.push(request);
+        return { count: 8n };
+      },
+    });
+  });
+  const inventory = new SoulFireInventory(
+    "instance", "bot", createClient(InventoryService, transport), (options) => options,
+  );
+  await Effect.runPromise(Effect.gen(function* () {
+    expect(yield* inventory.count("oak_log")).toBe(8n);
+    expect(yield* inventory.count("#logs")).toBe(8n);
+    const error = yield* inventory.count("#").pipe(Effect.flip);
+    expect(error._tag).toBe("SoulFireValidationError");
+  }));
+  expect(requests).toHaveLength(2);
+  expect(requests[0]?.selector?.itemIds).toEqual(["minecraft:oak_log"]);
+  expect(requests[1]?.selector?.tags).toEqual(["minecraft:logs"]);
+});

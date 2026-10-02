@@ -18,7 +18,7 @@ from connectrpc.protocol import ProtocolType
 from connectrpc.server import ConnectASGIApplication, ConnectWSGIApplication, Endpoint, EndpointSync
 from pyqwest import Client, SyncClient
 
-from .instance_pb2 import DeleteAccountMetadataEntryRequest, DeleteAccountMetadataEntryResponse, DeleteInstanceMetadataEntryRequest, DeleteInstanceMetadataEntryResponse, GetAccountMetadataRequest, GetAccountMetadataResponse, GetInstanceMetadataRequest, GetInstanceMetadataResponse, InstanceAddAccountRequest, InstanceAddAccountResponse, InstanceAddAccountsBatchRequest, InstanceAddAccountsBatchResponse, InstanceAddProxiesBatchRequest, InstanceAddProxiesBatchResponse, InstanceAddProxyRequest, InstanceAddProxyResponse, InstanceAuditLogRequest, InstanceAuditLogResponse, InstanceCreateRequest, InstanceCreateResponse, InstanceDeleteRequest, InstanceDeleteResponse, InstanceInfoRequest, InstanceInfoResponse, InstanceListRequest, InstanceListResponse, InstanceRemoveAccountRequest, InstanceRemoveAccountResponse, InstanceRemoveAccountsBatchRequest, InstanceRemoveAccountsBatchResponse, InstanceRemoveProxiesBatchRequest, InstanceRemoveProxiesBatchResponse, InstanceRemoveProxyRequest, InstanceRemoveProxyResponse, InstanceUpdateAccountRequest, InstanceUpdateAccountResponse, InstanceUpdateConfigEntryRequest, InstanceUpdateConfigEntryResponse, InstanceUpdateConfigRequest, InstanceUpdateConfigResponse, InstanceUpdateMetaRequest, InstanceUpdateMetaResponse, InstanceUpdateProxyRequest, InstanceUpdateProxyResponse, SetAccountMetadataEntryRequest, SetAccountMetadataEntryResponse, SetInstanceMetadataEntryRequest, SetInstanceMetadataEntryResponse
+from .instance_pb2 import DeleteAccountMetadataEntryRequest, DeleteAccountMetadataEntryResponse, DeleteInstanceMetadataEntryRequest, DeleteInstanceMetadataEntryResponse, GetAccountMetadataRequest, GetAccountMetadataResponse, GetInstanceMetadataRequest, GetInstanceMetadataResponse, InstanceAddAccountRequest, InstanceAddAccountResponse, InstanceAddAccountsBatchRequest, InstanceAddAccountsBatchResponse, InstanceAddProxiesBatchRequest, InstanceAddProxiesBatchResponse, InstanceAddProxyRequest, InstanceAddProxyResponse, InstanceAuditLogRequest, InstanceAuditLogResponse, InstanceCreateRequest, InstanceCreateResponse, InstanceDeleteRequest, InstanceDeleteResponse, InstanceGetOrCreateBotRequest, InstanceGetOrCreateBotResponse, InstanceGetOrCreateRequest, InstanceGetOrCreateResponse, InstanceInfoRequest, InstanceInfoResponse, InstanceListRequest, InstanceListResponse, InstanceRemoveAccountRequest, InstanceRemoveAccountResponse, InstanceRemoveAccountsBatchRequest, InstanceRemoveAccountsBatchResponse, InstanceRemoveProxiesBatchRequest, InstanceRemoveProxiesBatchResponse, InstanceRemoveProxyRequest, InstanceRemoveProxyResponse, InstanceUpdateAccountRequest, InstanceUpdateAccountResponse, InstanceUpdateConfigEntryRequest, InstanceUpdateConfigEntryResponse, InstanceUpdateConfigRequest, InstanceUpdateConfigResponse, InstanceUpdateMetaRequest, InstanceUpdateMetaResponse, InstanceUpdateProxyRequest, InstanceUpdateProxyResponse, SetAccountMetadataEntryRequest, SetAccountMetadataEntryResponse, SetInstanceMetadataEntryRequest, SetInstanceMetadataEntryResponse
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Iterable, Mapping
@@ -35,6 +35,12 @@ _PROTO_BINARY_CODEC = google_protobuf_binary_codec()
 _GZIP_COMPRESSION = GzipCompression()
 
 class InstanceService(Protocol):
+    async def get_or_create_instance(self, request: InstanceGetOrCreateRequest, ctx: RequestContext[InstanceGetOrCreateRequest, InstanceGetOrCreateResponse]) -> InstanceGetOrCreateResponse:
+        raise ConnectError(Code.UNIMPLEMENTED, 'Not implemented')
+
+    async def get_or_create_bot(self, request: InstanceGetOrCreateBotRequest, ctx: RequestContext[InstanceGetOrCreateBotRequest, InstanceGetOrCreateBotResponse]) -> InstanceGetOrCreateBotResponse:
+        raise ConnectError(Code.UNIMPLEMENTED, 'Not implemented')
+
     async def create_instance(self, request: InstanceCreateRequest, ctx: RequestContext[InstanceCreateRequest, InstanceCreateResponse]) -> InstanceCreateResponse:
         raise ConnectError(Code.UNIMPLEMENTED, 'Not implemented')
 
@@ -121,6 +127,26 @@ class InstanceServiceASGIApplication(ConnectASGIApplication[InstanceService]):
         super().__init__(
             service=service,
             endpoints=lambda svc: {
+                "/soulfire.v1.InstanceService/GetOrCreateInstance": Endpoint.unary(
+                    method=MethodInfo(
+                        name="GetOrCreateInstance",
+                        service_name="soulfire.v1.InstanceService",
+                        input=InstanceGetOrCreateRequest,
+                        output=InstanceGetOrCreateResponse,
+                        idempotency_level=IdempotencyLevel.UNKNOWN,
+                    ),
+                    function=svc.get_or_create_instance,
+                ),
+                "/soulfire.v1.InstanceService/GetOrCreateBot": Endpoint.unary(
+                    method=MethodInfo(
+                        name="GetOrCreateBot",
+                        service_name="soulfire.v1.InstanceService",
+                        input=InstanceGetOrCreateBotRequest,
+                        output=InstanceGetOrCreateBotResponse,
+                        idempotency_level=IdempotencyLevel.UNKNOWN,
+                    ),
+                    function=svc.get_or_create_bot,
+                ),
                 "/soulfire.v1.InstanceService/CreateInstance": Endpoint.unary(
                     method=MethodInfo(
                         name="CreateInstance",
@@ -399,6 +425,46 @@ class InstanceServiceClient(ConnectClient):
             interceptors=interceptors,
             http_client=http_client,
         )
+    async def get_or_create_instance(
+        self,
+        request: InstanceGetOrCreateRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> InstanceGetOrCreateResponse:
+        return await self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="GetOrCreateInstance",
+                service_name="soulfire.v1.InstanceService",
+                input=InstanceGetOrCreateRequest,
+                output=InstanceGetOrCreateResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+
+    async def get_or_create_bot(
+        self,
+        request: InstanceGetOrCreateBotRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> InstanceGetOrCreateBotResponse:
+        return await self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="GetOrCreateBot",
+                service_name="soulfire.v1.InstanceService",
+                input=InstanceGetOrCreateBotRequest,
+                output=InstanceGetOrCreateBotResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+
     async def create_instance(
         self,
         request: InstanceCreateRequest,
@@ -880,6 +946,12 @@ class InstanceServiceClient(ConnectClient):
         )
 
 class InstanceServiceSync(Protocol):
+    def get_or_create_instance(self, request: InstanceGetOrCreateRequest, ctx: RequestContext[InstanceGetOrCreateRequest, InstanceGetOrCreateResponse]) -> InstanceGetOrCreateResponse:
+        raise ConnectError(Code.UNIMPLEMENTED, 'Not implemented')
+
+    def get_or_create_bot(self, request: InstanceGetOrCreateBotRequest, ctx: RequestContext[InstanceGetOrCreateBotRequest, InstanceGetOrCreateBotResponse]) -> InstanceGetOrCreateBotResponse:
+        raise ConnectError(Code.UNIMPLEMENTED, 'Not implemented')
+
     def create_instance(self, request: InstanceCreateRequest, ctx: RequestContext[InstanceCreateRequest, InstanceCreateResponse]) -> InstanceCreateResponse:
         raise ConnectError(Code.UNIMPLEMENTED, 'Not implemented')
 
@@ -964,6 +1036,26 @@ class InstanceServiceWSGIApplication(ConnectWSGIApplication):
     ) -> None:
         super().__init__(
             endpoints={
+                "/soulfire.v1.InstanceService/GetOrCreateInstance": EndpointSync.unary(
+                    method=MethodInfo(
+                        name="GetOrCreateInstance",
+                        service_name="soulfire.v1.InstanceService",
+                        input=InstanceGetOrCreateRequest,
+                        output=InstanceGetOrCreateResponse,
+                        idempotency_level=IdempotencyLevel.UNKNOWN,
+                    ),
+                    function=service.get_or_create_instance,
+                ),
+                "/soulfire.v1.InstanceService/GetOrCreateBot": EndpointSync.unary(
+                    method=MethodInfo(
+                        name="GetOrCreateBot",
+                        service_name="soulfire.v1.InstanceService",
+                        input=InstanceGetOrCreateBotRequest,
+                        output=InstanceGetOrCreateBotResponse,
+                        idempotency_level=IdempotencyLevel.UNKNOWN,
+                    ),
+                    function=service.get_or_create_bot,
+                ),
                 "/soulfire.v1.InstanceService/CreateInstance": EndpointSync.unary(
                     method=MethodInfo(
                         name="CreateInstance",
@@ -1241,6 +1333,44 @@ class InstanceServiceClientSync(ConnectClientSync):
             read_max_bytes=read_max_bytes,
             interceptors=interceptors,
             http_client=http_client,
+        )
+    def get_or_create_instance(
+        self,
+        request: InstanceGetOrCreateRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> InstanceGetOrCreateResponse:
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="GetOrCreateInstance",
+                service_name="soulfire.v1.InstanceService",
+                input=InstanceGetOrCreateRequest,
+                output=InstanceGetOrCreateResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+    def get_or_create_bot(
+        self,
+        request: InstanceGetOrCreateBotRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> InstanceGetOrCreateBotResponse:
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="GetOrCreateBot",
+                service_name="soulfire.v1.InstanceService",
+                input=InstanceGetOrCreateBotRequest,
+                output=InstanceGetOrCreateBotResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
         )
     def create_instance(
         self,

@@ -65,6 +65,9 @@ export {
   SoulFireService,
   type BotMovement,
   type BotSelection,
+  type CreateBotOptions,
+  type GetOrCreateBotOptions,
+  type GetOrCreateInstanceOptions,
   type RequiredPluginRequirement,
   type SoulFireOptions,
   type TokenProvider,
@@ -117,6 +120,7 @@ export {
 } from "./generated/soulfire/inventory_pb.js";
 export type {
   LocalSoulFireServer,
+  ManagedBotOptions,
   SoulFireInstallOptions,
 } from "./install-types.js";
 export {
@@ -349,3 +353,4 @@ export {
 } from "./generated/soulfire/world_pb.js";
 
 export { rpcStream } from "./transport.js";
+export { itemSelector, type ItemSelectorInput } from "./selectors.js";

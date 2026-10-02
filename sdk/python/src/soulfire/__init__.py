@@ -44,7 +44,13 @@ from .bot_live_pb2 import (
     WaitForChunksResponse,
 )
 from .camera import CameraRenderOptions, SoulFireCamera, WorldMapOptions, decode_camera_image
-from .client import SoulFire, SoulFireInstance, SoulFireService, connection_layer
+from .client import (
+    ManagedInstallOptions,
+    SoulFire,
+    SoulFireInstance,
+    SoulFireService,
+    connection_layer,
+)
 from .common_pb2 import BlockPosition, WorldPosition
 from .connection import (
     SDK_API_VERSION,
@@ -121,6 +127,7 @@ from .protocol_pb2 import (
     PacketSchema,
     RawPacketEvent,
 )
+from .selectors import item_selector
 from .semantic import (
     ChatMatch,
     ChatMatcher,
@@ -250,6 +257,7 @@ __all__ = [
     "ItemStackSnapshot",
     "LoadoutRequirementSpec",
     "LocalSoulFireServer",
+    "ManagedInstallOptions",
     "PacketDirection",
     "PacketSchema",
     "PlayerSnapshot",
@@ -330,6 +338,7 @@ __all__ = [
     "fallback",
     "goals",
     "is_terminal_task_status",
+    "item_selector",
     "match_chat",
     "parallel",
     "race",

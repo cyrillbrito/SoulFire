@@ -313,6 +313,10 @@ public final class SoulFireServer {
   }
 
   public UUID createInstance(String friendlyName, SoulFireUser owner) {
+    return createInstance(friendlyName, owner, InstanceSettingsImpl.Stem.EMPTY);
+  }
+
+  public UUID createInstance(String friendlyName, SoulFireUser owner, InstanceSettingsImpl.Stem settings) {
     var now = LocalDateTime.now(ZoneOffset.UTC);
     var id = UUID.randomUUID();
     dsl().insertInto(Tables.INSTANCES)
@@ -320,7 +324,7 @@ public final class SoulFireServer {
       .set(Tables.INSTANCES.FRIENDLY_NAME, friendlyName)
       .set(Tables.INSTANCES.ICON, InstanceConstants.randomInstanceIcon())
       .set(Tables.INSTANCES.OWNER_ID, owner.getUniqueId().toString())
-      .set(Tables.INSTANCES.SETTINGS, GsonInstance.GSON.toJson(InstanceSettingsImpl.Stem.EMPTY.serializeToTree()))
+      .set(Tables.INSTANCES.SETTINGS, GsonInstance.GSON.toJson(settings.serializeToTree()))
       .set(Tables.INSTANCES.CREATED_AT, now)
       .set(Tables.INSTANCES.UPDATED_AT, now)
       .set(Tables.INSTANCES.VERSION, 0L)

@@ -1,17 +1,16 @@
+import { NodeRuntime } from "@effect/platform-node";
 import { Effect } from "effect";
-import { SoulFire } from "../src/index.js";
+import { SoulFire } from "../src/node.js";
 
 const program = Effect.scoped(
   Effect.gen(function* () {
-    const soulfire = yield* SoulFire.connect({
-      baseUrl: "https://soulfire.example.com",
-      token: "your-api-token",
+    const bot = yield* SoulFire.createBot({
+      server: "localhost:25565",
+      username: "Builder",
     });
-    const bot = soulfire.instance("instance-uuid").bot("bot-uuid");
-    yield* bot.start();
-    yield* bot.waitForOnline();
     yield* bot.chat.send("Hello from SoulFire");
+    yield* Effect.logInfo(`Health: ${bot.state.player?.health}`);
   }),
 );
 
-await Effect.runPromise(program);
+NodeRuntime.runMain(program);

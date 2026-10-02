@@ -13,6 +13,7 @@ import {
   type SoulFireOperationError,
 } from "./errors.js";
 import { rpc, rpcStream, withSignal } from "./transport.js";
+import { blockSelectors } from "./selectors.js";
 
 import type { PathfindGoal } from "./generated/soulfire/bot_live_pb.js";
 import { PathfindOptionsSchema } from "./generated/soulfire/bot_live_pb.js";
@@ -2310,13 +2311,17 @@ export class SoulFireTasks {
    * Finds, reaches and mines `count` blocks with one of `blockIds` or `tags`.
    */
   public collectBlocks(
-    blockIds: readonly string[],
+    blockIds: string | readonly string[],
     options: CollectBlocksTaskOptions = {},
   ): Effect.Effect<
     SoulFireTask<typeof CollectBlocksTaskResultSchema>,
     SoulFireOperationError
   > {
     return Effect.gen({ self: this }, function* () {
+      const selector = yield* Effect.try({
+        try: () => blockSelectors(blockIds),
+        catch: (cause) => operationError("SoulFireTasks.collectBlocks", cause),
+      });
       const {
         tags = [],
         count = 1,
@@ -2330,8 +2335,8 @@ export class SoulFireTasks {
       return yield* this.start(
         CollectBlocksTaskSchema,
         {
-          blockIds: [...blockIds],
-          tags: [...tags],
+          blockIds: selector.blockIds,
+          tags: [...selector.tags, ...tags],
           count,
           searchRadius,
           avoidSubmergedTargets,
@@ -2346,11 +2351,15 @@ export class SoulFireTasks {
   }
 
   public runCollectBlocks(
-    blockIds: readonly string[],
+    blockIds: string | readonly string[],
     options: CollectBlocksTaskOptions = {},
   ): Stream.Stream<BotTaskEvent, SoulFireOperationError> {
     return Stream.unwrap(
       Effect.gen({ self: this }, function* () {
+        const selector = yield* Effect.try({
+          try: () => blockSelectors(blockIds),
+          catch: (cause) => operationError("SoulFireTasks.runCollectBlocks", cause),
+        });
         const {
           tags = [],
           count = 1,
@@ -2364,8 +2373,8 @@ export class SoulFireTasks {
         return this.run(
           CollectBlocksTaskSchema,
           {
-            blockIds: [...blockIds],
-            tags: [...tags],
+            blockIds: selector.blockIds,
+            tags: [...selector.tags, ...tags],
             count,
             searchRadius,
             avoidSubmergedTargets,

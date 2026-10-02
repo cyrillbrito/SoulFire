@@ -1,4 +1,9 @@
 import type { Interceptor } from "@connectrpc/connect";
+import type { CreateBotOptions } from "./client.js";
+
+export interface ManagedBotOptions extends CreateBotOptions {
+  readonly installation?: SoulFireInstallOptions;
+}
 
 export interface SoulFireInstallOptions {
   /**

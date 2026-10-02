@@ -9,7 +9,7 @@ import {
   SoulFireService,
   SoulFire as UniversalSoulFire,
 } from "./index.js";
-import type { SoulFireInstallOptions } from "./install-types.js";
+import type { ManagedBotOptions, SoulFireInstallOptions } from "./install-types.js";
 import { installLocalServer } from "./local-server.js";
 import { makeEffectHttpClientFetch } from "./platform.js";
 
@@ -71,6 +71,10 @@ export const SoulFire = {
   layer,
   install,
   installLayer,
+  createBot: (options: ManagedBotOptions) => Effect.gen(function* () {
+    const client = yield* install(options.installation);
+    return yield* client.createBot(options);
+  }),
 } as const;
 
 function connectionOptions(

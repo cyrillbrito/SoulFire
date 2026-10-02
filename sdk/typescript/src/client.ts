@@ -4,6 +4,7 @@ import type {
   MessageInitShape,
 } from "@bufbuild/protobuf";
 import {
+  Code,
   createClient,
   type CallOptions,
   type Client,
@@ -15,11 +16,12 @@ import {
   type GrpcWebTransportOptions,
 } from "@connectrpc/connect-web";
 import * as HttpClient from "effect/http/HttpClient";
-import { Context, Effect, Layer, Option, Stream, type Scope } from "effect";
+import { Context, Effect, Filter, Layer, Option, Stream, type Scope } from "effect";
 import {
   operationError,
   rpcError,
   SoulFireConnectionError,
+  SoulFireTimeoutError,
   type SoulFireOperationError,
 } from "./errors.js";
 import { makeEffectHttpClientFetch } from "./platform.js";
@@ -90,9 +92,10 @@ import {
   type WatchBotStatusesResponse,
 } from "./generated/soulfire/bot_pb.js";
 import { ChatService } from "./generated/soulfire/chat_pb.js";
-import type {
-  MinecraftAccountProto,
-  ProxyProto,
+import {
+  AccountTypeDeviceCode,
+  type MinecraftAccountProto,
+  type ProxyProto,
 } from "./generated/soulfire/common_pb.js";
 import {
   InstanceEventFilterSchema,
@@ -100,6 +103,7 @@ import {
   type InstanceEvent,
 } from "./generated/soulfire/instance_live_pb.js";
 import {
+  BotAuthentication,
   InstanceService,
   type InstanceInfo,
   type InstanceListResponse_Instance,
@@ -117,6 +121,7 @@ import {
   type CredentialsAuthResponse,
   type DeviceCodeAuthRequestSchema,
   type DeviceCodeAuthResponse,
+  type DeviceCode,
   type RefreshRequestSchema,
   type RefreshResponse,
 } from "./generated/soulfire/mc-auth_pb.js";
@@ -134,8 +139,17 @@ import { PluginCatalog } from "./plugins.js";
 import { SoulFireProtocol } from "./protocol.js";
 import { SoulFireRecipes } from "./recipes.js";
 import { SoulFireRegistry } from "./registry.js";
-import { BotSession, type BotSessionOptions } from "./session.js";
-import { SoulFireTasks } from "./tasks.js";
+import {
+  BotSession,
+  emptyBotSessionState,
+  type BotSessionOptions,
+  type BotSessionState,
+} from "./session.js";
+import {
+  SoulFireTasks,
+  type CollectBlocksTaskOptions,
+  type CollectBlocksTaskResult,
+} from "./tasks.js";
 import { SoulFireWorld } from "./world.js";
 
 export { SoulFireActionError } from "./actions.js";
@@ -159,6 +173,29 @@ export interface SoulFireOptions {
 export interface RequiredPluginRequirement {
   pluginId: string;
   versionRange?: string;
+}
+
+export interface GetOrCreateInstanceOptions {
+  readonly server?: string;
+  readonly call?: CallOptions;
+}
+
+export interface GetOrCreateBotOptions {
+  readonly auth?: "offline" | "microsoft";
+  readonly username?: string;
+  readonly start?: boolean;
+  readonly readyTimeoutMs?: number;
+  readonly onDeviceCode?: (
+    code: DeviceCode,
+  ) => Effect.Effect<void, SoulFireOperationError>;
+  readonly call?: CallOptions;
+}
+
+export interface CreateBotOptions extends Omit<GetOrCreateBotOptions, "start"> {
+  readonly server: string;
+  readonly username: string;
+  readonly instanceName?: string;
+  readonly name?: string;
 }
 
 /**
@@ -442,6 +479,42 @@ export class SoulFireClient {
     });
   }
 
+  /** Gets an instance owned by this user, or creates it with its server address. */
+  public getOrCreateInstance(
+    name: string,
+    options: GetOrCreateInstanceOptions = {},
+  ): Effect.Effect<SoulFireInstance, SoulFireOperationError> {
+    return Effect.gen({ self: this }, function* () {
+      yield* Effect.try({
+        try: () => this.capabilities.require("instance.provisioning.v1"),
+        catch: (cause) => operationError("SoulFire.getOrCreateInstance", cause),
+      });
+      const response = yield* rpc("SoulFire.getOrCreateInstance", (signal) =>
+        this.#instanceClient.getOrCreateInstance(
+          { name, ...(options.server === undefined ? {} : { server: options.server }) },
+          withSignal(options.call, signal),
+        ),
+      );
+      return this.instance(response.id);
+    });
+  }
+
+  /** Creates or reuses a ready bot without exposing instance or account IDs. */
+  public createBot(
+    options: CreateBotOptions,
+  ): Effect.Effect<SoulFireBot, SoulFireOperationError, Scope.Scope> {
+    return Effect.gen({ self: this }, function* () {
+      const instance = yield* this.getOrCreateInstance(
+        options.instanceName ?? options.server.trim(),
+        {
+          server: options.server,
+          ...(options.call === undefined ? {} : { call: options.call }),
+        },
+      );
+      return yield* instance.getOrCreateBot(options.name ?? options.username, options);
+    });
+  }
+
   public beginLogin(
     email: string,
     options?: CallOptions,
@@ -600,6 +673,77 @@ export class SoulFireInstance {
       this.#worldClient,
       this.#protocolClient,
     );
+  }
+
+  /** Creates an offline account by default and returns a ready, observed bot. */
+  public getOrCreateBot(
+    name: string,
+    options: GetOrCreateBotOptions = {},
+  ): Effect.Effect<SoulFireBot, SoulFireOperationError, Scope.Scope> {
+    return Effect.gen({ self: this }, function* () {
+      if (options.auth !== undefined
+        && options.auth !== "offline"
+        && options.auth !== "microsoft") {
+        return yield* Effect.fail(
+          operationError(
+            "SoulFireInstance.getOrCreateBot",
+            new TypeError("auth must be offline or microsoft"),
+          ),
+        );
+      }
+      const auth = options.auth === "microsoft"
+        ? BotAuthentication.MICROSOFT
+        : BotAuthentication.OFFLINE;
+      const request = {
+        id: this.id,
+        name,
+        auth,
+        ...(options.username === undefined ? {} : { username: options.username }),
+      };
+      const provision = (account?: MinecraftAccountProto) =>
+        rpc("SoulFireInstance.getOrCreateBot", (signal) =>
+          this.#instanceClient.getOrCreateBot(
+            { ...request, ...(account === undefined ? {} : { account }) },
+            withSignal(options.call, signal),
+          ),
+        );
+      const response = yield* provision().pipe(
+        Effect.catchTag("SoulFireRpcError", (error) => {
+          if (auth !== BotAuthentication.MICROSOFT || error.code !== Code.NotFound) {
+            return Effect.fail(error);
+          }
+          return Effect.gen({ self: this }, function* () {
+            const account = yield* this.loginDeviceCode(
+              { service: AccountTypeDeviceCode.MICROSOFT_JAVA_DEVICE_CODE },
+              options.call,
+            ).pipe(
+              Stream.tap((event) => {
+                if (event.data.case !== "deviceCode") return Effect.void;
+                return options.onDeviceCode?.(event.data.value) ?? Effect.logInfo(
+                  `Sign in at ${event.data.value.verificationUri} with code ${event.data.value.userCode}`,
+                );
+              }),
+              Stream.filterMap(Filter.fromPredicateOption((event) =>
+                event.data.case === "account"
+                  ? Option.some(event.data.value)
+                  : Option.none(),
+              )),
+              Stream.runHead,
+            );
+            if (Option.isNone(account)) {
+              return yield* Effect.fail(operationError(
+                "SoulFireInstance.getOrCreateBot",
+                new Error("Microsoft authentication ended without an account"),
+              ));
+            }
+            return yield* provision(account.value);
+          });
+        }),
+      );
+      const bot = this.bot(response.botId);
+      if (options.start !== false) yield* bot.connect(options);
+      return bot;
+    });
   }
 
   public info(
@@ -1015,6 +1159,51 @@ export class SoulFireInstance {
  */
 export class SoulFireBot {
   #controlToken: string | undefined;
+  #session: BotSession | undefined;
+
+  /** Latest received state. Empty until a connection has an initial snapshot. */
+  public get state(): BotSessionState {
+    return this.#session?.state ?? emptyBotSessionState();
+  }
+
+  /** Starts the bot if necessary. The scope owns observation and any start. */
+  public connect(
+    options: Pick<GetOrCreateBotOptions, "readyTimeoutMs" | "call"> = {},
+  ): Effect.Effect<void, SoulFireOperationError, Scope.Scope> {
+    return Effect.gen({ self: this }, function* () {
+      if (this.#session !== undefined) return;
+      const timeoutMs = options.readyTimeoutMs ?? 30_000;
+      if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+        return yield* Effect.fail(operationError(
+          "SoulFireBot.connect",
+          new RangeError("readyTimeoutMs must be a positive finite number"),
+        ));
+      }
+      yield* Effect.gen({ self: this }, function* () {
+        const info = yield* this.info(options.call);
+        yield* Effect.acquireRelease(Effect.succeed(info), (info) =>
+          info.status?.desiredState === BotDesiredState.RUNNING
+            ? Effect.void
+            : this.stop().pipe(Effect.asVoid, Effect.orDie),
+        );
+        if (info.status?.desiredState !== BotDesiredState.RUNNING) {
+          yield* this.start(options.call);
+        }
+        const session = yield* this.observe();
+        yield* session.waitForState((state) => state.player !== undefined);
+        this.#session = session;
+        yield* Effect.addFinalizer(() => Effect.sync(() => {
+          if (this.#session === session) this.#session = undefined;
+        }));
+      }).pipe(Effect.timeoutOrElse({
+        duration: timeoutMs,
+        orElse: () => Effect.fail(new SoulFireTimeoutError({
+          operation: "SoulFireBot.connect",
+          message: "Timed out waiting for the bot's initial player snapshot",
+        })),
+      }));
+    });
+  }
 
   public constructor(
     public readonly instanceId: string,
@@ -1043,6 +1232,17 @@ export class SoulFireBot {
     );
   }
 
+  /** Collects blocks to completion. Interruption cancels unfinished server work. */
+  public collect(
+    target: string | readonly string[],
+    options: CollectBlocksTaskOptions = {},
+  ): Effect.Effect<CollectBlocksTaskResult, SoulFireOperationError> {
+    return Effect.scoped(Effect.acquireRelease(
+      this.tasks.collectBlocks(target, options),
+      (task) => task.terminal ? Effect.void : task.cancel().pipe(Effect.asVoid, Effect.orDie),
+    ).pipe(Effect.flatMap((task) => task.result())));
+  }
+
   public get pathfinder(): SoulFirePathfinder {
     return new SoulFirePathfinder(
       this.instanceId,
@@ -1058,7 +1258,8 @@ export class SoulFireBot {
       this.id,
       this.#requiredClient(this.chatClient, "chat"),
       (options) => this.#actionOptions(options),
-      (filter, options) => this.events(filter, options),
+      (filter, options) => this.#session !== undefined && options === undefined
+        ? this.#session.events() : this.events(filter, options),
     );
   }
 
@@ -1285,6 +1486,7 @@ export class SoulFireBot {
     > = DEFAULT_EVENT_FILTER,
     options?: CallOptions,
   ): Stream.Stream<BotEvent, SoulFireOperationError> {
+    if (this.#session !== undefined && filter === DEFAULT_EVENT_FILTER && options === undefined) return this.#session.events();
     return Stream.unwrap(
       Effect.gen({ self: this }, function* () {
         return rpcStream("SoulFireBot.events", (signal) =>
@@ -1307,6 +1509,7 @@ export class SoulFireBot {
   public observe(
     options?: BotSessionOptions,
   ): Effect.Effect<BotSession, SoulFireOperationError, Scope.Scope> {
+    if (this.#session !== undefined && options === undefined) return Effect.succeed(this.#session);
     return BotSession.open(
       (request, options) =>
         rpcStream("bot.observe", (signal) =>

@@ -42,6 +42,7 @@ public final class SdkServiceImpl extends SdkServiceGrpc.SdkServiceImplBase {
 
   private static final List<SdkCapability> CAPABILITIES = List.of(
     capability("core.api.v1"),
+    capability("instance.provisioning.v1"),
     capability("bot.events.v1"),
     capability("bot.actions.v1"),
     capability("bot.actions.interact-block.v1"),

@@ -55,6 +55,42 @@ message InstanceCreateResponse {
   string id = 1 [(google.api.field_behavior) = REQUIRED, (soulfire.v1.api_field).format = "uuid"];
 }
 
+// Finds an instance owned by the caller by its exact name, or creates it.
+// Concurrent calls reuse the same instance. Existing configuration is preserved.
+message InstanceGetOrCreateRequest {
+  string name = 1 [(google.api.field_behavior) = REQUIRED];
+  // Minecraft server address. On reuse, a different address is a conflict.
+  optional string server = 2;
+}
+
+message InstanceGetOrCreateResponse {
+  string id = 1 [(google.api.field_behavior) = REQUIRED, (soulfire.v1.api_field).format = "uuid"];
+  bool created = 2;
+}
+
+enum BotAuthentication {
+  BOT_AUTHENTICATION_UNSPECIFIED = 0;
+  BOT_AUTHENTICATION_OFFLINE = 1;
+  BOT_AUTHENTICATION_MICROSOFT = 2;
+}
+
+// Finds a configured account by its SDK name or Minecraft username.
+// Offline accounts need no authentication payload. A new Microsoft account
+// requires the account returned by the device-code authentication flow.
+message InstanceGetOrCreateBotRequest {
+  string id = 1 [(google.api.field_behavior) = REQUIRED, (soulfire.v1.api_field).format = "uuid"];
+  string name = 2 [(google.api.field_behavior) = REQUIRED];
+  BotAuthentication auth = 3 [(google.api.field_behavior) = REQUIRED];
+  // Defaults to name for offline accounts. Microsoft usernames come from auth.
+  optional string username = 4;
+  optional MinecraftAccountProto account = 5;
+}
+
+message InstanceGetOrCreateBotResponse {
+  string bot_id = 1 [(google.api.field_behavior) = REQUIRED, (soulfire.v1.api_field).format = "uuid"];
+  bool created = 2;
+}
+
 // Request to delete an existing instance.
 message InstanceDeleteRequest {
   // The unique identifier (UUID) of the instance to delete.
@@ -508,6 +544,25 @@ message InstanceAuditLogResponse {
 // - READ_INSTANCE_AUDIT_LOGS: Required to view audit logs
 // - READ_BOT_INFO: Required to read account metadata
 service InstanceService {
+  // Gets or creates an instance owned by the caller without a list/create race.
+  rpc GetOrCreateInstance (InstanceGetOrCreateRequest) returns (InstanceGetOrCreateResponse) {
+    option (soulfire.v1.api_method) = {
+      display_name: "Get or create instance by name"
+      scope: "global"
+      side_effects: "Creates a named instance if it does not exist."
+    };
+  }
+
+  // Gets or creates a named bot account. Does not change its desired state.
+  rpc GetOrCreateBot (InstanceGetOrCreateBotRequest) returns (InstanceGetOrCreateBotResponse) {
+    option (soulfire.v1.api_method) = {
+      display_name: "Get or create bot by name"
+      permissions: "READ_INSTANCE"
+      scope: "instance.account"
+      side_effects: "Creates a named Minecraft account if it does not exist."
+    };
+  }
+
   // Creates a new instance with the given friendly name.
   // Requires: CREATE_INSTANCE global permission
   // Returns: The UUID of the newly created instance

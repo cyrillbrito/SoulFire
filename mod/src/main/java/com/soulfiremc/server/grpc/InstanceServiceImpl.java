@@ -48,6 +48,70 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public final class InstanceServiceImpl extends InstanceServiceGrpc.InstanceServiceImplBase {
   private final SoulFireServer soulFireServer;
+  private final Object provisioningLock = new Object();
+
+  @Override
+  public void getOrCreateInstance(InstanceGetOrCreateRequest request, StreamObserver<InstanceGetOrCreateResponse> responseObserver) {
+    var user = ServerRPCConstants.USER_CONTEXT_KEY.get();
+    var name = SdkProvisioning.requireName(request.getName());
+    var server = request.hasServer() ? SdkProvisioning.requireServer(request.getServer()) : null;
+    InstanceGetOrCreateResponse response;
+    synchronized (provisioningLock) {
+      var records = soulFireServer.dsl().selectFrom(Tables.INSTANCES)
+        .where(Tables.INSTANCES.OWNER_ID.eq(user.getUniqueId().toString()))
+        .and(Tables.INSTANCES.FRIENDLY_NAME.eq(name)).fetch();
+      if (records.size() > 1) {
+        throw Status.FAILED_PRECONDITION.withDescription("More than one instance has this name. Select an instance by ID or rename it.").asRuntimeException();
+      }
+      if (records.isEmpty()) {
+        user.hasPermissionOrThrow(PermissionContext.global(GlobalPermission.CREATE_INSTANCE));
+        var settings = server == null ? InstanceSettingsImpl.Stem.EMPTY : SdkProvisioning.instanceSettings(server);
+        var id = soulFireServer.createInstance(name, user, settings);
+        response = InstanceGetOrCreateResponse.newBuilder().setId(id.toString()).setCreated(true).build();
+      } else {
+        var record = records.getFirst();
+        user.hasPermissionOrThrow(PermissionContext.instance(InstancePermission.READ_INSTANCE, UUID.fromString(record.getId())));
+        if (server != null) {
+          SdkProvisioning.requireServerMatch(parseSettings(record.getSettings()), server);
+        }
+        response = InstanceGetOrCreateResponse.newBuilder().setId(record.getId()).build();
+      }
+    }
+    responseObserver.onNext(response);
+    responseObserver.onCompleted();
+  }
+
+  @Override
+  public void getOrCreateBot(InstanceGetOrCreateBotRequest request, StreamObserver<InstanceGetOrCreateBotResponse> responseObserver) {
+    var instanceId = UUID.fromString(request.getId());
+    var user = ServerRPCConstants.USER_CONTEXT_KEY.get();
+    user.hasPermissionOrThrow(PermissionContext.instance(InstancePermission.READ_INSTANCE, instanceId));
+    SdkProvisioning.AccountResult result;
+    synchronized (provisioningLock) {
+      result = soulFireServer.dsl().transactionResult(cfg -> {
+        var ctx = DSL.using(cfg);
+        var record = ctx.selectFrom(Tables.INSTANCES).where(Tables.INSTANCES.ID.eq(request.getId())).fetchOne();
+        if (record == null) {
+          throw Status.NOT_FOUND.withDescription("Instance does not exist").asRuntimeException();
+        }
+        var provisioned = SdkProvisioning.account(parseSettings(record.getSettings()), request);
+        if (provisioned.created()) {
+          user.hasPermissionOrThrow(PermissionContext.instance(InstancePermission.UPDATE_INSTANCE_CONFIG, instanceId));
+          ctx.update(Tables.INSTANCES)
+            .set(Tables.INSTANCES.SETTINGS, serializeSettings(provisioned.settings()))
+            .set(Tables.INSTANCES.UPDATED_AT, LocalDateTime.now(ZoneOffset.UTC))
+            .where(Tables.INSTANCES.ID.eq(request.getId())).execute();
+        }
+        return provisioned;
+      });
+      if (result.created()) {
+        refreshRuntimeSettings(instanceId);
+      }
+    }
+    responseObserver.onNext(InstanceGetOrCreateBotResponse.newBuilder()
+      .setBotId(result.account().profileId().toString()).setCreated(result.created()).build());
+    responseObserver.onCompleted();
+  }
 
   private Collection<InstancePermissionState> getInstancePermissions(UUID instanceId) {
     var user = ServerRPCConstants.USER_CONTEXT_KEY.get();

@@ -235,6 +235,18 @@ export class BotSession {
         );
   }
 
+  /** Checks current state after subscribing, so a concurrent update cannot be missed. */
+  public waitForState(
+    predicate: (state: BotSessionState) => boolean,
+  ): Effect.Effect<BotSessionState, SoulFireOperationError> {
+    return Effect.scoped(Effect.gen({ self: this }, function* () {
+      if (this.#failure !== undefined) return yield* Effect.failCause(this.#failure);
+      const subscription = yield* PubSub.subscribe(this.eventsHub);
+      while (!predicate(this.#state)) yield* (yield* PubSub.take(subscription));
+      return this.#state;
+    }));
+  }
+
   public once(
     eventCase: BotEvent["event"]["case"],
     options?: { readonly timeoutMs?: number },

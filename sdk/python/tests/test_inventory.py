@@ -4,7 +4,7 @@ import pytest
 from effect_py import Failure, gen, run_async, scoped, succeed
 
 from soulfire.common_pb2 import BlockPosition
-from soulfire.errors import SoulFireContainerClosedError
+from soulfire.errors import SoulFireContainerClosedError, SoulFireValidationError
 from soulfire.inventory_connect import InventoryServiceClient
 from soulfire.inventory_pb2 import (
     INVENTORY_AREA_CONTAINER,
@@ -12,6 +12,8 @@ from soulfire.inventory_pb2 import (
     INVENTORY_RECOMMENDATION_KIND_FOOD,
     INVENTORY_RECOMMENDATION_KIND_TOOL,
     ContainerSnapshot,
+    CountItemsRequest,
+    CountItemsResponse,
     GetContainerSnapshotResponse,
     InventoryItemRecommendation,
     InventoryMutationResponse,
@@ -184,3 +186,34 @@ def _response(container_id: int, revision: int) -> InventoryMutationResponse:
     return InventoryMutationResponse(
         container=ContainerSnapshot(container_id=container_id, revision=revision)
     )
+
+
+async def test_count_normalizes_ids_and_tags_and_rejects_invalid_selectors() -> None:
+    requests: list[CountItemsRequest] = []
+
+    class CountService:
+        async def count_items(
+            self, request: CountItemsRequest, **_kwargs: object
+        ) -> CountItemsResponse:
+            requests.append(request)
+            return CountItemsResponse(count=8)
+
+    inventory = SoulFireInventory(
+        "instance",
+        "bot",
+        cast(InventoryServiceClient, CountService()),
+        lambda headers: headers,
+    )
+
+    @gen
+    def workflow():
+        assert (yield from inventory.count("oak_log")) == 8
+        assert (yield from inventory.count("#logs")) == 8
+        result = yield from inventory.count("#").exit()
+        assert isinstance(result, Failure)
+        assert isinstance(result.error, SoulFireValidationError)
+
+    await run_async(workflow.or_die())
+    assert len(requests) == 2
+    assert list(requests[0].selector.item_ids) == ["minecraft:oak_log"]
+    assert list(requests[1].selector.tags) == ["minecraft:logs"]

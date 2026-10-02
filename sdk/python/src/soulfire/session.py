@@ -19,6 +19,7 @@ from effect_py import (
     gen,
     join,
     schedule,
+    scoped,
     sleep,
     sync,
 )
@@ -576,14 +577,31 @@ class BotSession:
     @classmethod
     @fn("BotSession.open")
     def open(
-        cls, stream: BotEventStreamFactory, options: BotSessionOptions | None = None
+        cls,
+        stream: BotEventStreamFactory,
+        options: BotSessionOptions | None = None,
+        *,
+        ready_timeout: float | None = None,
     ) -> EffectGen[BotSession, SoulFireOperationError, Scope]:
         session = yield from acquire_release(
             sync(lambda: cls(stream, options or BotSessionOptions())),
             lambda session, _: session.close(),
         )
         session._fiber = yield from fork(session._consume())
-        result = yield from from_async(lambda: asyncio.shield(session._ready))
+        ready = from_async(lambda: asyncio.shield(session._ready))
+        if ready_timeout is None:
+            result = yield from ready
+        else:
+
+            def on_timeout(
+                _: schedule.TimeoutException,
+            ) -> Effect[Exit[None, SoulFireOperationError], SoulFireTimeoutError]:
+                return fail(
+                    SoulFireTimeoutError("Timed out waiting for the bot observation stream")
+                )
+
+            timed = ready.pipe(schedule.timeout(ready_timeout))
+            result = yield from catch_tag(schedule.TimeoutException)(on_timeout)(timed)
         if isinstance(result, Failure):
             yield from join(session._fiber)
         return session
@@ -658,6 +676,26 @@ class BotSession:
                 ),
             )
         )
+
+    def wait_for_state(
+        self, predicate: Callable[[BotSessionState], bool]
+    ) -> Effect[BotSessionState, SoulFireOperationError]:
+        @gen
+        def wait() -> EffectGen[BotSessionState, SoulFireOperationError, Scope]:
+            cursor = yield from self.events().open
+            if self._failure is not None and self._fiber is not None:
+                yield from join(self._fiber)
+            while not predicate(self._state):
+                item = yield from cursor.next()
+                if isinstance(item, End):
+                    return (
+                        yield from fail(
+                            SoulFireStateError("Bot session closed before the expected state")
+                        )
+                    )
+            return self._state
+
+        return scoped(wait)
 
     def once(
         self, event_name: str, *, timeout: float | None = None

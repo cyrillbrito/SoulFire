@@ -16,6 +16,15 @@ from typing import ClassVar as _ClassVar, Optional as _Optional, Union as _Union
 
 DESCRIPTOR: _descriptor.FileDescriptor
 
+class BotAuthentication(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    BOT_AUTHENTICATION_UNSPECIFIED: _ClassVar[BotAuthentication]
+    BOT_AUTHENTICATION_OFFLINE: _ClassVar[BotAuthentication]
+    BOT_AUTHENTICATION_MICROSOFT: _ClassVar[BotAuthentication]
+BOT_AUTHENTICATION_UNSPECIFIED: BotAuthentication
+BOT_AUTHENTICATION_OFFLINE: BotAuthentication
+BOT_AUTHENTICATION_MICROSOFT: BotAuthentication
+
 class InstanceUser(_message.Message):
     __slots__ = ("id", "username", "email")
     ID_FIELD_NUMBER: _ClassVar[int]
@@ -49,6 +58,44 @@ class InstanceCreateResponse(_message.Message):
     ID_FIELD_NUMBER: _ClassVar[int]
     id: str
     def __init__(self, id: _Optional[str] = ...) -> None: ...
+
+class InstanceGetOrCreateRequest(_message.Message):
+    __slots__ = ("name", "server")
+    NAME_FIELD_NUMBER: _ClassVar[int]
+    SERVER_FIELD_NUMBER: _ClassVar[int]
+    name: str
+    server: str
+    def __init__(self, name: _Optional[str] = ..., server: _Optional[str] = ...) -> None: ...
+
+class InstanceGetOrCreateResponse(_message.Message):
+    __slots__ = ("id", "created")
+    ID_FIELD_NUMBER: _ClassVar[int]
+    CREATED_FIELD_NUMBER: _ClassVar[int]
+    id: str
+    created: bool
+    def __init__(self, id: _Optional[str] = ..., created: bool = ...) -> None: ...
+
+class InstanceGetOrCreateBotRequest(_message.Message):
+    __slots__ = ("id", "name", "auth", "username", "account")
+    ID_FIELD_NUMBER: _ClassVar[int]
+    NAME_FIELD_NUMBER: _ClassVar[int]
+    AUTH_FIELD_NUMBER: _ClassVar[int]
+    USERNAME_FIELD_NUMBER: _ClassVar[int]
+    ACCOUNT_FIELD_NUMBER: _ClassVar[int]
+    id: str
+    name: str
+    auth: BotAuthentication
+    username: str
+    account: _common_pb2.MinecraftAccountProto
+    def __init__(self, id: _Optional[str] = ..., name: _Optional[str] = ..., auth: _Optional[_Union[BotAuthentication, str]] = ..., username: _Optional[str] = ..., account: _Optional[_Union[_common_pb2.MinecraftAccountProto, _Mapping]] = ...) -> None: ...
+
+class InstanceGetOrCreateBotResponse(_message.Message):
+    __slots__ = ("bot_id", "created")
+    BOT_ID_FIELD_NUMBER: _ClassVar[int]
+    CREATED_FIELD_NUMBER: _ClassVar[int]
+    bot_id: str
+    created: bool
+    def __init__(self, bot_id: _Optional[str] = ..., created: bool = ...) -> None: ...
 
 class InstanceDeleteRequest(_message.Message):
     __slots__ = ("id",)

@@ -5,7 +5,7 @@ import os
 import random
 from collections.abc import AsyncIterator, Callable, Iterable
 from types import MappingProxyType
-from typing import Any, Never, Protocol, cast
+from typing import Any, Literal, Never, Protocol, TypedDict, cast
 
 from connectrpc.client import ConnectClient
 from connectrpc.code import Code
@@ -30,6 +30,7 @@ from effect_py import (
     gen,
     layer,
     scoped,
+    sync,
     try_async,
 )
 from effect_py.errors import catch_tag
@@ -78,6 +79,7 @@ from .errors import (
     SoulFireInstallError,
     SoulFireOperationError,
     SoulFireRpcError,
+    SoulFireValidationError,
     operation_error,
 )
 from .fleet import SoulFireFleet
@@ -85,10 +87,15 @@ from .instance_connect import InstanceServiceClient
 from .instance_live_connect import InstanceLiveServiceClient
 from .instance_live_pb2 import InstanceEvent, InstanceEventFilter, WatchInstanceEventsRequest
 from .instance_pb2 import (
+    BOT_AUTHENTICATION_MICROSOFT,
+    BOT_AUTHENTICATION_OFFLINE,
     InstanceAddAccountsBatchRequest,
     InstanceAddProxiesBatchRequest,
     InstanceCreateRequest,
     InstanceDeleteRequest,
+    InstanceGetOrCreateBotRequest,
+    InstanceGetOrCreateBotResponse,
+    InstanceGetOrCreateRequest,
     InstanceInfo,
     InstanceInfoRequest,
     InstanceListRequest,
@@ -106,6 +113,7 @@ from .mc_auth_connect import MCAuthServiceClient
 from .mc_auth_pb2 import (
     CredentialsAuthRequest,
     CredentialsAuthResponse,
+    DeviceCode,
     DeviceCodeAuthRequest,
     DeviceCodeAuthResponse,
     RefreshRequest,
@@ -137,6 +145,17 @@ type ClientInterceptor = (
     | BidiStreamInterceptor
     | MetadataInterceptor[Any]
 )
+
+
+class ManagedInstallOptions(TypedDict, total=False):
+    directory: str | os.PathLike[str] | None
+    version: str | None
+    java_args: Iterable[str]
+    port: int | None
+    startup_timeout: float
+    on_log: Callable[[str], None] | None
+    timeout_ms: int | None
+    interceptors: Iterable[ClientInterceptor]
 
 
 def normalize_base_url(base_url: str) -> str:
@@ -299,6 +318,34 @@ class SoulFire:
     def set_token(self, token: TokenProvider | None) -> None:
         self._token = token
 
+    @classmethod
+    @fn("SoulFire.create_bot")
+    def create_bot(
+        cls,
+        *,
+        server: str,
+        username: str,
+        auth: Literal["offline", "microsoft"] = "offline",
+        instance_name: str | None = None,
+        name: str | None = None,
+        ready_timeout: float = 30.0,
+        on_device_code: Callable[[DeviceCode], Effect[None, SoulFireOperationError]] | None = None,
+        installation: ManagedInstallOptions | None = None,
+    ) -> EffectGen[SoulFireBot, SoulFireOperationError, Scope]:
+        client = yield from cls.install(**(installation or {}))
+        instance = yield from client.get_or_create_instance(
+            instance_name if instance_name is not None else server.strip(), server=server
+        )
+        return (
+            yield from instance.get_or_create_bot(
+                name if name is not None else username,
+                username=username,
+                auth=auth,
+                ready_timeout=ready_timeout,
+                on_device_code=on_device_code,
+            )
+        )
+
     @property
     def local_server(self) -> LocalSoulFireServer | None:
         handle = self._local_server_handle
@@ -417,6 +464,24 @@ class SoulFire:
                 headers=headers,
                 timeout_ms=timeout_ms,
             ),
+        )
+        return self.instance(response.id)
+
+    @fn("SoulFire.get_or_create_instance")
+    def get_or_create_instance(
+        self,
+        name: str,
+        *,
+        server: str | None = None,
+        timeout_ms: int | None = None,
+    ) -> EffectGen[SoulFireInstance, SoulFireOperationError]:
+        yield from validate(lambda: self.capabilities.require("instance.provisioning.v1"))
+        request = InstanceGetOrCreateRequest(name=name)
+        if server is not None:
+            request.server = server
+        response = yield from rpc(
+            "SoulFire.get_or_create_instance",
+            lambda: self.instance_service.get_or_create_instance(request, timeout_ms=timeout_ms),
         )
         return self.instance(response.id)
 
@@ -559,6 +624,83 @@ class SoulFireInstance:
     @property
     def fleet(self) -> SoulFireFleet:
         return SoulFireFleet(self, self._capabilities)
+
+    @fn("SoulFireInstance.get_or_create_bot")
+    def get_or_create_bot(
+        self,
+        name: str,
+        *,
+        auth: Literal["offline", "microsoft"] = "offline",
+        username: str | None = None,
+        start: bool = True,
+        ready_timeout: float = 30.0,
+        on_device_code: Callable[[DeviceCode], Effect[None, SoulFireOperationError]] | None = None,
+        timeout_ms: int | None = None,
+    ) -> EffectGen[SoulFireBot, SoulFireOperationError, Scope]:
+        if auth not in ("offline", "microsoft"):
+            return (yield from fail(SoulFireValidationError("auth must be offline or microsoft")))
+        request = InstanceGetOrCreateBotRequest(
+            id=self.id,
+            name=name,
+            auth=BOT_AUTHENTICATION_MICROSOFT
+            if auth == "microsoft"
+            else BOT_AUTHENTICATION_OFFLINE,
+        )
+        if username is not None:
+            request.username = username
+
+        def provision() -> Effect[InstanceGetOrCreateBotResponse, SoulFireOperationError]:
+            return rpc(
+                "SoulFireInstance.get_or_create_bot",
+                lambda: self._instance_service.get_or_create_bot(request, timeout_ms=timeout_ms),
+            )
+
+        @gen
+        def authenticate() -> EffectGen[InstanceGetOrCreateBotResponse, SoulFireOperationError]:
+            def show_code(event: DeviceCodeAuthResponse) -> Effect[None, SoulFireOperationError]:
+                if event.WhichOneof("data") != "device_code":
+                    return sync(lambda: None)
+                code = event.device_code
+                if on_device_code is not None:
+                    return on_device_code(code)
+                return sync(
+                    lambda: print(f"Sign in at {code.verification_uri} with code {code.user_code}")
+                )
+
+            account = (
+                yield from self.login_device_code(
+                    AccountTypeDeviceCode.MICROSOFT_JAVA_DEVICE_CODE, timeout_ms=timeout_ms
+                )
+                .tap(show_code)
+                .filter(lambda event: event.WhichOneof("data") == "account")
+                .map(lambda event: event.account)
+                .run_head()
+            )
+            if account is None:
+                return (
+                    yield from fail(
+                        operation_error(
+                            "SoulFireInstance.get_or_create_bot",
+                            RuntimeError("Microsoft authentication ended without an account"),
+                        )
+                    )
+                )
+            request.account.CopyFrom(account)
+            return (yield from provision())
+
+        response = yield from provision().pipe(
+            catch_tag(SoulFireRpcError)(
+                lambda error: (
+                    authenticate
+                    if auth == "microsoft" and error.code == Code.NOT_FOUND
+                    else fail(error)
+                )
+            )
+        )
+        bot = self.bot(response.bot_id)
+        if start:
+            yield from bot.connect(ready_timeout=ready_timeout, timeout_ms=timeout_ms)
+        return bot
 
     def bot(self, bot_id: str) -> SoulFireBot:
         return SoulFireBot(
@@ -1023,6 +1165,10 @@ class SoulFireService(Protocol):
     ) -> Effect[SoulFireInstance, SoulFireOperationError]: ...
 
     def instance(self, instance_id: str) -> SoulFireInstance: ...
+
+    def get_or_create_instance(
+        self, name: str, *, server: str | None = None, timeout_ms: int | None = None
+    ) -> Effect[SoulFireInstance, SoulFireOperationError]: ...
 
 
 def connection_layer(

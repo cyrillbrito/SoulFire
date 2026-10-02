@@ -2,20 +2,12 @@
 // a local jar, and one bot on that server. Tests build their scene with server commands (RCON),
 // drive the bot through the SDK and check the result.
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
 import { accessSync, appendFileSync, constants, mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import { create } from "@bufbuild/protobuf";
 import { ValueSchema } from "@bufbuild/protobuf/wkt";
 import type { SoulFireBot, SoulFireOperationError } from "@soulfiremc/sdk";
-import {
-  MinecraftAccountProto_AccountTypeProto,
-  MinecraftAccountProto_OfflineJavaDataSchema,
-  MinecraftAccountProtoSchema,
-  SettingsNamespace_SettingsEntrySchema,
-  SettingsNamespaceSchema,
-} from "@soulfiremc/sdk/generated/soulfire/common_pb";
 import { SoulFire } from "@soulfiremc/sdk/node";
 import { Console, Data, Duration, Effect, Schedule } from "effect";
 
@@ -213,27 +205,18 @@ export const startSoulFire = Effect.fn("startSoulFire")(function* (jarPath: stri
   // SoulFire keeps its instances in its database: start from a clean one each run.
   const old = (yield* soulfire.instances()).filter((i) => i.friendlyName === INSTANCE_NAME);
   yield* Effect.forEach(old, (i) => soulfire.instance(i.id).delete(), { discard: true });
-  const instance = yield* Effect.acquireRelease(soulfire.createInstance(INSTANCE_NAME), (i) => i.delete().pipe(Effect.ignore));
-  yield* instance.setConfigEntry({ namespace: "bot", key: "address", value: value(`${minecraft.host}:${minecraft.port}`) });
-  const profileId = offlineUuid(BOT_NAME);
-  yield* instance.addAccounts([
-    create(MinecraftAccountProtoSchema, {
-      type: MinecraftAccountProto_AccountTypeProto.OFFLINE,
-      profileId,
-      lastKnownName: BOT_NAME,
-      accountData: { case: "offlineJavaData", value: create(MinecraftAccountProto_OfflineJavaDataSchema) },
-      config: Object.entries(BOT_SETTINGS).map(([namespace, entries]) =>
-        create(SettingsNamespaceSchema, {
-          namespace,
-          entries: Object.entries(entries).map(([key, v]) => create(SettingsNamespace_SettingsEntrySchema, { key, value: v })),
-        }),
-      ),
-    }),
-  ]);
-
-  const bot = instance.bot(profileId);
-  yield* Effect.acquireRelease(bot.start(), () => bot.stop().pipe(Effect.ignore));
-  const [joined] = yield* Effect.timed(bot.waitForOnline({ call: { timeoutMs: 120_000 } }));
+  const instance = yield* Effect.acquireRelease(
+    soulfire.getOrCreateInstance(INSTANCE_NAME, { server: `${minecraft.host}:${minecraft.port}` }),
+    (i) => i.delete().pipe(Effect.ignore),
+  );
+  for (const [namespace, entries] of Object.entries(BOT_SETTINGS)) {
+    for (const [key, v] of Object.entries(entries)) {
+      yield* instance.setConfigEntry({ namespace, key, value: v });
+    }
+  }
+  const [joined, bot] = yield* Effect.timed(instance.getOrCreateBot(BOT_NAME, {
+    readyTimeoutMs: 120_000,
+  }));
   yield* Console.log(`[soulfire] ${BOT_NAME} online in ${seconds(joined)}`);
   return bot;
 });
@@ -284,15 +267,6 @@ export const blockOf = (p: Pos): Pos => ({ x: Math.floor(p.x), y: Math.floor(p.y
 // ---- helpers ---------------------------------------------------------------------------------
 
 export const seconds = (d: Duration.Duration) => `${(Duration.toMillis(d) / 1000).toFixed(1)}s`;
-
-/** The UUID the server gives an offline-mode player of that name. */
-function offlineUuid(name: string) {
-  const b = createHash("md5").update(`OfflinePlayer:${name}`, "utf8").digest();
-  b[6] = (b[6]! & 0x0f) | 0x30;
-  b[8] = (b[8]! & 0x3f) | 0x80;
-  const h = b.toString("hex");
-  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
-}
 
 function value(v: string | number | boolean) {
   const kind =

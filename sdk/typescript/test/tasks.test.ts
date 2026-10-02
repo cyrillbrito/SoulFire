@@ -1074,8 +1074,7 @@ describe("SoulFireTasks", () => {
             createClient(BotLiveService, transport),
             createClient(BotTaskService, transport),
           );
-          yield* bot.tasks.collectBlocks(["minecraft:oak_log"], {
-            tags: ["minecraft:logs"],
+          yield* bot.tasks.collectBlocks(["oak_log", "#logs"], {
             count: 6,
             searchRadius: 48,
             avoidSubmergedTargets: true,

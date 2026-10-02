@@ -25,6 +25,7 @@ from .recipe_pb2 import (
     VillagerTradeTask,
     VillagerTradeTaskResult,
 )
+from .selectors import block_selectors
 from .streams import Stream
 from .task_connect import BotTaskServiceClient
 from .task_pb2 import (
@@ -1969,7 +1970,7 @@ class SoulFireTasks:
 
     def run_collect_blocks(
         self,
-        block_ids: Iterable[str] = (),
+        block_ids: str | Iterable[str] = (),
         *,
         tags: Iterable[str] = (),
         count: int = 1,
@@ -2005,7 +2006,7 @@ class SoulFireTasks:
     @fn("SoulFireTasks.collect_blocks")
     def collect_blocks(
         self,
-        block_ids: Iterable[str] = (),
+        block_ids: str | Iterable[str] = (),
         *,
         tags: Iterable[str] = (),
         count: int = 1,
@@ -3062,7 +3063,7 @@ def _auto_armor_task(
 
 
 def _collect_blocks_task(
-    block_ids: Iterable[str],
+    block_ids: str | Iterable[str],
     tags: Iterable[str],
     count: int,
     search_radius: int,
@@ -3071,8 +3072,8 @@ def _collect_blocks_task(
     target_y_range: IntRange | None,
     options: PathfindOptions | None,
 ) -> CollectBlocksTask:
-    ids = tuple(block_ids)
-    block_tags = tuple(tags)
+    ids, selector_tags = block_selectors(block_ids)
+    block_tags = (*selector_tags, *tags)
     if not ids and (not block_tags):
         raise ValueError("block_ids or tags must contain at least one selector")
     if count <= 0:

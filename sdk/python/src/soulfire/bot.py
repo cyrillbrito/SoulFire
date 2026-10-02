@@ -1,8 +1,23 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable
 
-from effect_py import Effect, EffectGen, Scope, acquire_release, fail, fn, gen, scoped
+from effect_py import (
+    Effect,
+    EffectGen,
+    Scope,
+    acquire_release,
+    add_finalizer,
+    clock,
+    fail,
+    fn,
+    gen,
+    schedule,
+    scoped,
+    sync,
+)
+from effect_py.errors import catch_tag
 
 from .actions import action_headers, require_action
 from .bot_connect import BotServiceClient
@@ -83,7 +98,12 @@ from .bot_pb2 import (
 from .camera import SoulFireCamera
 from .chat_connect import ChatServiceClient
 from .common_pb2 import BlockPosition
-from .errors import SoulFireOperationError, operation_error
+from .errors import (
+    SoulFireOperationError,
+    SoulFireTimeoutError,
+    SoulFireValidationError,
+    operation_error,
+)
 from .inventory_connect import InventoryServiceClient
 from .inventory_pb2 import InventoryScope
 from .pathfinding import SoulFirePathfinder
@@ -99,9 +119,10 @@ from .semantic import (
     SoulFireRegistry,
     SoulFireWorld,
 )
-from .session import BotSession, BotSessionOptions
+from .session import BotSession, BotSessionOptions, BotSessionState, empty_bot_session_state
 from .streams import End, Stream
 from .task_connect import BotTaskServiceClient
+from .task_pb2 import CollectBlocksTaskResult
 from .tasks import SoulFireTasks
 from .transport import rpc, rpc_stream, validate
 from .world_connect import WorldServiceClient
@@ -163,6 +184,97 @@ class SoulFireBot:
         self._world_client = world_client
         self._protocol_client = protocol_client
         self._control_token: str | None = None
+        self._session: BotSession | None = None
+
+    @property
+    def state(self) -> BotSessionState:
+        return self._session.state if self._session is not None else empty_bot_session_state()
+
+    @fn("SoulFireBot.connect")
+    def connect(
+        self, *, ready_timeout: float = 30.0, timeout_ms: int | None = None
+    ) -> EffectGen[None, SoulFireOperationError, Scope]:
+        if self._session is not None:
+            return
+        if not math.isfinite(ready_timeout) or ready_timeout <= 0:
+            yield from fail(
+                SoulFireValidationError("ready_timeout must be a positive finite number")
+            )
+        deadline = (yield from clock.now()) + ready_timeout
+
+        def timeout[A](
+            operation: Effect[A, SoulFireOperationError],
+        ) -> Effect[A, SoulFireOperationError]:
+            @gen
+            def run() -> EffectGen[A, SoulFireOperationError]:
+                remaining = deadline - (yield from clock.now())
+                timed = operation.pipe(schedule.timeout(max(0.0, remaining)))
+
+                def on_timeout(_: schedule.TimeoutException) -> Effect[A, SoulFireOperationError]:
+                    return fail(
+                        SoulFireTimeoutError(
+                            "Timed out waiting for the bot's initial player snapshot"
+                        )
+                    )
+
+                return (yield from catch_tag(schedule.TimeoutException)(on_timeout)(timed))
+
+            return run
+
+        current = yield from timeout(self.info(timeout_ms=timeout_ms))
+        info = yield from acquire_release(
+            sync(lambda: current),
+            lambda info, _: (
+                sync(lambda: None)
+                if info.status.desired_state == BOT_DESIRED_STATE_RUNNING
+                else self.stop().map(lambda _: None).or_die()
+            ),
+        )
+        if info.status.desired_state != BOT_DESIRED_STATE_RUNNING:
+            yield from timeout(self.start(timeout_ms=timeout_ms))
+        remaining = max(0.0, deadline - (yield from clock.now()))
+        session = yield from self.observe(ready_timeout=remaining)
+        yield from timeout(session.wait_for_state(lambda state: state.player is not None))
+        self._session = session
+        yield from add_finalizer(lambda _: sync(lambda: self._clear_session(session)))
+
+    def _clear_session(self, session: BotSession) -> None:
+        if self._session is session:
+            self._session = None
+
+    @fn("SoulFireBot.collect")
+    def collect(
+        self,
+        target: str | Iterable[str],
+        *,
+        count: int = 1,
+        search_radius: int = 32,
+        avoid_submerged_targets: bool = False,
+        require_line_of_sight: bool = False,
+        options: PathfindOptions | None = None,
+        timeout_ms: int | None = None,
+    ) -> EffectGen[CollectBlocksTaskResult, SoulFireOperationError]:
+        @gen
+        def run() -> EffectGen[CollectBlocksTaskResult, SoulFireOperationError, Scope]:
+            task = yield from acquire_release(
+                self.tasks.collect_blocks(
+                    target,
+                    count=count,
+                    search_radius=search_radius,
+                    avoid_submerged_targets=avoid_submerged_targets,
+                    require_line_of_sight=require_line_of_sight,
+                    options=options,
+                    timeout_ms=timeout_ms,
+                ),
+                lambda task, _: (
+                    sync(lambda: None)
+                    if task.terminal
+                    else task.cancel().map(lambda _: None).or_die()
+                ),
+            )
+            return (yield from task.result(timeout_ms=timeout_ms))
+
+        return (yield from scoped(run))
 
     @property
     def tasks(self) -> SoulFireTasks:
@@ -191,7 +303,11 @@ class SoulFireBot:
             self.id,
             _required_service(self._chat_client, "chat"),
             lambda headers: _action_headers(headers, self._control_token),
-            lambda event_filter, timeout_ms: self.events(event_filter, timeout_ms=timeout_ms),
+            lambda event_filter, timeout_ms: (
+                self._session.events()
+                if self._session is not None and timeout_ms is None
+                else self.events(event_filter, timeout_ms=timeout_ms)
+            ),
         )
 
     @property
@@ -335,6 +451,8 @@ class SoulFireBot:
     def events(
         self, event_filter: BotEventFilter | None = None, *, timeout_ms: int | None = None
     ) -> Stream[BotEvent, SoulFireOperationError]:
+        if self._session is not None and event_filter is None and timeout_ms is None:
+            return self._session.events()
         return rpc_stream(
             "SoulFireBot.events",
             lambda: self._live_client.watch_bot_events(
@@ -349,8 +467,14 @@ class SoulFireBot:
 
     @fn("SoulFireBot.observe")
     def observe(
-        self, options: BotSessionOptions | None = None, *, timeout_ms: int | None = None
+        self,
+        options: BotSessionOptions | None = None,
+        *,
+        timeout_ms: int | None = None,
+        ready_timeout: float | None = None,
     ) -> EffectGen[BotSession, SoulFireOperationError, Scope]:
+        if self._session is not None and options is None:
+            return self._session
 
         def stream(request: WatchBotEventsRequest) -> Stream[BotEvent, SoulFireOperationError]:
             request.instance_id = self.instance_id
@@ -360,7 +484,7 @@ class SoulFireBot:
                 lambda: self._live_client.watch_bot_events(request, timeout_ms=timeout_ms),
             )
 
-        return (yield from BotSession.open(stream, options))
+        return (yield from BotSession.open(stream, options, ready_timeout=ready_timeout))
 
     @fn("SoulFireBot.send_chat")
     def send_chat(

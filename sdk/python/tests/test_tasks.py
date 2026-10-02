@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import AsyncIterator, Iterator
 from datetime import datetime
 from typing import cast
@@ -19,6 +20,7 @@ from soulfire.recipe_pb2 import BrewTask, CraftTask, SmeltTask, VillagerTradeTas
 from soulfire.task_connect import BotTaskServiceClient
 from soulfire.task_pb2 import (
     BOT_TASK_DISCONNECT_POLICY_CANCEL_WITH_CALL,
+    BOT_TASK_STATUS_CANCELLED,
     BOT_TASK_STATUS_COMPLETED,
     BOT_TASK_STATUS_RUNNING,
     BUILD_MIRROR_X,
@@ -35,6 +37,7 @@ from soulfire.task_pb2 import (
     BreedTask,
     BuildTask,
     CollectBlocksTask,
+    CollectBlocksTaskResult,
     ContainerTransferTask,
     ExcavateTask,
     ExploreTask,
@@ -821,8 +824,7 @@ async def test_effect_collect_blocks_task_preserves_selectors_and_path_policy() 
             cast(BotTaskServiceClient, service),
         )
         yield from bot.tasks.collect_blocks(
-            ["minecraft:oak_log"],
-            tags=["minecraft:logs"],
+            ["oak_log", "#logs"],
             count=6,
             search_radius=48,
             avoid_submerged_targets=True,
@@ -1102,3 +1104,58 @@ async def test_task_deadline_must_be_timezone_aware() -> None:
         assert service.request is None
 
     await run_async(scoped(workflow).or_die())
+
+
+@pytest.mark.parametrize("complete", [True, False])
+async def test_foreground_collection_cancels_only_unfinished_work(complete: bool) -> None:
+    class CollectionService:
+        def __init__(self) -> None:
+            self.watching = asyncio.Event()
+            self.cancellations = 0
+
+        async def start_bot_task(self, request: StartBotTaskRequest, **_kwargs: object) -> BotTask:
+            task = CollectBlocksTask()
+            assert request.input.Unpack(task)
+            assert list(task.tags) == ["minecraft:logs"]
+            assert task.count == 8
+            return BotTask(task_id="collection", status=BOT_TASK_STATUS_RUNNING)
+
+        async def watch_bot_task(
+            self, _request: object, **_kwargs: object
+        ) -> AsyncIterator[BotTaskEvent]:
+            self.watching.set()
+            if complete:
+                result = AnyMessage()
+                result.Pack(CollectBlocksTaskResult(blocks_broken=8))
+                yield BotTaskEvent(
+                    task=BotTask(
+                        task_id="collection",
+                        status=BOT_TASK_STATUS_COMPLETED,
+                        result=result,
+                    )
+                )
+            else:
+                await asyncio.Event().wait()
+
+        async def cancel_bot_task(self, _request: object, **_kwargs: object) -> BotTask:
+            self.cancellations += 1
+            return BotTask(task_id="collection", status=BOT_TASK_STATUS_CANCELLED)
+
+    service = CollectionService()
+    bot = SoulFireBot(
+        "instance",
+        "bot",
+        cast(BotServiceClient, object()),
+        cast(BotLiveServiceClient, object()),
+        cast(BotTaskServiceClient, service),
+    )
+    if complete:
+        result = await run_async(bot.collect("#logs", count=8).or_die())
+        assert result.blocks_broken == 8
+    else:
+        running = asyncio.create_task(run_async(bot.collect("#logs", count=8).or_die()))
+        await asyncio.wait_for(service.watching.wait(), timeout=1)
+        running.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await running
+    assert service.cancellations == (0 if complete else 1)

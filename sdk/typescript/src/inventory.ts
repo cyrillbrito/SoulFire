@@ -3,6 +3,7 @@ import type { CallOptions, Client } from "@connectrpc/connect";
 import { Effect, type Scope } from "effect";
 import { operationError, type SoulFireOperationError } from "./errors.js";
 import { rpc, withSignal } from "./transport.js";
+import { itemSelector } from "./selectors.js";
 
 import { type BlockPositionSchema } from "./generated/soulfire/common_pb.js";
 import {
@@ -268,13 +269,17 @@ export class SoulFireInventory {
    * hotbar, armor, offhand and crafting slots.
    */
   public count(
-    request: InventoryRequest<typeof CountItemsRequestSchema>,
+    request: string | InventoryRequest<typeof CountItemsRequestSchema>,
     options?: CallOptions,
   ): Effect.Effect<bigint, SoulFireOperationError> {
     return Effect.gen({ self: this }, function* () {
+      const normalized = yield* Effect.try({
+        try: () => typeof request === "string" ? { selector: itemSelector(request) } : request,
+        catch: (cause) => operationError("SoulFireInventory.count", cause),
+      });
       const response = yield* rpc("SoulFireInventory.count", (signal) =>
         this.client.countItems(
-          { ...request, scope: this.scope() },
+          { ...normalized, scope: this.scope() },
           withSignal(options, signal),
         ),
       );

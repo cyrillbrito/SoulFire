@@ -85,6 +85,7 @@ from .registry_pb2 import (
     ListRegistryTagsResponse,
     RegistryKind,
 )
+from .selectors import item_selector
 from .streams import Stream
 from .tasks import SoulFireTask, SoulFireTasks
 from .transport import rpc, validate
@@ -765,15 +766,16 @@ class SoulFireInventory(_InventoryBase):
     @fn("SoulFireInventory.count")
     def count(
         self,
-        selector: ItemSelector,
+        selector: str | ItemSelector,
         *,
         areas: Iterable[InventoryArea] = (),
         timeout_ms: int | None = None,
     ) -> EffectGen[int, SoulFireOperationError]:
+        normalized = yield from validate(lambda: item_selector(selector))
         response = yield from rpc(
             "SoulFireInventory.count",
             lambda: self._client.count_items(
-                CountItemsRequest(scope=self._scope, selector=selector, areas=areas),
+                CountItemsRequest(scope=self._scope, selector=normalized, areas=areas),
                 timeout_ms=timeout_ms,
             ),
         )
