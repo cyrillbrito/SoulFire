@@ -919,6 +919,41 @@ final class PathfindingTest {
     assertInstanceOf(ClimbAction.class, route.actions().getFirst());
   }
 
+  @ParameterizedTest
+  @ValueSource(booleans = {true, false})
+  void pathfindingUsesLadderBetweenFloors(boolean ascending) {
+    // A ladder on the north face of a wall, from the ground up to the floor on top of the wall
+    var accessor = new TestBlockAccessorBuilder();
+    accessor.setBlockAt(0, 0, -1, Blocks.STONE);
+    accessor.setBlockAt(0, 0, 0, Blocks.STONE);
+    for (var y = 1; y <= 5; y++) {
+      accessor.setBlockAt(0, y, 0, Blocks.LADDER);
+      accessor.setBlockAt(0, y, 1, Blocks.STONE);
+    }
+
+    var constraint = new NoBlockActionsConstraint(TestPathConstraint.INSTANCE);
+    var inventory = new ProjectedInventory(List.of(), TestMiningCostCalculator.INSTANCE, constraint);
+    var ground = new SFVec3i(0, 1, -1);
+    var top = new SFVec3i(0, 6, 1);
+    var goal = ascending ? top : ground;
+    var routeFinder = new RouteFinder(
+      new MinecraftGraph(accessor.build(), inventory, constraint),
+      new PosGoal(goal.x, goal.y, goal.z)
+    );
+
+    var route = assertInstanceOf(
+      RouteFinder.FoundRouteResult.class,
+      routeFinder.findRouteFuture(
+        NodeState.forInfo(ascending ? ground : top, inventory)
+      ).join()
+    );
+
+    // Down, the route may leave the ladder anywhere it can drop to the ground from
+    if (ascending) {
+      assertTrue(route.actions().stream().anyMatch(ClimbAction.class::isInstance));
+    }
+  }
+
   @Test
   void pathfindingRejectsDiagonalJumpAscents() {
     var height = 1;
