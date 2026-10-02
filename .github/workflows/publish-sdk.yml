@@ -2,24 +2,6 @@ name: Publish SDKs
 run-name: Publish SDKs v${{ inputs.version }}
 
 on:
-  workflow_call:
-    inputs:
-      version:
-        description: Version declared by all SDK package manifests
-        required: true
-        type: string
-      publish_npm:
-        description: Publish @soulfiremc/sdk and @soulfiremc/beat-game to npm
-        required: true
-        type: boolean
-      publish_pypi:
-        description: Publish soulfire to PyPI
-        required: true
-        type: boolean
-      publish_jsr:
-        description: Publish @soulfiremc/sdk to JSR
-        required: true
-        type: boolean
   workflow_dispatch:
     inputs:
       version:
