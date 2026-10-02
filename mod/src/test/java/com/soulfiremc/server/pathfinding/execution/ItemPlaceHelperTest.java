@@ -27,9 +27,11 @@ import net.minecraft.world.item.Items;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class ItemPlaceHelperTest {
@@ -63,5 +65,67 @@ final class ItemPlaceHelperTest {
     );
 
     assertEquals(Items.COBBLESTONE, selected.orElseThrow());
+  }
+
+  /// The player menu, all empty: 0 craft result, 1-4 grid, 5-8 armor, 9-35
+  /// inventory, 36-44 hotbar, 45 off-hand.
+  private static List<ItemStack> emptyMenu() {
+    var menu = new ArrayList<ItemStack>();
+    for (var i = 0; i < 46; i++) {
+      menu.add(ItemStack.EMPTY);
+    }
+    return menu;
+  }
+
+  /// Every item mines at hand speed except an axe, which is faster.
+  private static int ticks(ItemStack stack) {
+    return stack.is(Items.IRON_AXE) ? 5 : 30;
+  }
+
+  @Test
+  void anEmptyHandIsAnEmptyHotbarSlotNeverTheOffHand() {
+    // Holding logs, breaking leaves: nothing beats the bare hand. Taking the
+    // empty off-hand as "the empty hand" swapped the logs into it.
+    var menu = emptyMenu();
+    menu.set(36, itemStack(Items.BIRCH_LOG));
+
+    var slot = ItemPlaceHelper.bestToolSlot(menu, 36, ItemPlaceHelperTest::ticks);
+
+    assertEquals(37, slot);
+  }
+
+  @Test
+  void aFullHotbarGivesAnEmptyInventorySlotAndAFullInventoryKeepsTheHeldItem() {
+    var menu = emptyMenu();
+    for (var slot = 36; slot <= 44; slot++) {
+      menu.set(slot, itemStack(Items.BIRCH_LOG));
+    }
+    assertEquals(9, ItemPlaceHelper.bestToolSlot(menu, 40, ItemPlaceHelperTest::ticks));
+
+    for (var slot = 9; slot <= 35; slot++) {
+      menu.set(slot, itemStack(Items.DIRT));
+    }
+    assertEquals(40, ItemPlaceHelper.bestToolSlot(menu, 40, ItemPlaceHelperTest::ticks));
+  }
+
+  @Test
+  void aFasterToolIsTakenFromTheInventoryButNotFromTheOffHand() {
+    var menu = emptyMenu();
+    menu.set(36, itemStack(Items.BIRCH_LOG));
+    menu.set(20, itemStack(Items.IRON_AXE));
+    assertEquals(20, ItemPlaceHelper.bestToolSlot(menu, 36, ItemPlaceHelperTest::ticks));
+
+    menu.set(20, ItemStack.EMPTY);
+    menu.set(45, itemStack(Items.IRON_AXE));
+    assertNotEquals(45, ItemPlaceHelper.bestToolSlot(menu, 36, ItemPlaceHelperTest::ticks));
+  }
+
+  @Test
+  void theHeldToolWinsATie() {
+    var menu = emptyMenu();
+    menu.set(38, itemStack(Items.IRON_AXE));
+    menu.set(36, itemStack(Items.IRON_AXE));
+
+    assertEquals(38, ItemPlaceHelper.bestToolSlot(menu, 38, ItemPlaceHelperTest::ticks));
   }
 }

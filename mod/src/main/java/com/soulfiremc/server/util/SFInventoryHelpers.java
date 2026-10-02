@@ -26,6 +26,7 @@ import net.minecraft.world.inventory.CraftingMenu;
 import net.minecraft.world.inventory.InventoryMenu;
 import net.minecraft.world.item.ItemStack;
 
+import java.util.List;
 import java.util.OptionalInt;
 import java.util.function.IntPredicate;
 import java.util.function.Predicate;
@@ -34,6 +35,18 @@ import java.util.stream.IntStream;
 @Slf4j
 public final class SFInventoryHelpers {
   private SFInventoryHelpers() {
+  }
+
+  /// Ticks to wait for a newly opened menu's contents before using it anyway.
+  public static final int MENU_CONTENTS_GRACE_TICKS = 20;
+
+  /// Whether a newly opened menu has received its contents from the server.
+  ///
+  /// The server opens a screen and then sends its slots in a separate packet.
+  /// A client menu starts at state id 0, and the first content packet sets a
+  /// state id of at least 1, so reading the menu before that sees it empty.
+  public static boolean hasReceivedContents(AbstractContainerMenu menu) {
+    return menu.getStateId() != 0;
   }
 
   public static boolean isSelectableHotbarSlot(int slot) {
@@ -46,6 +59,32 @@ public final class SFInventoryHelpers {
 
   public static int getSelectedSlot(Inventory inventory) {
     return inventory.getSelectedSlot() + InventoryMenu.USE_ROW_SLOT_START;
+  }
+
+  /// The hotbar index (0-8) to bring an item from the off-hand into the main
+  /// hand through, with a swap: the held one if it's empty, else an empty one
+  /// (select it after), else the held one. A swap with a held item puts that
+  /// item into the off-hand, where picked-up items of its kind then pile up
+  /// and deposits don't look.
+  public static int hotbarForSwapIn(Inventory inventory) {
+    return hotbarForSwapIn(
+      IntStream.range(0, Inventory.getSelectionSize())
+        .mapToObj(inventory::getItem)
+        .toList(),
+      inventory.getSelectedSlot()
+    );
+  }
+
+  static int hotbarForSwapIn(List<ItemStack> hotbar, int selected) {
+    if (hotbar.get(selected).isEmpty()) {
+      return selected;
+    }
+    for (var i = 0; i < hotbar.size(); i++) {
+      if (hotbar.get(i).isEmpty()) {
+        return i;
+      }
+    }
+    return selected;
   }
 
   public static OptionalInt findMatchingSlotForAction(Inventory inventory, InventoryMenu menu, Predicate<ItemStack> predicate) {
