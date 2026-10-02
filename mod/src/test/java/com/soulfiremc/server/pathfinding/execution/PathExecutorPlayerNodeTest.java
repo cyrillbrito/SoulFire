@@ -80,6 +80,18 @@ final class PathExecutorPlayerNodeTest {
   }
 
   @Test
+  void aPlayerBesideAFenceBelowItsFeetStartsAboveTheStone() {
+    var blocks = new TestBlockAccessorBuilder();
+    blocks.setBlockAt(0, 0, 0, Blocks.STONE);
+    blocks.setBlockAt(1, 0, 0, Blocks.OAK_FENCE);
+
+    assertEquals(
+      new SFVec3i(0, 1, 0),
+      PathExecutor.playerNode(blocks.build(), new Vec3(1.05, 1, 0.5))
+    );
+  }
+
+  @Test
   void aPlayerOnASlabOrFarmlandKeepsItsNode() {
     var blocks = new TestBlockAccessorBuilder();
     blocks.setBlockAt(0, 0, 0, Blocks.FARMLAND);

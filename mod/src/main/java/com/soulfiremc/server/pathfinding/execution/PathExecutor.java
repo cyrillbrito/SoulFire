@@ -650,7 +650,7 @@ public final class PathExecutor implements ControlTask {
       .deflate(1.0E-7);
     var body = Shapes.create(box);
     for (var pos : BlockPos.betweenClosed(
-      BlockPos.containing(box.minX, box.minY, box.minZ),
+      BlockPos.containing(box.minX, box.minY - 1, box.minZ),
       BlockPos.containing(box.maxX, box.maxY, box.maxZ)
     )) {
       var shape = level.getBlockState(pos).getCollisionShape(level, pos);
