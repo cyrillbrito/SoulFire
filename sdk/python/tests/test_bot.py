@@ -2,7 +2,7 @@ from collections.abc import AsyncIterator
 from typing import cast
 
 import pytest
-from effect_py import gen, run_async, scoped, succeed
+from effect_py import Failure, gen, run_async, run_async_exit, scoped, succeed
 
 from soulfire.bot import SoulFireBot
 from soulfire.bot_connect import BotServiceClient
@@ -46,6 +46,8 @@ from soulfire.bot_live_pb2 import (
 from soulfire.bot_pb2 import (
     BOT_DESIRED_STATE_RUNNING,
     BOT_RUNTIME_STATE_RUNNING,
+    BotContainerButtonClickRequest,
+    BotContainerButtonClickResponse,
     BotInfoRequest,
     BotInfoResponse,
     BotLiveState,
@@ -310,6 +312,51 @@ async def test_bot_attaches_and_clears_an_acquired_control_lease() -> None:
         assert service.action_headers == [{"X-SoulFire-Control-Token": "lease-token"}, None]
 
     await run_async(scoped(workflow).or_die())
+
+
+class FakeButtonBotClient:
+    def __init__(self) -> None:
+        self.requests: list[BotContainerButtonClickRequest] = []
+        self.headers: list[dict[str, str] | None] = []
+
+    async def click_container_button(
+        self, request: BotContainerButtonClickRequest, **kwargs: object
+    ) -> BotContainerButtonClickResponse:
+        self.requests.append(request)
+        self.headers.append(cast(dict[str, str] | None, kwargs.get("headers")))
+        if request.button_id < 3:
+            return BotContainerButtonClickResponse(success=True)
+        return BotContainerButtonClickResponse(
+            success=False, error="Invalid button ID for this container type"
+        )
+
+
+@pytest.mark.asyncio
+async def test_bot_clicks_container_buttons_with_and_without_the_control_lease() -> None:
+    service = FakeButtonBotClient()
+    bot = SoulFireBot(
+        "instance-id",
+        "bot-id",
+        cast(BotServiceClient, service),
+        cast(BotLiveServiceClient, FakeBotLiveClient()),
+    )
+
+    @gen
+    def workflow():
+        yield from bot.click_container_button(1)
+        yield from bot.acquire_control()
+        yield from bot.click_container_button(2)
+        yield from bot.click_container_button(3)
+
+    refused = await run_async_exit(scoped(workflow))
+    assert [(r.instance_id, r.bot_id, r.button_id) for r in service.requests] == [
+        ("instance-id", "bot-id", 1),
+        ("instance-id", "bot-id", 2),
+        ("instance-id", "bot-id", 3),
+    ]
+    assert service.headers == [None] + [{"X-SoulFire-Control-Token": "lease-token"}] * 2
+    assert isinstance(refused, Failure)
+    assert str(refused.error) == "Invalid button ID for this container type"
 
 
 @pytest.mark.asyncio
