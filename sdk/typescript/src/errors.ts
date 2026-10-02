@@ -78,10 +78,33 @@ interface LocalErrorFields {
   readonly cause?: unknown;
 }
 
-export class SoulFireValidationError extends Data.TaggedError("SoulFireValidationError")<LocalErrorFields> {}
-export class SoulFireStateError extends Data.TaggedError("SoulFireStateError")<LocalErrorFields> {}
-export class SoulFireInstallError extends Data.TaggedError("SoulFireInstallError")<LocalErrorFields> {}
-export class SoulFireTimeoutError extends Data.TaggedError("SoulFireTimeoutError")<LocalErrorFields> {}
+const SoulFireValidationErrorBase: TaggedErrorConstructor<
+  "SoulFireValidationError",
+  LocalErrorFields
+> = Data.TaggedError("SoulFireValidationError")<LocalErrorFields>;
+
+export class SoulFireValidationError extends SoulFireValidationErrorBase {}
+
+const SoulFireStateErrorBase: TaggedErrorConstructor<
+  "SoulFireStateError",
+  LocalErrorFields
+> = Data.TaggedError("SoulFireStateError")<LocalErrorFields>;
+
+export class SoulFireStateError extends SoulFireStateErrorBase {}
+
+const SoulFireInstallErrorBase: TaggedErrorConstructor<
+  "SoulFireInstallError",
+  LocalErrorFields
+> = Data.TaggedError("SoulFireInstallError")<LocalErrorFields>;
+
+export class SoulFireInstallError extends SoulFireInstallErrorBase {}
+
+const SoulFireTimeoutErrorBase: TaggedErrorConstructor<
+  "SoulFireTimeoutError",
+  LocalErrorFields
+> = Data.TaggedError("SoulFireTimeoutError")<LocalErrorFields>;
+
+export class SoulFireTimeoutError extends SoulFireTimeoutErrorBase {}
 
 export type SoulFireOperationError =
   | SoulFireRpcError

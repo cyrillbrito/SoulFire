@@ -988,7 +988,9 @@ plugin = _PluginModule()
 
 function pythonPluginClientClass(model: GenerationModel, className: string): string {
   const fields = model.services.map((service) =>
-    `        self.${service.pythonName} = ${service.name}Effects(catalog.service(${service.name}Client))`
+    `        self.${service.pythonName} = ${service.name}Effects(
+            catalog.service(${service.name}Client)
+        )`
   ).join("\n");
   const sections = [
     `    def __init__(self, catalog: PluginCatalog) -> None:
@@ -1069,19 +1071,33 @@ ${indent})`;
 }
 
 function pythonRuntimeImports(model: GenerationModel): string {
+  const hasUnaryMethods = model.services.some((service) =>
+    service.methods.some((method) => !method.serverStreaming),
+  );
+  const hasStreamingMethods = model.services.some((service) =>
+    service.methods.some((method) => method.serverStreaming),
+  );
+  const effectImports = [
+    ...(model.tasks.length > 0 ? ["Effect"] : []),
+    ...(hasUnaryMethods ? ["EffectGen", "fn"] : []),
+  ];
+  const transportImports = [
+    ...(hasUnaryMethods ? ["rpc"] : []),
+    ...(hasStreamingMethods ? ["rpc_stream"] : []),
+  ];
   const imports = [
-    model.tasks.length > 0 ? "from typing import Unpack" : "",
-    model.services.some((service) => service.methods.some((method) => !method.serverStreaming)) ? "from effect_py import EffectGen, fn" : "",
-    model.tasks.length > 0 ? "from effect_py import Effect" : "",
+    effectImports.length > 0 ? `from effect_py import ${effectImports.join(", ")}` : "",
     "from soulfire.errors import SoulFireOperationError",
     "from soulfire.plugin_api_pb2 import PluginApiDescriptor",
     model.events.length > 0 ? "from soulfire.plugins import PluginCatalog, TypedPluginEvent" : "from soulfire.plugins import PluginCatalog",
+    model.events.length > 0 || hasStreamingMethods ? "from soulfire.streams import Stream" : "",
     model.tasks.length > 0 ? "from soulfire.tasks import SoulFireTask, SoulFireTasks, TaskStartOptions" : "",
-    model.events.length > 0 || model.services.some((service) => service.methods.some((method) => method.serverStreaming)) ? "from soulfire.streams import Stream" : "",
-    model.services.some((service) => service.methods.some((method) => !method.serverStreaming)) ? "from soulfire.transport import rpc" : "",
-    model.services.some((service) => service.methods.some((method) => method.serverStreaming)) ? "from soulfire.transport import rpc_stream" : "",
+    transportImports.length > 0 ? `from soulfire.transport import ${transportImports.join(", ")}` : "",
   ];
-  return imports.filter((value) => value.length > 0).join("\n");
+  return [
+    model.tasks.length > 0 ? "from typing import Unpack" : "",
+    imports.filter((value) => value.length > 0).join("\n"),
+  ].filter((value) => value.length > 0).join("\n\n");
 }
 
 function pythonImports(model: GenerationModel): string {
@@ -1156,19 +1172,27 @@ function pythonServiceSource(service: ServiceModel): string {
   const methods = service.methods.map((method) => {
     const operation = `${service.fullName}/${method.name}`;
     return method.serverStreaming ? `    def ${method.pythonName}(
-        self, request: ${method.inputType.expression}, *, timeout_ms: int | None = None,
+        self,
+        request: ${method.inputType.expression},
+        *,
+        timeout_ms: int | None = None,
     ) -> Stream[${method.outputType.expression}, SoulFireOperationError]:
         return rpc_stream(
             ${JSON.stringify(operation)},
             lambda: self._client.${method.pythonName}(request, timeout_ms=timeout_ms),
         )` : `    @fn(${JSON.stringify(operation)})
     def ${method.pythonName}(
-        self, request: ${method.inputType.expression}, *, timeout_ms: int | None = None,
+        self,
+        request: ${method.inputType.expression},
+        *,
+        timeout_ms: int | None = None,
     ) -> EffectGen[${method.outputType.expression}, SoulFireOperationError]:
-        return (yield from rpc(
-            ${JSON.stringify(operation)},
-            lambda: self._client.${method.pythonName}(request, timeout_ms=timeout_ms),
-        ))`;
+        return (
+            yield from rpc(
+                ${JSON.stringify(operation)},
+                lambda: self._client.${method.pythonName}(request, timeout_ms=timeout_ms),
+            )
+        )`;
   }).join("\n\n");
   return `class ${service.name}Effects:
     __slots__ = ("_client",)

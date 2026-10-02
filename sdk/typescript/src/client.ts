@@ -2492,12 +2492,38 @@ function requireSuccess(
   }
 }
 
-export class SoulFireService extends Context.Service<
+const SoulFireServiceBase: Context.ServiceClass<
   SoulFireService,
+  "@soulfiremc/sdk/SoulFireService",
   SoulFireClient
->()("@soulfiremc/sdk/SoulFireService") {}
+> = Context.Service<SoulFireService, SoulFireClient>()(
+  "@soulfiremc/sdk/SoulFireService",
+);
 
-export const SoulFire = {
+export class SoulFireService extends SoulFireServiceBase {}
+
+export const SoulFire: {
+  connect: typeof SoulFireClient.connect;
+  unauthenticated: typeof SoulFireClient.unauthenticated;
+  connectManaged: typeof SoulFireClient.connectManaged;
+  connectWithHttpClient(
+    options: SoulFireOptions,
+  ): Effect.Effect<
+    SoulFireClient,
+    SoulFireConnectionError,
+    Scope.Scope | HttpClient.HttpClient
+  >;
+  layer(
+    options: SoulFireOptions,
+  ): Layer.Layer<SoulFireService, SoulFireConnectionError>;
+  layerWithHttpClient(
+    options: SoulFireOptions,
+  ): Layer.Layer<
+    SoulFireService,
+    SoulFireConnectionError,
+    HttpClient.HttpClient
+  >;
+} = {
   connect: SoulFireClient.connect,
   unauthenticated: SoulFireClient.unauthenticated,
   connectManaged: SoulFireClient.connectManaged,
