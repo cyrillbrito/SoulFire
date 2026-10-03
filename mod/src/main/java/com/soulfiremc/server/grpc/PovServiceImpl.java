@@ -70,6 +70,7 @@ public final class PovServiceImpl extends PovServiceGrpc.PovServiceImplBase {
 
   @Override
   public void watch(PovWatchRequest request, StreamObserver<PovFrame> response) {
+    Session registered = null;
     try {
       var instanceId = UUID.fromString(request.getInstanceId());
       var botId = UUID.fromString(request.getBotId());
@@ -91,11 +92,15 @@ public final class PovServiceImpl extends PovServiceGrpc.PovServiceImplBase {
         sessions.remove(sessionId, session);
         throw Status.RESOURCE_EXHAUSTED.withDescription("Bot is already watched").asRuntimeException();
       }
+      registered = session;
       // The input heartbeat owns this long-lived stream's timeout.
       ServiceRequestContext.current().clearRequestTimeout();
       observer.setOnCancelHandler(session::close);
       session.schedule(0);
-    } catch (Throwable error) { response.onError(rpcError(error)); }
+    } catch (Throwable error) {
+      if (registered != null) registered.close();
+      response.onError(rpcError(error));
+    }
   }
 
   @Override
@@ -127,32 +132,35 @@ public final class PovServiceImpl extends PovServiceGrpc.PovServiceImplBase {
       if (request.getSequence() <= session.inputSequence) throw Status.ABORTED.withDescription("Stale input batch").asRuntimeException();
       // Captured input holds the lease until released; other input holds it for its batch.
       if (controls(request)) session.control.hold();
-      session.bot.minecraft().submit(() -> {
-        if (session.closed.get()) return;
+      try {
+        session.bot.minecraft().submit(() -> {
+          if (session.closed.get()) return;
 
-        if (request.hasClipboard()) {
-          var minecraft = session.bot.minecraft();
-          minecraft.keyboardHandler.setClipboard(request.getClipboard());
-          if (request.getCaptured() && minecraft.gui.screen() != null) {
-            minecraft.keyboardHandler.keyPress(minecraft.getWindow().handle(), 1, new KeyEvent(InputConstants.KEY_V, 'v', InputConstants.MOD_CONTROL));
-            minecraft.keyboardHandler.keyPress(minecraft.getWindow().handle(), 0, new KeyEvent(InputConstants.KEY_V, 'v', InputConstants.MOD_CONTROL));
-          }
-        }
-        var actions = new PovClientActions(text -> session.clipboard.set(new ClipboardUpdate(0, text)), session.openUrl::set);
-        ScopedValue.where(PovClientActions.CURRENT, actions).run(() -> {
-          if (request.getEscape()) {
+          if (request.hasClipboard()) {
             var minecraft = session.bot.minecraft();
-            minecraft.keyboardHandler.keyPress(minecraft.getWindow().handle(), 1, new KeyEvent(InputConstants.KEY_ESCAPE, 27, 0));
-            minecraft.keyboardHandler.keyPress(minecraft.getWindow().handle(), 0, new KeyEvent(InputConstants.KEY_ESCAPE, 27, 0));
+            minecraft.keyboardHandler.setClipboard(request.getClipboard());
+            if (request.getCaptured() && minecraft.gui.screen() != null) {
+              minecraft.keyboardHandler.keyPress(minecraft.getWindow().handle(), 1, new KeyEvent(InputConstants.KEY_V, 'v', InputConstants.MOD_CONTROL));
+              minecraft.keyboardHandler.keyPress(minecraft.getWindow().handle(), 0, new KeyEvent(InputConstants.KEY_V, 'v', InputConstants.MOD_CONTROL));
+            }
           }
-          session.bot.povInput().capture(request.getCaptured());
-          for (var event : request.getEventsList()) session.bot.povInput().accept(event);
-        });
-        if (request.getReadClipboard()) {
-          session.clipboard.set(new ClipboardUpdate(request.getSequence(), session.bot.minecraft().keyboardHandler.getClipboard()));
-        }
-      }).get(5, TimeUnit.SECONDS);
-      if (!request.getCaptured()) session.control.release();
+          var actions = new PovClientActions(text -> session.clipboard.set(new ClipboardUpdate(0, text)), session.openUrl::set);
+          ScopedValue.where(PovClientActions.CURRENT, actions).run(() -> {
+            if (request.getEscape()) {
+              var minecraft = session.bot.minecraft();
+              minecraft.keyboardHandler.keyPress(minecraft.getWindow().handle(), 1, new KeyEvent(InputConstants.KEY_ESCAPE, 27, 0));
+              minecraft.keyboardHandler.keyPress(minecraft.getWindow().handle(), 0, new KeyEvent(InputConstants.KEY_ESCAPE, 27, 0));
+            }
+            session.bot.povInput().capture(request.getCaptured());
+            for (var event : request.getEventsList()) session.bot.povInput().accept(event);
+          });
+          if (request.getReadClipboard()) {
+            session.clipboard.set(new ClipboardUpdate(request.getSequence(), session.bot.minecraft().keyboardHandler.getClipboard()));
+          }
+        }).get(5, TimeUnit.SECONDS);
+      } finally {
+        if (!request.getCaptured()) session.control.release();
+      }
       session.inputSequence = request.getSequence();
       session.width = even(request.getWidth());
       session.height = even(request.getHeight());
