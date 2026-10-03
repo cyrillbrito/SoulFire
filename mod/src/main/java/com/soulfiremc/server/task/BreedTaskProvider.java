@@ -69,9 +69,6 @@ public final class BreedTaskProvider implements BotTaskProvider<BreedTask> {
   private static final int DEFAULT_BREEDING_TIMEOUT_TICKS = 100;
   private static final int MAX_BREEDING_TIMEOUT_TICKS = 1_200;
   private static final int LOVE_MODE_TICKS = 600;
-  /// Animal.PARENT_AGE_AFTER_BREEDING: the age a parent counts down from
-  /// before it can breed again.
-  private static final int BREEDING_COOLDOWN_TICKS = 6_000;
   private static final Set<ControlResource> RESOURCES = Set.of(
     ControlResource.MOVEMENT,
     ControlResource.ROTATION,
@@ -720,7 +717,7 @@ public final class BreedTaskProvider implements BotTaskProvider<BreedTask> {
 
     void add(UUID animal, long gameTime) {
       refusedUntil.values().removeIf(until -> until <= gameTime);
-      refusedUntil.put(animal, gameTime + BREEDING_COOLDOWN_TICKS);
+      refusedUntil.put(animal, gameTime + Animal.PARENT_AGE_AFTER_BREEDING);
     }
 
     boolean contains(UUID animal, long gameTime) {
