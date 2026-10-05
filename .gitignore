@@ -49,6 +49,7 @@ out/
 temp/
 tmp/
 .fabric
+.lwjgl/
 
 # SDK toolchains
 .soulfire/

@@ -1,0 +1,41 @@
+name: Documentation improvement
+description: Report missing, unclear, or incorrect repository documentation or examples.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for documentation and examples maintained in this repository.
+        For website documentation, share the page link in the [Discord community](https://soulfiremc.com/discord).
+        For usage questions, use [support resources](https://github.com/soulfiremc-com/SoulFire/blob/main/SUPPORT.md).
+  - type: checkboxes
+    id: existing-issues
+    attributes:
+      label: Existing reports
+      options:
+        - label: I searched open and closed issues for the same documentation problem.
+          required: true
+  - type: input
+    id: location
+    attributes:
+      label: Document or example
+      description: Include the file path or GitHub link and the section name.
+      placeholder: CONTRIBUTING.md, Build and run SoulFire
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is missing or incorrect?
+      description: Explain what you tried to learn or do, and where the documentation prevented it.
+    validations:
+      required: true
+  - type: textarea
+    id: improvement
+    attributes:
+      label: Suggested improvement
+      description: Describe the correction or example you need. You do not need to supply the final wording.
+  - type: textarea
+    id: context
+    attributes:
+      label: Version and context
+      description: For commands or examples that fail, include versions, the command, and its output. Remove credentials first.

@@ -9,7 +9,9 @@ run the same test on a jar without the fix and on one with it.
 
 ## Running
 
-Needs Docker, Bun, and Java 25 (`java` on `PATH`, or `SOULFIRE_E2E_JAVA`).
+Needs Docker, Bun, Node.js 24, and Java 25 (`java` on `PATH`, or `SOULFIRE_E2E_JAVA`).
+Prepare the [native runtime packages](../docs/vulkan-runtime.md) before building the launcher JAR.
+For a local build, add `-PvulkanPlatforms=<platform>` to the Gradle command below.
 
 ```bash
 ./gradlew :dedicated-launcher:uberJar          # the jar the tests run by default
