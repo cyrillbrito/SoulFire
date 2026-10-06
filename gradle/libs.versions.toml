@@ -46,6 +46,7 @@ jetbrains-annotations = "org.jetbrains:annotations:26.1.0"
 reflect = "net.lenni0451:Reflect:1.6.4"
 lambdaevents = "net.lenni0451:LambdaEvents:2.4.2"
 minecraftauth = "net.raphimc:MinecraftAuth:5.0.2"
+commons-httpclient = "net.lenni0451.commons:httpclient:1.9.3-SNAPSHOT"
 grpc-proto = { module = "io.grpc:grpc-protobuf", version.ref = "grpc" }
 grpc-services = { module = "io.grpc:grpc-services", version.ref = "grpc" }
 grpc-stub = { module = "io.grpc:grpc-stub", version.ref = "grpc" }

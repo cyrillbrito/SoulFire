@@ -95,10 +95,13 @@ through [nightly.link](https://nightly.link/soulfiremc-com/SoulFire/workflows/bu
 
 ## 🔧 Build from source
 
-1. Install Java 25+
-2. Download the latest source code from GitHub
-3. Run `./gradlew build` in the project directory
-4. Get the jar file from `client-launcher/build/libs` or `dedicated-launcher/build/libs`
+1. Install a JDK 25 and clone this repository.
+2. Prepare the packaged native runtimes using the [native runtime build instructions](docs/vulkan-runtime.md).
+3. Run `./gradlew build` in the project directory. For a local build, select the prepared platforms with `-PvulkanPlatforms=<platform>`.
+4. Get the JAR from `client-launcher/build/libs` or `dedicated-launcher/build/libs`.
+
+The default build requires all six native runtime platforms.
+For environment setup, module locations, SDK generation, and tests, read the [contribution guide](CONTRIBUTING.md).
 
 ## 👨‍💻 Developer API
 
@@ -118,8 +121,10 @@ Feel free to join our Discord community server:
 
 [![Discord Banner](https://discord.com/api/guilds/739784741124833301/widget.png?style=banner2)](https://discord.gg/vHgRd6YZmH)
 
-This project is in active development, so if you have any feature requests or issues, please submit them here on GitHub.
-PRs are welcome, too.
+For setup and usage questions, read the [support resources](SUPPORT.md).
+Report bugs and propose features through the [issue forms](https://github.com/soulfiremc-com/SoulFire/issues/new/choose).
+Pull requests are welcome. Read the [contribution guide](CONTRIBUTING.md) and [code of conduct](CODE_OF_CONDUCT.md) before you start.
+Report vulnerabilities privately through the [security policy](SECURITY.md).
 
 ## 🏅 Sponsors
 

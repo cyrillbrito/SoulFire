@@ -1,58 +1,92 @@
-name: 🐞 Bug
-description: File a bug/issue report
-labels: [ "type: :bug: bug" ]
-
+name: Bug report
+description: Report a reproducible problem with the server, CLI, SDKs, or build.
+labels: ["type: :bug: bug"]
 body:
+  - type: markdown
+    attributes:
+      value: |
+        For setup questions, use [support resources](https://github.com/soulfiremc-com/SoulFire/blob/main/SUPPORT.md).
+        For desktop GUI bugs, use [SoulFireClient issues](https://github.com/soulfiremc-com/SoulFireClient/issues).
+        Report vulnerabilities privately through the [security policy](https://github.com/soulfiremc-com/SoulFire/blob/main/SECURITY.md).
+        Remove tokens, passwords, account data, and proxy credentials from your report and attachments.
   - type: checkboxes
+    id: existing-issues
     attributes:
-      label: Is there an existing issue for this?
-      description: |
-        Please search to see if an issue already exists for the bug you encountered.
-
-        Tip: You can go to the [GitHub issue tab](https://github.com/soulfiremc-com/SoulFire/issues?q=is%3Aopen+is%3Aissue+label%3A%22type%3A+%3Abug%3A+bug%22) for a list of open issues
+      label: Existing reports
       options:
-        - label: I have searched the existing issues
+        - label: I searched open and closed issues for the same problem.
           required: true
-  - type: textarea
+  - type: dropdown
+    id: component
     attributes:
-      label: Describe your issue
-      description: What is the issue?
-      placeholder: "After the update x feature broke. It gives me this message: '...'"
+      label: Affected component
+      options:
+        - Server or bot behavior
+        - CLI
+        - TypeScript SDK
+        - Python SDK
+        - Build or installation
+        - Plugin API
+        - Rendering or native runtime
+        - Other or unknown
+    validations:
+      required: true
+  - type: input
+    id: soulfire-version
+    attributes:
+      label: SoulFire version
+      description: Copy the exact startup version. For a source build, include the revision or its GitHub link.
+      placeholder: Release version, nightly build identifier, or source revision
     validations:
       required: true
   - type: textarea
+    id: environment
     attributes:
-      label: How can we reproduce what you got?
-      description: Please describe the steps for us to reproduce the issue. Screenshots are also very welcomed.
+      label: Environment
+      description: Include the details that apply. Write "unknown" if you cannot determine a value.
       placeholder: |
-        1. Go to '...'
-        2. Click on '...'
-        3. Scroll down to '...'
-        4. See error
+        OS and CPU architecture:
+        Java version (java -version):
+        Launch method (dedicated JAR, CLI, Docker, or source):
+        Target Minecraft version and server software:
+        SDK package and runtime versions, if relevant:
+        Plugins, proxies, or configuration relevant to the problem:
     validations:
-      required: false
-  - type: input
+      required: true
+  - type: textarea
+    id: actual-behavior
+    attributes:
+      label: What happened?
+      description: Describe the problem, including any error and how often it occurs.
+    validations:
+      required: true
+  - type: textarea
+    id: expected-behavior
+    attributes:
+      label: What did you expect?
+      description: Describe the result you expected from the same steps.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Include minimal configuration or code. If reproduction is intermittent, describe the conditions you observed.
+      placeholder: |
+        1. Start SoulFire with ...
+        2. Connect a bot to ...
+        3. Run ...
+        4. Observe ...
+    validations:
+      required: true
+  - type: textarea
     id: logs
     attributes:
-      label: SoulFire/Error Logs
-      description: |
-        Replace the links below by a paste of your console logs.
-        - https://gist.github.com
-        - https://bin.birdflop.com
-      placeholder: "<log url>"
-    validations:
-      required: false
-  - type: markdown
+      label: Logs and supporting evidence
+      description: Paste relevant text logs or attach a redacted log file. Include the full exception and its causes, if available.
+      placeholder: Relevant logs, screenshots, or a link to a redacted log
+  - type: textarea
+    id: regression
     attributes:
-      value: "----"
-  - type: markdown
-    attributes:
-      value: "## Helpful info"
-  - type: input
-    id: swversion
-    attributes:
-      label: SoulFire Version
-      description: "SoulFire says its version at startup."
-      placeholder: "1.0.0"
-    validations:
-      required: true
+      label: Regression and workarounds
+      description: If a previous version worked, name it. Include any workaround or comparison with a vanilla client.

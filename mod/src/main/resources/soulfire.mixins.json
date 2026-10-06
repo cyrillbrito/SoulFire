@@ -75,6 +75,7 @@
     "soulfire.botfixes.MixinLocalPlayer",
     "soulfire.botfixes.MixinOptions",
     "soulfire.botfixes.MixinServerList",
+    "soulfire.botfixes.MixinSharedRandomSources",
     "soulfire.modfixes.MixinClientCommandInternals",
     "soulfire.modfixes.MixinClientNetworkingImpl",
     "soulfire.optimization.MixinClientPacketListener",

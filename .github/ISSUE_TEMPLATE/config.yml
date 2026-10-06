@@ -1,5 +1,14 @@
 blank_issues_enabled: false
 contact_links:
-  - name: AlexProgrammerDE Discord
-    url: https://pistonmaster.net/discord
-    about: For support & help
+  - name: Setup and usage support
+    url: https://soulfiremc.com/discord
+    about: Ask the SoulFire community about configuration, accounts, proxies, plugins, and scripts.
+  - name: Documentation and guides
+    url: https://soulfiremc.com/docs
+    about: Read installation instructions, usage guides, and API documentation.
+  - name: Desktop GUI issues
+    url: https://github.com/soulfiremc-com/SoulFireClient/issues
+    about: Report bugs and request features for the separate desktop GUI client.
+  - name: Private security reports
+    url: https://github.com/soulfiremc-com/SoulFire/blob/main/SECURITY.md
+    about: Report vulnerabilities through confidential contacts rather than public issues.
