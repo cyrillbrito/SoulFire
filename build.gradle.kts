@@ -74,6 +74,7 @@ allprojects {
       name = "Lenni0451 Repository"
       content {
         includeGroup("net.raphimc")
+        includeModule("net.lenni0451.commons", "httpclient")
       }
     }
     maven("https://repo.opencollab.dev/maven-snapshots") {

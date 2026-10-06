@@ -117,6 +117,7 @@ dependencies {
     exclude("com.google.code.gson", "gson")
     exclude("org.slf4j", "slf4j-api")
   }
+  api(libs.commons.httpclient)
 
   // For profiling
   api(libs.spark) {
